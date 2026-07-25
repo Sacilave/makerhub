@@ -90,6 +90,7 @@ from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.cloakbrowser_session import (
     CloakBrowserError,
     CloakBrowserSessionResult,
+    CloakBrowserUnavailable,
     cloakbrowser_configured,
     collect_browser_session,
     prepare_browser_login,
@@ -3668,6 +3669,16 @@ async def open_config_online_account_browser(platform: str, request: Request):
             profile_id=target.browser_profile_id,
             proxy_config=config.proxy,
         )
+    except CloakBrowserUnavailable as exc:
+        _save_browser_status(
+            clean_platform,
+            expected_cookie=target.cookie,
+            profile_id=target.browser_profile_id,
+            status=target.browser_status or ("waiting" if target.browser_profile_id else "not_linked"),
+            message=f"指纹浏览器服务暂时不可用：{str(exc)[:240]}",
+            synced_at=target.browser_synced_at,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except CloakBrowserError as exc:
         _save_browser_status(
             clean_platform,
@@ -3730,6 +3741,16 @@ async def sync_config_online_account_browser(platform: str, request: Request):
             target.browser_profile_id,
         )
         saved, applied = _store_browser_session_result(clean_platform, target, result, config.proxy)
+    except CloakBrowserUnavailable as exc:
+        _save_browser_status(
+            clean_platform,
+            expected_cookie=target.cookie,
+            profile_id=target.browser_profile_id,
+            status=target.browser_status or "waiting",
+            message=f"指纹浏览器服务暂时不可用：{str(exc)[:240]}",
+            synced_at=target.browser_synced_at,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except CloakBrowserError as exc:
         _save_browser_status(
             clean_platform,

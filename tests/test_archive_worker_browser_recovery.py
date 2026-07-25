@@ -11,7 +11,7 @@ import app.services.archive_worker as archive_worker_module
 from app.core.store import JsonStore
 from app.schemas.models import CookiePair
 from app.services.archive_worker import ArchiveTaskManager
-from app.services.cloakbrowser_session import CloakBrowserSessionResult
+from app.services.cloakbrowser_session import CloakBrowserSessionResult, CloakBrowserUnavailable
 
 
 class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
@@ -167,6 +167,50 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         saved = store.load().cookies[0]
         self.assertEqual(saved.cookie, "token=old; refreshToken=old")
         self.assertEqual(saved.browser_status, "action_required")
+
+    def test_task_session_refresh_uses_last_browser_cookie_during_temporary_outage(self):
+        manager, store = self._manager_with_cookie("token=synced; refreshToken=fresh")
+        current = store.load().cookies[0]
+        config = store.load()
+        config.cookies = [current.model_copy(update={"browser_status": "synced"})]
+        store.save(config)
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(
+                    archive_worker_module,
+                    "collect_browser_session",
+                    side_effect=CloakBrowserUnavailable("指纹浏览器返回 HTTP 502"),
+                ), \
+                patch.object(archive_worker_module, "_log_archive") as log_mock:
+            refreshed, error = manager._refresh_browser_session_for_task("cn")
+
+        self.assertEqual(error, "")
+        self.assertIsNotNone(refreshed)
+        saved = store.load().cookies[0]
+        self.assertEqual(saved.cookie, "token=synced; refreshToken=fresh")
+        self.assertEqual(saved.browser_status, "synced")
+        log_mock.assert_called_once()
+
+    def test_temporary_browser_outage_marks_network_error_without_closing_gate(self):
+        with patch.object(archive_worker_module, "mark_account_network_error") as network_error_mock, \
+                patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
+            archive_worker_module._sync_account_health_for_archive_exception(
+                task_meta={"source": "cn"},
+                model_url="https://makerworld.com.cn/zh/models/123",
+                model_id="123",
+                detail="指纹浏览器服务暂时不可用：指纹浏览器返回 HTTP 502",
+            )
+
+        network_error_mock.assert_called_once_with(
+            "cn",
+            reason="archive_task_network_error",
+            source="archive_task",
+            detail="指纹浏览器服务暂时不可用：指纹浏览器返回 HTTP 502",
+            model_url="https://makerworld.com.cn/zh/models/123",
+            model_id="123",
+            instance_id="",
+        )
+        update_gate_mock.assert_not_called()
 
     def test_browser_recovery_task_passes_saved_profile_to_3mf_authorization(self):
         manager, _store = self._manager_with_cookie("token=same; refreshToken=fresh")

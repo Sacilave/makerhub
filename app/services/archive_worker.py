@@ -13,7 +13,12 @@ from app.core.database_json_state import load_database_json_state, save_database
 from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, parse_datetime
-from app.services.cloakbrowser_session import CloakBrowserError, cloakbrowser_configured, collect_browser_session
+from app.services.cloakbrowser_session import (
+    CloakBrowserError,
+    CloakBrowserUnavailable,
+    cloakbrowser_configured,
+    collect_browser_session,
+)
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.batch_discovery import (
     extract_model_id,
@@ -222,6 +227,9 @@ def _is_transient_batch_child_failure(message: str) -> bool:
     lowered = str(message or "").strip().lower()
     if not lowered:
         return False
+
+    if re.search(r"\bhttp\s+5\d{2}\b", lowered):
+        return True
 
     for match in re.finditer(r"code=(\d+)", lowered):
         try:
@@ -671,6 +679,29 @@ def _sync_account_health_for_archive_exception(
     model_id: str,
     detail: str,
 ) -> None:
+    platform = normalize_makerworld_source(task_meta.get("source"), model_url)
+    if _is_transient_batch_child_failure(detail):
+        try:
+            mark_account_network_error(
+                platform,
+                reason="archive_task_network_error",
+                source="archive_task",
+                detail=detail,
+                model_url=model_url,
+                model_id=model_id,
+                instance_id=str(task_meta.get("instance_id") or "").strip(),
+            )
+        except Exception as exc:
+            _log_archive(
+                "account_health_sync_failed",
+                "账号网络异常状态同步失败，归档失败状态已保留。",
+                level="warning",
+                model_id=model_id,
+                url=model_url,
+                error=str(exc)[:240],
+            )
+        return
+
     state = normalize_three_mf_failure_state(
         "",
         detail,
@@ -680,7 +711,6 @@ def _sync_account_health_for_archive_exception(
     if state not in {"verification_required", "cloudflare", "auth_required", "cookie_invalid", "download_limited"}:
         return
 
-    platform = normalize_makerworld_source(task_meta.get("source"), model_url)
     normalized_failure = _preserve_browser_confirmation_gate(
         platform,
         {"status": state, "detail": detail, "instance_id": str(task_meta.get("instance_id") or "").strip()},
@@ -885,6 +915,17 @@ class ArchiveTaskManager:
 
         try:
             browser_result = collect_browser_session(normalized_platform, profile_id)
+        except CloakBrowserUnavailable as exc:
+            if extract_auth_token(expected_cookie):
+                _log_archive(
+                    "cloakbrowser_task_session_refresh_degraded",
+                    "指纹浏览器服务暂时不可用，继续使用最近同步的浏览器登录态。",
+                    level="warning",
+                    platform=normalized_platform,
+                    error=str(exc)[:240],
+                )
+                return current, ""
+            return None, f"指纹浏览器服务暂时不可用：{str(exc)[:240]}"
         except CloakBrowserError as exc:
             self._persist_browser_recovery_session(
                 normalized_platform,
@@ -940,6 +981,15 @@ class ArchiveTaskManager:
         expected_cookie = sanitize_cookie_header(current.cookie)
         try:
             browser_result = collect_browser_session(normalized_platform, current.browser_profile_id)
+        except CloakBrowserUnavailable as exc:
+            _log_archive(
+                "cloakbrowser_auto_sync_unavailable",
+                "指纹浏览器服务暂时不可用，保留当前浏览器登录状态。",
+                level="warning",
+                platform=normalized_platform,
+                error=str(exc)[:240],
+            )
+            return {"outcome": "unavailable", "message": str(exc)[:240]}
         except CloakBrowserError as exc:
             self._persist_browser_recovery_session(
                 normalized_platform,

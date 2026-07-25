@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.services.archive_worker import ArchiveTaskManager
+from app.services.archive_worker import ArchiveTaskManager, _is_transient_batch_child_failure
 
 
 class _ArchiveBatchRefreshConfig:
@@ -1090,6 +1090,13 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertEqual(child["status"], "queued")
         self.assertEqual(child["attempts"], 4)
         self.assertIn("Could not resolve host", child["last_failure_message"])
+
+    def test_cloakbrowser_http_server_error_is_a_transient_batch_failure(self):
+        self.assertTrue(
+            _is_transient_batch_child_failure(
+                "指纹浏览器服务暂时不可用：指纹浏览器返回 HTTP 502"
+            )
+        )
 
     def test_refresh_batch_keeps_non_transient_failure_at_normal_limit(self):
         state = {}

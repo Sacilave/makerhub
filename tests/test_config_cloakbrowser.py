@@ -10,7 +10,7 @@ from unittest.mock import patch
 from app.api import config as config_api
 from app.core.store import JsonStore
 from app.schemas.models import CookiePair, OnlineAccountLoginRequest
-from app.services.cloakbrowser_session import CloakBrowserSessionResult
+from app.services.cloakbrowser_session import CloakBrowserSessionResult, CloakBrowserUnavailable
 
 
 def _request():
@@ -364,6 +364,38 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved.cookie, "")
             self.assertEqual(saved.browser_profile_id, "profile-global")
             self.assertEqual(saved.browser_status, "waiting")
+
+    async def test_manual_browser_sync_preserves_synced_status_during_temporary_outage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [
+                CookiePair(
+                    platform="cn",
+                    cookie="token=synced",
+                    browser_profile_id="profile-cn",
+                    browser_status="synced",
+                    browser_message="指纹浏览器登录态已同步。",
+                    browser_synced_at="2026-07-26T03:00:00+08:00",
+                )
+            ]
+            store.save(config)
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(
+                        config_api,
+                        "collect_browser_session",
+                        side_effect=CloakBrowserUnavailable("指纹浏览器返回 HTTP 502"),
+                    ), \
+                    patch.object(config_api, "publish_state_event"):
+                with self.assertRaises(config_api.HTTPException) as raised:
+                    await config_api.sync_config_online_account_browser("cn", _request())
+
+            self.assertEqual(raised.exception.status_code, 502)
+            saved = store.load().cookies[0]
+            self.assertEqual(saved.browser_status, "synced")
+            self.assertEqual(saved.browser_synced_at, "2026-07-26T03:00:00+08:00")
+            self.assertIn("暂时不可用", saved.browser_message)
 
 
 if __name__ == "__main__":

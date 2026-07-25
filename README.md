@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.13.13`
+> 当前版本：`v0.13.14`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -19,7 +19,7 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 - 五容器默认部署：默认 Compose 调整为 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`、`makerhub-flaresolverr`、`makerhub-cloakbrowser`。
 - 数据库索引重建：首次连接数据库后由 Worker 自动遍历历史归档库建立模型卡片索引；设置页不再保留旧的手动补全入口。
 - FlareSolverr 抓取通道：MakerWorld 页面、列表、评论和下载地址 API 走 FlareSolverr；图片、附件和 `3MF` 静态文件仍由普通下载器直接保存，`3MF` 直链保存失败会重新标记为缺失。
-- CloakBrowser 登录桥接：关联国内 / 国际固定 profile 后，指纹浏览器是唯一的 MakerWorld 登录态来源；归档开始前会读取浏览器当前会话，浏览器未登录时明确暂停而不会使用旧 Cookie。
+- CloakBrowser 登录桥接：关联国内 / 国际固定 profile 后，指纹浏览器是唯一的 MakerWorld 登录态来源；归档开始前会读取浏览器当前会话，服务短暂不可用时可使用最近一次从该 profile 同步的有效会话继续普通抓取，浏览器未登录时明确暂停。
 - 系统更新更安全：旧 compose 缺少 Postgres 配置时会阻止网页一键更新，并提示先升级 compose。
 - 文档重整：补齐架构说明、模块边界、Compose 安装、升级说明和 V0.7.0 更新记录。
 
@@ -141,7 +141,7 @@ http://你的服务器IP:9042
 
 MakerWorld 页面、作者 / 收藏 / 合集列表、评论和 `3MF` 下载地址 API 依赖 FlareSolverr。FlareSolverr 不可用时这些控制面请求会直接失败；已经拿到的图片、附件和 `3MF` 静态文件 URL 仍由 MakerHub 普通下载器直接保存，不会把大文件流量压到 FlareSolverr 上。若 `3MF` 静态直链实际保存失败，实例会写回 `cloudflare` / `http_error` / `missing` 状态并进入缺失 `3MF` 重试队列。
 
-CloakBrowser 用于保存 MakerWorld 浏览器登录态，并为后续 `3MF` 探针确认提供可持久化的浏览器 profile。设置页默认通过“打开浏览器”关联或复用 `MakerHub CN` / `MakerHub Global` 固定 profile；在浏览器中完成登录后，MakerHub 自动读取当前会话，也可以点击“从浏览器同步”立即读取。关联 profile 后，浏览器会话会覆盖旧账号 Cookie，归档开始前也会再次读取浏览器会话；浏览器未登录或不可达时任务会暂停并提示浏览器操作，不会回退使用历史 Cookie。手工验证码登录仅保留给未关联 profile 的兼容账号。它不是 FlareSolverr 的替代下载器，也不负责图片、附件或 `3MF` 静态文件的大文件传输。
+CloakBrowser 用于保存 MakerWorld 浏览器登录态，并为后续 `3MF` 探针确认提供可持久化的浏览器 profile。设置页默认通过“打开浏览器”关联或复用 `MakerHub CN` / `MakerHub Global` 固定 profile；在浏览器中完成登录后，MakerHub 自动读取当前会话，也可以点击“从浏览器同步”立即读取。关联 profile 后，浏览器会话会覆盖旧账号 Cookie，归档开始前也会再次读取浏览器会话；浏览器未登录时任务会暂停并提示浏览器操作。CloakBrowser 服务短暂不可用时，普通抓取可继续使用最近一次从该 profile 同步的有效会话；需要实时浏览器授权的 `3MF` 操作会按网络故障自动重试，不会误报为重新登录。手工验证码登录仅保留给未关联 profile 的兼容账号。它不是 FlareSolverr 的替代下载器，也不负责图片、附件或 `3MF` 静态文件的大文件传输。
 
 ## 从旧版升级
 
@@ -190,6 +190,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-26 · v0.13.14
+
+- CloakBrowser 临时 HTTP `5xx` 不再被误判为登录失效，也不会关闭平台级 `3MF` gate。
+- 普通归档可在浏览器服务短暂不可用时使用最近同步的有效会话继续；没有有效会话时显示网络异常。
+- 批量任务会自动重试 CloakBrowser HTTP `5xx`，避免偶发 `502` 直接终止模型归档。
+
 ### 2026-07-26 · v0.13.13
 
 - 指纹浏览器模型页导航超过 30 秒时不再提前终止；MakerHub 会继续从已渲染页面寻找下载按钮并等待授权响应。
@@ -202,14 +208,14 @@ uvicorn app.main:app --reload
 - 同一浏览器 profile 在 App / Worker 子进程间串行操作，授权响应可独立等待 90 秒，避免并发页面操作和过早超时。
 - 当前模型遇到技术错误后不再继续点击其余实例，减少无效授权请求和下载次数浪费。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-25 · v0.13.11
 
 - 指纹浏览器 profile 现在是关联 MakerWorld 账号的唯一登录态来源：浏览器切换账号会直接采用新会话，不再出现“浏览器账号不一致”后同时保留两套 Cookie 的竞争状态。
 - 归档任务开始前会刷新关联 profile；浏览器未登录或服务不可达时会明确暂停，不会用历史 MakerHub Cookie 继续访问。
 - 设置页默认通过指纹浏览器添加账号；手工验证码登录降级为未关联 profile 时的兼容入口。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-25 · v0.13.10
 

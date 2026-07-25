@@ -109,6 +109,20 @@ class CloakBrowserSessionTest(unittest.TestCase):
             {"Authorization": "Bearer secret-token"},
         )
 
+    def test_request_classifies_server_error_as_temporarily_unavailable(self):
+        response = Mock(status_code=502, content=b"")
+        response.json.side_effect = ValueError
+        with patch.dict(
+            os.environ,
+            {
+                "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+            },
+            clear=True,
+        ), patch.object(cloakbrowser_session.requests, "request", return_value=response):
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserUnavailable, "HTTP 502"):
+                cloakbrowser_session._request("GET", "/api/profiles/profile-cn")
+
     def test_bridge_payload_requires_auth_token_before_subprocess_io(self):
         with patch.dict(
             os.environ,

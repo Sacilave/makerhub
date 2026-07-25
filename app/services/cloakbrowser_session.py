@@ -149,6 +149,8 @@ def _request(method: str, path: str, *, json_payload: dict[str, Any] | None = No
         except ValueError:
             message = ""
         detail = f"：{message}" if message else ""
+        if response.status_code >= 500:
+            raise CloakBrowserUnavailable(f"指纹浏览器返回 HTTP {response.status_code}{detail}")
         raise CloakBrowserError(f"指纹浏览器返回 HTTP {response.status_code}{detail}")
     try:
         return response.json() if response.content else {}
