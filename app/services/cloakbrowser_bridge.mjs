@@ -138,7 +138,8 @@ function authorizationResponseMatches(response, instanceId) {
 async function findThreeMfDownloadButton(page, timeoutMs) {
   const deadline = Date.now() + Math.max(Number(timeoutMs || 30000), 15000);
   while (Date.now() < deadline) {
-    const handles = await page.$$("button, a, [role='button']");
+    // MakerWorld renders the primary 3MF action as a span, not a semantic button.
+    const handles = await page.$$("button, a, [role='button'], .primaryButton");
     for (const handle of handles) {
       const matches = await handle.evaluate((element) => {
         const style = window.getComputedStyle(element);

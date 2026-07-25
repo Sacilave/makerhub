@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.13.9`
+> 当前版本：`v0.13.10`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,10 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-25 · v0.13.10
+
+- 修复指纹浏览器真实点击 `3MF` 授权时无法识别 MakerWorld 下载按钮的问题：页面实际将该操作渲染为 `.primaryButton`，现在会正确点击并监听授权响应。
+
 ### 2026-07-25 · v0.13.9
 
 - 修复国区账号的 `3MF` 授权验证：MakerHub 现在会在关联的指纹浏览器中为目标模型打开临时页面并真实点击“下载 3MF”，监听该浏览器实例返回的授权响应后自动关闭临时页。
@@ -199,12 +203,12 @@ uvicorn app.main:app --reload
 
 - 修复账号 3MF 检测完成后首页仍停留在“检测中”的状态事件遗漏；现在会自动刷新为可归档、需要浏览器确认或需要重新登录等真实结果。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-21 · v0.13.7
 
 - 修复“已验证”在缺少当前模型时不会真正发起浏览器授权重试的问题；现在只挑选同平台一个受阻 `3MF`，优先验证阻塞项完成真实下载，避免批量探测和无谓请求。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-20 · v0.13.6
 

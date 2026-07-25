@@ -85,6 +85,11 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertIn("await page.close().catch(() => undefined)", source)
         self.assertNotIn("async function fetchAuthorization", source)
 
+    def test_bridge_click_supports_makerworld_primary_download_span(self):
+        source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("button, a, [role='button'], .primaryButton", source)
+
     def test_ensure_profile_reuses_saved_profile_id(self):
         with patch.object(
             cloakbrowser_session,
