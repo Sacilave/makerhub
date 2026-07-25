@@ -11,6 +11,7 @@ RETRYABLE_MISSING_3MF_STATUSES = {
     "missing",
     "queued",
     "failed",
+    "http_error",
     "verification_required",
     "cloudflare",
     "auth_required",

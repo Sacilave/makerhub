@@ -159,18 +159,27 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
   throw new Error("model page did not expose an enabled 3MF download action");
 }
 
-async function clickAuthorization(context, platform, targetUrl, modelUrl, instanceId, navigationTimeoutMs) {
+async function clickAuthorization(
+  context,
+  platform,
+  targetUrl,
+  modelUrl,
+  instanceId,
+  navigationTimeoutMs,
+  authorizationTimeoutMs,
+) {
   if (!isThreeMfAuthorizationUrl(targetUrl)) throw new Error("invalid 3MF authorization URL");
   if (!isMakerWorldModelUrl(modelUrl, platform)) throw new Error("invalid MakerWorld model page URL");
-  const timeout = Math.max(Number(navigationTimeoutMs || 30000), 15000);
+  const navigationTimeout = Math.max(Number(navigationTimeoutMs || 30000), 15000);
+  const authorizationTimeout = Math.max(Number(authorizationTimeoutMs || 90000), navigationTimeout);
   const page = await context.newPage();
   try {
-    await page.goto(modelUrl, { waitUntil: "domcontentloaded", timeout });
+    await page.goto(modelUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
     const responsePromise = page.waitForResponse(
       (response) => authorizationResponseMatches(response, instanceId),
-      { timeout },
+      { timeout: authorizationTimeout },
     );
-    const button = await findThreeMfDownloadButton(page, timeout);
+    const button = await findThreeMfDownloadButton(page, navigationTimeout);
     await button.click({ delay: 20 });
     await button.dispose();
     const response = await responsePromise;
@@ -201,7 +210,10 @@ async function main() {
     browserWSEndpoint,
     headers,
     defaultViewport: null,
-    protocolTimeout: Math.max(Number(input.navigation_timeout_ms || 30000), 15000),
+    protocolTimeout: Math.max(
+      Number(input.navigation_timeout_ms || 30000),
+      input.action === "click" ? Number(input.authorization_timeout_ms || 90000) : 15000,
+    ),
   });
   let navigationError = "";
   try {
@@ -215,6 +227,7 @@ async function main() {
         String(input.model_url || ""),
         String(input.instance_id || ""),
         input.navigation_timeout_ms,
+        input.authorization_timeout_ms,
       );
       process.stdout.write(JSON.stringify({ ok: true, ...authorization }));
       return;

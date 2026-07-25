@@ -25,8 +25,15 @@ from app.services.task_state import _normalize_missing_3mf
 
 
 class Missing3mfTest(unittest.TestCase):
-    def test_auth_and_limit_failures_pause_following_instance_fetches(self):
-        for state in ("verification_required", "cloudflare", "auth_required", "cookie_invalid", "download_limited"):
+    def test_terminal_and_technical_failures_pause_following_instance_fetches(self):
+        for state in (
+            "verification_required",
+            "cloudflare",
+            "auth_required",
+            "cookie_invalid",
+            "download_limited",
+            "http_error",
+        ):
             with self.subTest(state=state):
                 self.assertTrue(_should_pause_three_mf_fetch({"state": state, "message": "blocked"}))
 
@@ -1324,6 +1331,35 @@ class Missing3mfTest(unittest.TestCase):
 
         self.assertEqual(failure["state"], "verification_required")
         self.assertIn("浏览器", failure["message"])
+        direct_mock.assert_not_called()
+
+    def test_fetch_instance_3mf_reports_browser_bridge_timeout_as_http_error(self):
+        session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
+        original_wait = legacy_archiver_module._wait_before_three_mf_download
+        legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
+        try:
+            from app.services.cloakbrowser_session import CloakBrowserBridgeError
+
+            with patch.object(
+                legacy_archiver_module,
+                "browser_authorize_3mf_download",
+                side_effect=CloakBrowserBridgeError("指纹浏览器 CDP 操作超时。"),
+            ), patch.object(legacy_archiver_module, "flaresolverr_get_json") as direct_mock:
+                _name, _url, _used_api_url, failure = fetch_instance_3mf(
+                    session,
+                    2864062,
+                    "token=abc",
+                    api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                    origin="https://makerworld.com.cn",
+                    model_page_url="https://makerworld.com.cn/zh/models/123456",
+                    browser_authorization=True,
+                    browser_profile_id="profile-cn",
+                )
+        finally:
+            legacy_archiver_module._wait_before_three_mf_download = original_wait
+
+        self.assertEqual(failure["state"], "http_error")
+        self.assertIn("暂时无法完成", failure["message"])
         direct_mock.assert_not_called()
 
     def test_fetch_instance_3mf_uses_flaresolverr_download_payload(self):

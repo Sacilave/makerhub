@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import json
 import os
 import subprocess
-import threading
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -20,10 +19,13 @@ from app.services.online_accounts import (
     TICKET_ENDPOINTS,
 )
 from app.services.proxy_policy import proxy_mapping
+from app.services.resource_limiter import resource_slot
 
 
 BRIDGE_SCRIPT = ROOT_DIR / "app" / "services" / "cloakbrowser_bridge.mjs"
 DEFAULT_TIMEOUT_SECONDS = 30
+AUTHORIZATION_TIMEOUT_SECONDS = 90
+AUTHORIZATION_BRIDGE_TIMEOUT_SECONDS = 150
 PROFILE_NAMES = {
     "cn": "MakerHub CN",
     "global": "MakerHub Global",
@@ -40,10 +42,6 @@ PLATFORM_DOMAINS = {
     "cn": ("makerworld.com.cn", "bambulab.cn"),
     "global": ("makerworld.com", "bambulab.com"),
 }
-
-_OPERATION_LOCKS_LOCK = threading.Lock()
-_OPERATION_LOCKS: dict[str, threading.Lock] = {}
-
 
 class CloakBrowserError(RuntimeError):
     pass
@@ -252,14 +250,10 @@ def stop_profile(profile_id: str) -> None:
         return
 
 
-def _operation_lock(platform: str) -> threading.Lock:
-    clean_platform = normalize_platform(platform)
-    with _OPERATION_LOCKS_LOCK:
-        lock = _OPERATION_LOCKS.get(clean_platform)
-        if lock is None:
-            lock = threading.Lock()
-            _OPERATION_LOCKS[clean_platform] = lock
-        return lock
+def _profile_resource_name(platform: str, profile_id: str = "") -> str:
+    clean_profile_id = str(profile_id or "").strip()
+    identity = clean_profile_id or f"managed-{normalize_platform(platform)}"
+    return f"cloakbrowser_profile_{identity}"
 
 
 def _safe_bridge_env() -> dict[str, str]:
@@ -485,6 +479,7 @@ def _bridge_payload(
         "instance_id": str(instance_id or "").strip(),
         "platform": normalize_platform(platform) if platform else "",
         "navigation_timeout_ms": max(_timeout_seconds() * 1000, 15000),
+        "authorization_timeout_ms": AUTHORIZATION_TIMEOUT_SECONDS * 1000,
     }
 
 
@@ -547,7 +542,7 @@ def browser_authorize_3mf_download(
         raise CloakBrowserError("3MF 浏览器授权地址无效。")
     page_url = _browser_model_page_url(model_url, clean_platform, clean_instance_id)
 
-    with _operation_lock(clean_platform):
+    with resource_slot(_profile_resource_name(clean_platform, clean_profile_id), detail="click"):
         profile = ensure_profile(clean_platform, clean_profile_id)
         running, _launched_here = launch_profile(profile)
         result = _run_bridge(
@@ -558,7 +553,8 @@ def browser_authorize_3mf_download(
                 model_url=page_url,
                 instance_id=clean_instance_id,
                 platform=clean_platform,
-            )
+            ),
+            timeout_seconds=AUTHORIZATION_BRIDGE_TIMEOUT_SECONDS,
         )
 
     try:
@@ -583,7 +579,7 @@ def synchronize_browser_session(
     stop_when_done: bool = True,
 ) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
-    with _operation_lock(clean_platform):
+    with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="synchronize"):
         profile = ensure_profile(clean_platform, profile_id)
         running, launched_here = launch_profile(profile)
         ticket_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config)
@@ -626,7 +622,7 @@ def prepare_browser_login(
     proxy_config: ProxyConfig | dict[str, Any] | None = None,
 ) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
-    with _operation_lock(clean_platform):
+    with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="prepare-login"):
         profile = ensure_profile(clean_platform, profile_id)
         running, launched_here = launch_profile(profile)
         target_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config) or browser_login_url(clean_platform)
@@ -650,7 +646,7 @@ def prepare_browser_login(
 
 def collect_browser_session(platform: str, profile_id: str) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
-    with _operation_lock(clean_platform):
+    with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="collect"):
         profile = ensure_profile(clean_platform, profile_id)
         running, launched_here = launch_profile(profile)
         snapshot = _run_bridge(

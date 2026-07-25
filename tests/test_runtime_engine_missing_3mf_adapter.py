@@ -72,6 +72,21 @@ class Missing3mfRuntimeAdapterTest(unittest.TestCase):
 
         self.assertEqual([item["model_id"] for item in candidates], ["1"])
 
+    def test_discover_treats_http_error_as_retryable(self):
+        task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {
+                "items": [
+                    {"model_id": "1", "source": "cn", "status": "http_error"},
+                    {"model_id": "2", "source": "cn", "status": "not_found"},
+                ]
+            }
+        )
+        adapter = Missing3mfRuntimeAdapter(task_store=task_store)
+
+        candidates = adapter.discover({"platform": "cn"})
+
+        self.assertEqual([item["model_id"] for item in candidates], ["1"])
+
     def test_discover_filters_requested_statuses_when_present(self):
         task_store = SimpleNamespace(
             load_missing_3mf=lambda: {

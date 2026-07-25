@@ -1,13 +1,68 @@
 from __future__ import annotations
 
 import os
+import tempfile
+import time
 import unittest
+from multiprocessing import get_context
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from app.services import cloakbrowser_session
 
 
+SPAWN_CONTEXT = get_context("spawn")
+
+
+def _hold_cloakbrowser_profile_slot(
+    state_dir: str,
+    ready_queue,
+    start_event,
+    active,
+    max_active,
+    counter_lock,
+) -> None:
+    from app.services import resource_limiter
+
+    resource_limiter.STATE_DIR = Path(state_dir)
+    slot_name = cloakbrowser_session._profile_resource_name("cn", "profile-cn")
+    ready_queue.put(True)
+    start_event.wait(5)
+    with cloakbrowser_session.resource_slot(slot_name, detail="test-bridge"):
+        with counter_lock:
+            active.value += 1
+            max_active.value = max(max_active.value, active.value)
+        time.sleep(0.15)
+        with counter_lock:
+            active.value -= 1
+
+
 class CloakBrowserSessionTest(unittest.TestCase):
+    def test_spawned_bridge_operations_for_same_profile_do_not_overlap(self):
+        with tempfile.TemporaryDirectory() as state_dir:
+            ready_queue = SPAWN_CONTEXT.Queue()
+            start_event = SPAWN_CONTEXT.Event()
+            active = SPAWN_CONTEXT.Value("i", 0)
+            max_active = SPAWN_CONTEXT.Value("i", 0)
+            counter_lock = SPAWN_CONTEXT.Lock()
+            processes = [
+                SPAWN_CONTEXT.Process(
+                    target=_hold_cloakbrowser_profile_slot,
+                    args=(state_dir, ready_queue, start_event, active, max_active, counter_lock),
+                )
+                for _ in range(2)
+            ]
+            for process in processes:
+                process.start()
+            for _ in processes:
+                self.assertTrue(ready_queue.get(timeout=5))
+            start_event.set()
+            for process in processes:
+                process.join(timeout=10)
+
+            self.assertEqual([process.exitcode for process in processes], [0, 0])
+            self.assertEqual(max_active.value, 1)
+
     def test_cloakbrowser_configured_requires_internal_url_and_auth_token(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(cloakbrowser_session.cloakbrowser_configured())
@@ -335,7 +390,8 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "payload": {"name": "part.3mf", "url": "https://download.example.test/part.3mf"},
         }
 
-        with patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+        with patch.object(cloakbrowser_session, "resource_slot", create=True) as resource_slot_mock, \
+                patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
                 patch.object(cloakbrowser_session, "launch_profile", return_value=(running, False)), \
                 patch.object(cloakbrowser_session, "_run_bridge", return_value=bridge_result) as bridge_mock, \
                 patch.dict(
@@ -343,6 +399,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     {
                         "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
                         "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                        "MAKERHUB_CLOAKBROWSER_TIMEOUT": "30",
                     },
                     clear=False,
                 ):
@@ -366,6 +423,10 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(bridge_payload["instance_id"], "123")
         self.assertEqual(bridge_payload["cookies"], [])
         self.assertNotIn("raw_cookie", bridge_payload)
+        self.assertEqual(bridge_payload["navigation_timeout_ms"], 30000)
+        self.assertEqual(bridge_payload["authorization_timeout_ms"], 90000)
+        self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 150)
+        resource_slot_mock.assert_called_once_with("cloakbrowser_profile_profile-cn", detail="click")
 
     def test_browser_3mf_authorization_rejects_model_page_from_another_platform(self):
         with patch.object(cloakbrowser_session, "_run_bridge") as bridge_mock:

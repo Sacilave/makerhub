@@ -399,6 +399,7 @@ def _should_pause_three_mf_fetch(failure_info: Any) -> bool:
         "auth_required",
         "cookie_invalid",
         "download_limited",
+        "http_error",
     }
 
 
@@ -4154,8 +4155,8 @@ def fetch_instance_3mf(
             if not isinstance(exc, CloakBrowserError):
                 raise
             return "", "", candidate, {
-                "state": "verification_required",
-                "message": "无法通过指纹浏览器取得 3MF 授权，请在官网完成验证后点击“已验证”继续归档。",
+                "state": "http_error",
+                "message": "指纹浏览器暂时无法完成 3MF 授权，将稍后自动重试。",
             }
         browser_payload = browser_result.get("payload") if isinstance(browser_result.get("payload"), dict) else {}
         name, url = _extract_instance_download(browser_payload)

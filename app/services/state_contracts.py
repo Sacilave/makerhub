@@ -46,6 +46,7 @@ MISSING_3MF_STATUSES = frozenset(
         "running",
         "failed",
         "cancelled",
+        "http_error",
         "download_limited",
         "verification_required",
         "cloudflare",

@@ -56,7 +56,9 @@ def test_state_event_scopes_cover_dashboard_consumers():
 
 def test_status_sets_include_existing_values():
     assert {"queued", "running", "completed", "failed"}.issubset(state_contracts.ARCHIVE_TASK_STATUSES)
-    assert {"missing", "queued", "failed", "download_limited"}.issubset(state_contracts.MISSING_3MF_STATUSES)
+    assert {"missing", "queued", "failed", "http_error", "download_limited"}.issubset(
+        state_contracts.MISSING_3MF_STATUSES
+    )
     assert {"idle", "running", "success", "error", "disabled"}.issubset(state_contracts.REMOTE_REFRESH_STATUSES)
     assert {"queued", "running", "succeeded", "failed", "skipped", "timed_out"}.issubset(state_contracts.SOURCE_REFRESH_TASK_STATUSES)
     assert {"queued", "running", "paused", "completed", "failed", "interrupted"}.issubset(state_contracts.SOURCE_REFRESH_RUN_STATUSES)

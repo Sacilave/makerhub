@@ -332,6 +332,28 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         self.assertEqual(failure["status"], "verification_required")
         self.assertEqual(update_gate_mock.call_args.kwargs["gate"], "verification_required")
 
+    def test_browser_bridge_http_error_does_not_close_platform_gate(self):
+        missing_items = [
+            {
+                "status": "http_error",
+                "message": "指纹浏览器暂时无法完成 3MF 授权，请稍后自动重试。",
+                "instance_id": "instance-1",
+            }
+        ]
+
+        with patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
+            failure = archive_worker_module._sync_account_health_for_archive_result(
+                platform="cn",
+                model_url="https://makerworld.com.cn/zh/models/123",
+                model_id="123",
+                instance_id="instance-1",
+                missing_items=missing_items,
+                missing_3mf_retry=True,
+            )
+
+        self.assertIsNone(failure)
+        update_gate_mock.assert_not_called()
+
     def test_unchanged_browser_confirmation_gate_is_not_overwritten_by_parallel_auth_failure(self):
         missing_items = [
             {
