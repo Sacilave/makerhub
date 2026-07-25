@@ -134,6 +134,40 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
             browser_session_recovery=True,
         )
 
+    def test_task_session_refresh_adopts_the_linked_browser_cookie(self):
+        manager, store = self._manager_with_cookie("token=old; refreshToken=old")
+        browser_result = CloakBrowserSessionResult(
+            profile_id="profile-cn",
+            cookie="token=browser; refreshToken=fresh; cf_clearance=verified",
+        )
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(archive_worker_module, "collect_browser_session", return_value=browser_result):
+            refreshed, error = manager._refresh_browser_session_for_task("cn")
+
+        self.assertEqual(error, "")
+        self.assertIsNotNone(refreshed)
+        saved = store.load().cookies[0]
+        self.assertEqual(saved.cookie, browser_result.cookie)
+        self.assertEqual(saved.browser_status, "synced")
+
+    def test_task_session_refresh_rejects_a_logged_out_browser_without_using_old_cookie(self):
+        manager, store = self._manager_with_cookie("token=old; refreshToken=old")
+        browser_result = CloakBrowserSessionResult(
+            profile_id="profile-cn",
+            cookie="cf_clearance=verified",
+        )
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(archive_worker_module, "collect_browser_session", return_value=browser_result):
+            refreshed, error = manager._refresh_browser_session_for_task("cn")
+
+        self.assertIsNone(refreshed)
+        self.assertIn("尚未登录", error)
+        saved = store.load().cookies[0]
+        self.assertEqual(saved.cookie, "token=old; refreshToken=old")
+        self.assertEqual(saved.browser_status, "action_required")
+
     def test_browser_recovery_task_passes_saved_profile_to_3mf_authorization(self):
         manager, _store = self._manager_with_cookie("token=same; refreshToken=fresh")
         manager.task_store = SimpleNamespace(
@@ -145,6 +179,11 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         )
 
         with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(
+                    archive_worker_module,
+                    "collect_browser_session",
+                    return_value=CloakBrowserSessionResult(profile_id="profile-cn", cookie="token=same; refreshToken=fresh"),
+                ), \
                 patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
                 patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
                 patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": False, "state": "verification_required"}), \
@@ -181,6 +220,11 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         )
 
         with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(
+                    archive_worker_module,
+                    "collect_browser_session",
+                    return_value=CloakBrowserSessionResult(profile_id="profile-cn", cookie="token=same; refreshToken=fresh"),
+                ), \
                 patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
                 patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
                 patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": True, "state": "open"}), \
@@ -203,6 +247,47 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
 
         self.assertTrue(run_mock.call_args.kwargs["browser_three_mf_authorization"])
         self.assertEqual(run_mock.call_args.kwargs["browser_profile_id"], "profile-cn")
+
+    def test_unchanged_linked_browser_session_keeps_a_closed_three_mf_gate_closed(self):
+        manager, _store = self._manager_with_cookie("token=same; refreshToken=fresh")
+        manager.task_store = SimpleNamespace(
+            replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
+            remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
+            update_active_task=lambda *_args, **_kwargs: None,
+            complete_archive_task=lambda *_args, **_kwargs: None,
+        )
+        browser_result = CloakBrowserSessionResult(
+            profile_id="profile-cn",
+            cookie="token=same; refreshToken=fresh",
+        )
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(archive_worker_module, "collect_browser_session", return_value=browser_result), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(
+                    archive_worker_module,
+                    "three_mf_gate_for_url",
+                    return_value={"open": False, "state": "verification_required", "message": "需要浏览器确认"},
+                ), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(
+                    archive_worker_module,
+                    "run_archive_model_job",
+                    return_value={"model_id": "123", "base_name": "Demo", "work_dir": "", "missing_3mf": []},
+                ) as run_mock, \
+                patch.object(archive_worker_module, "mark_account_ok"), \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_single_task(
+                "task-browser-gated",
+                "https://makerworld.com.cn/zh/models/123",
+                {"three_mf_download": True, "source": "cn", "instance_ids": ["profile-1"]},
+            )
+
+        self.assertTrue(run_mock.call_args.kwargs["skip_three_mf_fetch"])
 
     def test_browser_recovery_task_bypasses_closed_gate_without_reopening_platform(self):
         manager = ArchiveTaskManager(background_enabled=False)

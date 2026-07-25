@@ -4,7 +4,8 @@ const STATUS_LABELS = {
   launching: "浏览器启动中",
   waiting: "等待浏览器登录",
   action_required: "需要浏览器确认",
-  account_mismatch: "浏览器账号不一致",
+  not_linked: "未关联浏览器",
+  account_mismatch: "等待浏览器同步",
   not_configured: "浏览器未配置",
 };
 
@@ -23,7 +24,7 @@ export function browserSessionStatusClass(item = {}) {
 export function browserSessionMessage(item = {}) {
   const message = String(item?.browser_message || "").trim();
   if (message) return message;
-  return "登录后会自动把 Cookie 同步到固定的指纹浏览器 profile。";
+  return "关联后，以指纹浏览器中的登录态为准。";
 }
 
 export function browserSessionBusy(item = {}) {
@@ -33,8 +34,9 @@ export function browserSessionBusy(item = {}) {
 export function shouldShowBrowserSession(item = {}, operational = {}) {
   const action = String(operational?.action || "").trim();
   const status = String(item?.browser_status || "").trim();
-  return action === "browser"
-    || ["syncing", "launching", "waiting", "action_required", "account_mismatch"].includes(status);
+  return Boolean(String(item?.browser_profile_id || "").trim())
+    || action === "browser"
+    || ["not_linked", "syncing", "launching", "waiting", "action_required", "account_mismatch"].includes(status);
 }
 
 export function resolveCloakBrowserPublicUrl(configuredUrl = "", locationLike = {}) {

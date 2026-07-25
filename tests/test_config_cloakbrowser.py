@@ -22,7 +22,7 @@ def _public_payload(config):
 
 
 class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
-    async def test_login_marks_browser_syncing_and_schedules_seed(self):
+    async def test_manual_login_stays_unlinked_and_does_not_seed_a_browser_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             login_result = {
@@ -42,7 +42,6 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "_run_online_account_login", return_value=login_result), \
                     patch.object(config_api, "cloakbrowser_configured", return_value=True), \
-                    patch.object(config_api, "_schedule_cloakbrowser_seed") as seed_mock, \
                     patch.object(config_api, "_schedule_online_account_cookie_test"), \
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value={}), \
                     patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value={}), \
@@ -55,10 +54,9 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                 )
 
             saved = store.load().cookies[0]
-            self.assertEqual(saved.browser_status, "syncing")
-            self.assertIn("正在同步", saved.browser_message)
-            self.assertEqual(payload["cookies"][0]["browser_status"], "syncing")
-            self.assertEqual(seed_mock.call_args.kwargs["cookie_items"][0]["name"], "device")
+            self.assertEqual(saved.browser_status, "not_linked")
+            self.assertIn("手工 Cookie", saved.browser_message)
+            self.assertEqual(payload["cookies"][0]["browser_status"], "not_linked")
 
     async def test_login_marks_browser_unavailable_without_auth_token(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -78,7 +76,6 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                 clear=True,
             ), patch.object(config_api, "store", store), \
                     patch.object(config_api, "_run_online_account_login", return_value=login_result), \
-                    patch.object(config_api, "_schedule_cloakbrowser_seed"), \
                     patch.object(config_api, "_schedule_online_account_cookie_test"), \
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value={}), \
                     patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value={}), \
@@ -91,6 +88,24 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(payload["cookies"][0]["browser_status"], "not_configured")
+
+    async def test_manual_login_is_rejected_before_calling_makerworld_when_browser_is_linked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [CookiePair(platform="cn", browser_profile_id="profile-cn")]
+            store.save(config)
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "run_task_api") as login_mock:
+                with self.assertRaises(config_api.HTTPException) as raised:
+                    await config_api.login_config_online_account(
+                        OnlineAccountLoginRequest(platform="cn", username="13800138000", verification_code="123456"),
+                        _request(),
+                    )
+
+            self.assertEqual(raised.exception.status_code, 409)
+            login_mock.assert_not_called()
 
     async def test_store_browser_session_updates_cookie_and_queues_follow_up(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -172,7 +187,7 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(current.browser_status, "synced")
             self.assertIn("cf_clearance=verified", current.cookie)
 
-    async def test_store_browser_session_blocks_different_account(self):
+    async def test_store_browser_session_adopts_different_browser_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             config = store.load()
@@ -193,17 +208,22 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                         return_value={"account_id": "account-b", "status": "ok"},
                     ), \
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms") as retry_mock, \
+                    patch.object(config_api.subscription_manager, "request_cookie_source_sync"), \
+                    patch.object(config_api, "_retry_verification_missing_3mf_for_platforms"), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test"), \
+                    patch.object(config_api, "_mark_online_account_checking"), \
                     patch.object(config_api, "append_business_log"), \
                     patch.object(config_api, "publish_state_event"):
                 saved, applied = config_api._store_browser_session_result("global", target, result, config.proxy)
 
             current = saved.cookies[0]
-            self.assertFalse(applied)
-            self.assertEqual(current.cookie, "token=old")
-            self.assertEqual(current.browser_status, "account_mismatch")
-            retry_mock.assert_not_called()
+            self.assertTrue(applied)
+            self.assertEqual(current.cookie, "token=other")
+            self.assertEqual(current.account_id, "account-b")
+            self.assertEqual(current.browser_status, "synced")
+            retry_mock.assert_called_once_with({"global"})
 
-    async def test_store_browser_session_blocks_cookie_when_account_identity_is_unavailable(self):
+    async def test_store_browser_session_adopts_browser_cookie_when_identity_lookup_is_unavailable(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             config = store.load()
@@ -220,16 +240,19 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "online_account_metadata_from_cookie", return_value={}), \
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms") as retry_mock, \
+                    patch.object(config_api.subscription_manager, "request_cookie_source_sync"), \
+                    patch.object(config_api, "_retry_verification_missing_3mf_for_platforms"), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test"), \
+                    patch.object(config_api, "_mark_online_account_checking"), \
                     patch.object(config_api, "append_business_log"), \
                     patch.object(config_api, "publish_state_event"):
                 saved, applied = config_api._store_browser_session_result("cn", target, result, config.proxy)
 
             current = saved.cookies[0]
-            self.assertFalse(applied)
-            self.assertEqual(current.cookie, "token=old")
-            self.assertEqual(current.browser_status, "action_required")
-            self.assertIn("无法确认", current.browser_message)
-            retry_mock.assert_not_called()
+            self.assertTrue(applied)
+            self.assertEqual(current.cookie, "token=unknown")
+            self.assertEqual(current.browser_status, "synced")
+            retry_mock.assert_called_once_with({"cn"})
 
     async def test_store_browser_session_rejects_profile_without_auth_token_without_identity_probe(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -267,7 +290,7 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             metadata_mock.assert_not_called()
             retry_mock.assert_not_called()
 
-    async def test_store_browser_session_ignores_stale_cookie_result(self):
+    async def test_store_browser_session_prefers_linked_profile_over_stale_saved_cookie(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             config = store.load()
@@ -277,13 +300,19 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             result = CloakBrowserSessionResult(profile_id="profile-cn", cookie="token=browser")
 
             with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "online_account_metadata_from_cookie", return_value={}), \
                     patch.object(config_api, "append_business_log"), \
-                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms") as retry_mock:
+                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms") as retry_mock, \
+                    patch.object(config_api.subscription_manager, "request_cookie_source_sync"), \
+                    patch.object(config_api, "_retry_verification_missing_3mf_for_platforms"), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test"), \
+                    patch.object(config_api, "_mark_online_account_checking"), \
+                    patch.object(config_api, "publish_state_event"):
                 saved, applied = config_api._store_browser_session_result("cn", target, result, config.proxy)
 
-            self.assertFalse(applied)
-            self.assertEqual(saved.cookies[0].cookie, "token=new")
-            retry_mock.assert_not_called()
+            self.assertTrue(applied)
+            self.assertEqual(saved.cookies[0].cookie, "token=browser")
+            retry_mock.assert_called_once_with({"cn"})
 
     async def test_open_browser_returns_public_url_and_starts_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -299,7 +328,7 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
 
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "cloakbrowser_configured", return_value=True), \
-                    patch.object(config_api, "prepare_browser_login", return_value=result), \
+                    patch.object(config_api, "prepare_browser_login", return_value=result) as prepare_mock, \
                     patch.object(config_api, "_schedule_cloakbrowser_monitor") as monitor_mock, \
                     patch.object(config_api, "_public_config_payload", side_effect=_public_payload), \
                     patch.object(config_api, "append_business_log"), \
@@ -309,7 +338,32 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["browser_session"]["public_url"], "https://browser.example.test")
             self.assertEqual(store.load().cookies[0].browser_profile_id, "profile-cn")
             self.assertEqual(store.load().cookies[0].browser_status, "waiting")
+            self.assertEqual(prepare_mock.call_args.args[1], "")
             monitor_mock.assert_called_once()
+
+    async def test_open_browser_creates_an_empty_browser_backed_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            result = CloakBrowserSessionResult(
+                profile_id="profile-global",
+                cookie="",
+                public_url="https://browser.example.test",
+            )
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "cloakbrowser_configured", return_value=True), \
+                    patch.object(config_api, "prepare_browser_login", return_value=result), \
+                    patch.object(config_api, "_schedule_cloakbrowser_monitor"), \
+                    patch.object(config_api, "_public_config_payload", side_effect=_public_payload), \
+                    patch.object(config_api, "append_business_log"), \
+                    patch.object(config_api, "publish_state_event"):
+                await config_api.open_config_online_account_browser("global", _request())
+
+            saved = next(item for item in store.load().cookies if item.platform == "global")
+            self.assertEqual(saved.platform, "global")
+            self.assertEqual(saved.cookie, "")
+            self.assertEqual(saved.browser_profile_id, "profile-global")
+            self.assertEqual(saved.browser_status, "waiting")
 
 
 if __name__ == "__main__":

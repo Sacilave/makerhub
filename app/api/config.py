@@ -93,7 +93,6 @@ from app.services.cloakbrowser_session import (
     cloakbrowser_configured,
     collect_browser_session,
     prepare_browser_login,
-    synchronize_browser_session,
 )
 from app.services.local_import_upload import upload_local_import_files
 from app.services.local_model_edit import (
@@ -147,8 +146,6 @@ ONLINE_ACCOUNT_TEST_LOCK = threading.Lock()
 ONLINE_ACCOUNT_TEST_RUNNING: set[str] = set()
 ONLINE_ACCOUNT_TEST_PENDING: dict[str, tuple[CookiePair, ProxyConfig]] = {}
 ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE: dict[str, str] = {}
-CLOAKBROWSER_SYNC_LOCK = threading.Lock()
-CLOAKBROWSER_SYNC_RUNNING: set[str] = set()
 CLOAKBROWSER_MONITOR_LOCK = threading.Lock()
 CLOAKBROWSER_MONITOR_RUNNING: set[str] = set()
 CLOAKBROWSER_MONITOR_TIMEOUT_SECONDS = 10 * 60
@@ -2431,8 +2428,38 @@ def _store_browser_session_result(
         raise CloakBrowserError("指纹浏览器尚未产生可用登录 Cookie。")
 
     config = store.load()
-    current = next((item for item in config.cookies if item.platform == platform), target)
-    if sanitize_cookie_header(current.cookie) != sanitize_cookie_header(target.cookie):
+    current = next((item for item in config.cookies if item.platform == platform), None)
+    if current is None:
+        append_business_log(
+            "settings",
+            "cloakbrowser_sync_stale",
+            "账号已删除，跳过过期的指纹浏览器同步结果。",
+            platform=platform,
+            profile_id=result.profile_id,
+        )
+        return config, False
+    current_profile_id = str(current.browser_profile_id or "").strip()
+    target_profile_id = str(target.browser_profile_id or "").strip()
+    result_profile_id = str(result.profile_id or "").strip()
+    if current_profile_id and result_profile_id and current_profile_id != result_profile_id:
+        append_business_log(
+            "settings",
+            "cloakbrowser_sync_stale",
+            "指纹浏览器 profile 已切换，跳过旧 profile 的同步结果。",
+            platform=platform,
+            profile_id=result.profile_id,
+        )
+        return config, False
+    if current_profile_id and target_profile_id and current_profile_id != target_profile_id:
+        append_business_log(
+            "settings",
+            "cloakbrowser_sync_stale",
+            "指纹浏览器 profile 已切换，跳过旧 profile 的同步结果。",
+            platform=platform,
+            profile_id=result.profile_id,
+        )
+        return config, False
+    if not target_profile_id and sanitize_cookie_header(current.cookie) != sanitize_cookie_header(target.cookie):
         append_business_log(
             "settings",
             "cloakbrowser_sync_stale",
@@ -2451,51 +2478,11 @@ def _store_browser_session_result(
         and candidate_token
         and hmac.compare_digest(current_token, candidate_token)
     )
-    blocked_browser_writeback = False
-    browser_status = ""
-    browser_message = ""
-    browser_event = ""
-    browser_log_message = ""
     if changed and not candidate_token:
-        blocked_browser_writeback = True
-        browser_status = "action_required"
-        browser_message = "指纹浏览器尚未登录 MakerWorld，请在浏览器内完成登录后再同步。"
-        browser_event = "cloakbrowser_login_missing"
-        browser_log_message = "指纹浏览器未发现 MakerWorld 登录 token，已保留当前 MakerHub 登录态。"
-    if changed and not same_auth_identity:
-        if not blocked_browser_writeback:
-            try:
-                account_metadata = online_account_metadata_from_cookie(
-                    platform=platform,
-                    username=current.username,
-                    cookie=candidate_cookie,
-                    proxy_config=proxy_config,
-                )
-            except Exception:
-                account_metadata = {}
-            candidate_account_id = str(account_metadata.get("account_id") or "").strip()
-            current_account_id = str(current.account_id or "").strip()
-            if current_account_id and candidate_account_id != current_account_id:
-                identity_verified = bool(candidate_account_id)
-                blocked_browser_writeback = True
-                browser_status = "account_mismatch" if identity_verified else "action_required"
-                browser_message = (
-                    "指纹浏览器登录了另一个账号，已阻止覆盖当前 MakerHub 账号。"
-                    if identity_verified
-                    else "无法确认指纹浏览器中的账号身份，已保留当前 MakerHub 登录态。"
-                )
-                browser_event = "cloakbrowser_account_mismatch" if identity_verified else "cloakbrowser_account_unverified"
-                browser_log_message = (
-                    "指纹浏览器账号与 MakerHub 当前账号不一致，已阻止 Cookie 写回。"
-                    if identity_verified
-                    else "无法确认指纹浏览器账号身份，已阻止 Cookie 写回。"
-                )
-
-    if blocked_browser_writeback:
         metadata = _browser_status_metadata(
             profile_id=result.profile_id,
-            status=browser_status,
-            message=browser_message,
+            status="action_required",
+            message="指纹浏览器尚未登录 MakerWorld，请在浏览器内完成登录后再同步。",
             synced_at=current.browser_synced_at,
         )
         config.cookies = _upsert_cookie_pair(
@@ -2511,17 +2498,28 @@ def _store_browser_session_result(
         publish_state_event(
             "online_accounts",
             "state.changed",
-            {"platform": platform, "status": browser_status},
+            {"platform": platform, "status": "action_required"},
         )
         append_business_log(
             "settings",
-            browser_event,
-            browser_log_message,
+            "cloakbrowser_login_missing",
+            "指纹浏览器未发现 MakerWorld 登录 token，归档不会使用 MakerHub 的历史 Cookie。",
             level="warning",
             platform=platform,
             profile_id=result.profile_id,
         )
         return saved, False
+
+    if changed and not same_auth_identity:
+        try:
+            account_metadata = online_account_metadata_from_cookie(
+                platform=platform,
+                username=current.username,
+                cookie=candidate_cookie,
+                proxy_config=proxy_config,
+            )
+        except Exception:
+            account_metadata = {}
 
     metadata = _preserve_account_profile_metadata(account_metadata, current)
     timestamp = _now_iso()
@@ -2554,7 +2552,7 @@ def _store_browser_session_result(
     append_business_log(
         "settings",
         "cloakbrowser_session_synced",
-        "指纹浏览器登录态已同步到 MakerHub。",
+        "已采用指纹浏览器当前登录态。",
         platform=platform,
         profile_id=result.profile_id,
         cookie_changed=changed,
@@ -2565,60 +2563,6 @@ def _store_browser_session_result(
         {"platform": platform, "status": "synced"},
     )
     return saved, True
-
-
-def _schedule_cloakbrowser_seed(
-    platform: str,
-    target: CookiePair,
-    proxy_config: ProxyConfig,
-    cookie_items: list[dict] | None = None,
-) -> None:
-    if not cloakbrowser_configured():
-        return
-    with CLOAKBROWSER_SYNC_LOCK:
-        if platform in CLOAKBROWSER_SYNC_RUNNING:
-            return
-        CLOAKBROWSER_SYNC_RUNNING.add(platform)
-    snapshot = target.model_copy(deep=True)
-    proxy_snapshot = proxy_config.model_copy(deep=True) if hasattr(proxy_config, "model_copy") else copy.deepcopy(proxy_config)
-    structured_snapshot = copy.deepcopy(cookie_items or [])
-
-    def _worker() -> None:
-        try:
-            result = synchronize_browser_session(
-                platform,
-                snapshot.cookie,
-                profile_id=snapshot.browser_profile_id,
-                structured_items=structured_snapshot,
-                proxy_config=proxy_snapshot,
-                stop_when_done=True,
-            )
-            _store_browser_session_result(platform, snapshot, result, proxy_snapshot)
-        except Exception as exc:
-            _save_browser_status(
-                platform,
-                expected_cookie=snapshot.cookie,
-                profile_id=snapshot.browser_profile_id,
-                status="action_required",
-                message=f"自动同步未完成，请打开指纹浏览器确认登录：{str(exc)[:240]}",
-            )
-            append_business_log(
-                "settings",
-                "cloakbrowser_seed_failed",
-                "MakerHub 登录态自动同步到指纹浏览器失败。",
-                level="warning",
-                platform=platform,
-                error=str(exc)[:240],
-            )
-        finally:
-            with CLOAKBROWSER_SYNC_LOCK:
-                CLOAKBROWSER_SYNC_RUNNING.discard(platform)
-
-    threading.Thread(
-        target=_worker,
-        name=f"makerhub-cloakbrowser-seed-{platform}",
-        daemon=True,
-    ).start()
 
 
 def _schedule_cloakbrowser_monitor(platform: str, target: CookiePair, proxy_config: ProxyConfig) -> None:
@@ -3366,6 +3310,12 @@ async def save_cookies(payload: list[CookiePair], request: Request):
     for item in payload:
         existing = existing_by_platform.get(item.platform)
         clean_cookie = sanitize_cookie_header(item.cookie)
+        if existing is not None and str(existing.browser_profile_id or "").strip():
+            if clean_cookie != sanitize_cookie_header(existing.cookie):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{item.platform} 已关联指纹浏览器，请从浏览器同步登录态；手工 Cookie 仅用于未关联 profile 的兼容账号。",
+                )
         metadata = {"updated_at": _now_iso()}
         if clean_cookie:
             for key in (
@@ -3475,6 +3425,13 @@ async def login_config_online_account(payload: OnlineAccountLoginRequest, reques
     _require_session_auth(request)
     config = store.load()
     platform = "global" if payload.platform == "global" else "cn"
+    existing_by_platform = {item.platform: item for item in config.cookies}
+    existing = existing_by_platform.get(platform)
+    if existing is not None and str(existing.browser_profile_id or "").strip():
+        raise HTTPException(
+            status_code=409,
+            detail="该平台已关联指纹浏览器，请在指纹浏览器中登录并同步；手工登录仅用于未关联 profile 的兼容账号。",
+        )
     try:
         login_result = await run_task_api(_run_online_account_login, payload, config.proxy)
     except OnlineAccountLoginError as exc:
@@ -3482,8 +3439,6 @@ async def login_config_online_account(payload: OnlineAccountLoginRequest, reques
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    existing_by_platform = {item.platform: item for item in config.cookies}
-    existing = existing_by_platform.get(platform)
     metadata = {
         "username": login_result.get("username") or payload.username,
         "display_name": login_result.get("display_name") or payload.username,
@@ -3500,10 +3455,8 @@ async def login_config_online_account(payload: OnlineAccountLoginRequest, reques
     if cloakbrowser_configured():
         metadata.update(
             _browser_status_metadata(
-                profile_id=str(getattr(existing, "browser_profile_id", "") or ""),
-                status="syncing",
-                message="账号已保存，正在同步到指纹浏览器。",
-                synced_at=str(getattr(existing, "browser_synced_at", "") or ""),
+                status="not_linked",
+                message="当前使用 MakerHub 手工 Cookie。关联指纹浏览器后，浏览器会话将成为唯一登录态。",
             )
         )
     else:
@@ -3533,12 +3486,6 @@ async def login_config_online_account(payload: OnlineAccountLoginRequest, reques
     retry_result = subscription_manager.retry_error_subscriptions_for_platforms({platform})
     cookie_sources_result = subscription_manager.request_cookie_source_sync({platform}, reason="online_account_login")
     _schedule_online_account_cookie_test(platform, pair, saved.proxy)
-    _schedule_cloakbrowser_seed(
-        platform,
-        pair,
-        saved.proxy,
-        cookie_items=login_result.get("cookie_items") or [],
-    )
     response = _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
     response["subscription_retry"] = retry_result
     response["cookie_source_sync"] = cookie_sources_result
@@ -3699,10 +3646,12 @@ async def open_config_online_account_browser(platform: str, request: Request):
     clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
     config = store.load()
     target = next((item for item in config.cookies if item.platform == clean_platform), None)
-    if target is None or not sanitize_cookie_header(target.cookie):
-        raise HTTPException(status_code=400, detail="请先在 MakerHub 保存这个平台的账号。")
     if not cloakbrowser_configured():
         raise HTTPException(status_code=503, detail="指纹浏览器服务未配置。")
+    if target is None:
+        target = CookiePair(platform=clean_platform)
+        config.cookies = _upsert_cookie_pair(config.cookies, target)
+        config = store.save(config)
 
     _save_browser_status(
         clean_platform,
@@ -3715,7 +3664,7 @@ async def open_config_online_account_browser(platform: str, request: Request):
         result = await run_task_api(
             prepare_browser_login,
             clean_platform,
-            target.cookie,
+            "",
             profile_id=target.browser_profile_id,
             proxy_config=config.proxy,
         )
@@ -3762,8 +3711,8 @@ async def sync_config_online_account_browser(platform: str, request: Request):
     clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
     config = store.load()
     target = next((item for item in config.cookies if item.platform == clean_platform), None)
-    if target is None or not sanitize_cookie_header(target.cookie):
-        raise HTTPException(status_code=400, detail="请先在 MakerHub 保存这个平台的账号。")
+    if target is None:
+        raise HTTPException(status_code=400, detail="请先打开指纹浏览器并完成该平台登录。")
     if not target.browser_profile_id:
         raise HTTPException(status_code=400, detail="这个平台还没有关联指纹浏览器 profile。")
 
@@ -3792,8 +3741,9 @@ async def sync_config_online_account_browser(platform: str, request: Request):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     current = next((item for item in saved.cookies if item.platform == clean_platform), target)
-    _mark_online_account_checking(clean_platform, source="cloakbrowser_manual_sync")
-    _schedule_online_account_cookie_test(clean_platform, current, saved.proxy)
+    if applied:
+        _mark_online_account_checking(clean_platform, source="cloakbrowser_manual_sync")
+        _schedule_online_account_cookie_test(clean_platform, current, saved.proxy)
     response = _public_config_payload(saved)
     response["browser_session"] = {
         "platform": clean_platform,

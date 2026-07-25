@@ -28,7 +28,7 @@
             <span class="eyebrow">线上账号</span>
             <h2>平台账号</h2>
           </div>
-          <button class="button button-primary button-small" type="button" @click="openAccountDialog">
+          <button class="button button-primary button-small" type="button" @click="openAccountDialog('cn', 'browser')">
             添加账号
           </button>
         </div>
@@ -71,6 +71,24 @@
             </div>
             <div class="online-account-item__actions">
               <button
+                v-if="item.browser_profile_id || item.showBrowserSession"
+                class="button button-primary button-small"
+                type="button"
+                :disabled="item.browserBusy || item.browser_status === 'not_configured' || testing[`browser_open_${item.platform}`]"
+                @click="openSavedAccountBrowser(item)"
+              >
+                {{ testing[`browser_open_${item.platform}`] ? "启动中..." : "打开浏览器" }}
+              </button>
+              <button
+                v-if="item.browser_profile_id || item.showBrowserSession"
+                class="button button-secondary button-small"
+                type="button"
+                :disabled="item.browserBusy || !item.browser_profile_id || testing[`browser_sync_${item.platform}`]"
+                @click="syncSavedAccountBrowser(item)"
+              >
+                {{ testing[`browser_sync_${item.platform}`] ? "读取中..." : "从浏览器同步" }}
+              </button>
+              <button
                 class="button button-secondary button-small"
                 type="button"
                 :disabled="testing[`cookie_${item.platform}`]"
@@ -87,29 +105,12 @@
                 {{ testing[`sync_${item.platform}`] ? "同步中..." : "同步" }}
               </button>
               <button
-                :class="['button', item.primaryAction === 'login' ? 'button-primary' : 'button-secondary', 'button-small']"
-                type="button"
-                @click="openAccountDialog(item.platform)"
-              >
-                重新登录
-              </button>
-              <button
-                v-if="item.showBrowserSession"
-                :class="['button', item.primaryAction === 'browser' ? 'button-primary' : 'button-secondary', 'button-small']"
-                type="button"
-                :disabled="item.browserBusy || item.browser_status === 'not_configured' || testing[`browser_open_${item.platform}`]"
-                @click="openSavedAccountBrowser(item)"
-              >
-                {{ testing[`browser_open_${item.platform}`] ? "启动中..." : "打开浏览器" }}
-              </button>
-              <button
-                v-if="item.showBrowserSession"
+                v-if="!item.browser_profile_id"
                 class="button button-secondary button-small"
                 type="button"
-                :disabled="item.browserBusy || !item.browser_profile_id || testing[`browser_sync_${item.platform}`]"
-                @click="syncSavedAccountBrowser(item)"
+                @click="openAccountDialog(item.platform, 'manual')"
               >
-                {{ testing[`browser_sync_${item.platform}`] ? "读取中..." : "从浏览器同步" }}
+                手工登录（兼容）
               </button>
               <button class="button button-danger button-small" type="button" @click="deleteAccount(item.platform)">
                 删除
@@ -130,8 +131,24 @@
         @click="closeAccountDialog"
       >
         <div class="submit-dialog__panel token-create-dialog__panel" @click.stop>
-          <h2 id="account-create-dialog-title">添加线上账号</h2>
-          <form class="token-create-dialog__form" @submit.prevent="submitAccountLogin">
+          <h2 id="account-create-dialog-title">{{ accountDialog.mode === "browser" ? "关联指纹浏览器" : "手工登录（兼容）" }}</h2>
+          <form class="token-create-dialog__form" @submit.prevent="submitAccountDialog">
+            <div class="online-account-login-mode" role="group" aria-label="账号登录方式">
+              <button
+                :class="['button', accountDialog.mode === 'browser' ? 'button-primary' : 'button-secondary', 'button-small']"
+                type="button"
+                @click="setAccountDialogMode('browser')"
+              >
+                指纹浏览器
+              </button>
+              <button
+                :class="['button', accountDialog.mode === 'manual' ? 'button-primary' : 'button-secondary', 'button-small']"
+                type="button"
+                @click="setAccountDialogMode('manual')"
+              >
+                手工登录（兼容）
+              </button>
+            </div>
             <label class="field-card">
               <span>平台</span>
               <select v-model="accountDialog.platform">
@@ -139,40 +156,45 @@
                 <option value="global">MakerWorld 国际</option>
               </select>
             </label>
-            <label class="field-card">
-              <span>{{ accountLoginLabel }}</span>
-              <input
-                v-model.trim="accountDialog.username"
-                :type="accountLoginInputType"
-                :autocomplete="accountLoginAutocomplete"
-                :inputmode="accountLoginInputMode"
-                :placeholder="accountLoginPlaceholder"
-              >
-            </label>
-            <label class="field-card">
-              <span>验证码</span>
-              <div class="online-account-code-field">
-                <input v-model.trim="accountDialog.verification_code" type="text" autocomplete="one-time-code" inputmode="numeric" maxlength="8" :placeholder="accountCodePlaceholder">
-                <button
-                  class="button button-secondary button-small"
-                  type="button"
-                  :disabled="accountDialog.saving || accountDialog.sendingCode || accountDialog.codeCountdown > 0"
-                  @click="sendAccountSmsCode"
+            <template v-if="accountDialog.mode === 'manual'">
+              <label class="field-card">
+                <span>{{ accountLoginLabel }}</span>
+                <input
+                  v-model.trim="accountDialog.username"
+                  :type="accountLoginInputType"
+                  :autocomplete="accountLoginAutocomplete"
+                  :inputmode="accountLoginInputMode"
+                  :placeholder="accountLoginPlaceholder"
                 >
-                  {{ accountDialog.codeCountdown > 0 ? `${accountDialog.codeCountdown}s` : (accountDialog.sendingCode ? "发送中..." : "发送验证码") }}
-                </button>
-              </div>
-            </label>
-            <label class="online-account-consent">
-              <input v-model="accountDialog.consent" type="checkbox">
-              <span>我已阅读并同意用户协议和隐私政策。</span>
-            </label>
-            <p class="archive-form__hint">{{ accountLoginHint }}</p>
+              </label>
+              <label class="field-card">
+                <span>验证码</span>
+                <div class="online-account-code-field">
+                  <input v-model.trim="accountDialog.verification_code" type="text" autocomplete="one-time-code" inputmode="numeric" maxlength="8" :placeholder="accountCodePlaceholder">
+                  <button
+                    class="button button-secondary button-small"
+                    type="button"
+                    :disabled="accountDialog.saving || accountDialog.sendingCode || accountDialog.codeCountdown > 0"
+                    @click="sendAccountSmsCode"
+                  >
+                    {{ accountDialog.codeCountdown > 0 ? `${accountDialog.codeCountdown}s` : (accountDialog.sendingCode ? "发送中..." : "发送验证码") }}
+                  </button>
+                </div>
+              </label>
+              <label class="online-account-consent">
+                <input v-model="accountDialog.consent" type="checkbox">
+                <span>我已阅读并同意用户协议和隐私政策。</span>
+              </label>
+              <p class="archive-form__hint">{{ accountLoginHint }}</p>
+            </template>
+            <template v-else>
+              <p class="archive-form__hint">打开固定 profile 后，在浏览器内完成 MakerWorld 登录。MakerHub 会自动采用该浏览器的登录态，不会再写入本地 Cookie。</p>
+            </template>
             <p v-if="accountDialog.error" class="form-status is-error">{{ accountDialog.error }}</p>
             <div class="submit-dialog__actions">
               <button class="button button-secondary" type="button" :disabled="accountDialog.saving" @click="closeAccountDialog">取消</button>
               <button class="button button-primary" type="submit" :disabled="accountDialog.saving">
-                {{ accountDialog.saving ? "登录中..." : "确定" }}
+                {{ accountDialog.saving ? "处理中..." : (accountDialog.mode === "browser" ? "打开浏览器" : "确定") }}
               </button>
             </div>
           </form>
@@ -945,6 +967,7 @@ const proxyForm = reactive({
   https_proxy: "",
 });
 const accountDialog = reactive({
+  mode: "browser",
   platform: "cn",
   username: "",
   password: "",
@@ -1098,6 +1121,15 @@ const onlineAccountItems = computed(() => {
       const sourceSync = syncStateByPlatform[item.platform];
       const operational = accountHealthByPlatform[item.platform] || {};
       const operationalView = accountOperationalView(operational);
+      const browserManaged = Boolean(String(mergedItem.browser_profile_id || "").trim());
+      const displayView = browserManaged
+        ? {
+          label: browserSessionStatusLabel(mergedItem),
+          statusClass: browserSessionStatusClass(mergedItem),
+          message: browserSessionMessage(mergedItem),
+          action: "browser",
+        }
+        : operationalView;
       const sourceStats = accountSourceStats(
         sourceInventory,
         sourceSync,
@@ -1109,16 +1141,16 @@ const onlineAccountItems = computed(() => {
         displayName,
         avatarFallback: accountAvatarFallback(mergedItem, displayName),
         platformLabel: accountPlatformLabel(item.platform),
-        statusLabel: operationalView.label,
-        statusClass: operationalView.statusClass,
+        statusLabel: displayView.label,
+        statusClass: displayView.statusClass,
         updatedText: formatAccountDate(item.updated_at || item.last_login_at || item.last_tested_at),
-        message: operationalView.message,
-        primaryAction: operationalView.action,
+        message: displayView.message,
+        primaryAction: displayView.action,
         browserStatusLabel: browserSessionStatusLabel(mergedItem),
         browserStatusClass: browserSessionStatusClass(mergedItem),
         browserMessage: browserSessionMessage(mergedItem),
         browserBusy: browserSessionBusy(mergedItem),
-        showBrowserSession: shouldShowBrowserSession(mergedItem, operational),
+        showBrowserSession: !browserManaged && shouldShowBrowserSession(mergedItem, operational),
         ...sourceStats,
       };
     });
@@ -1135,8 +1167,8 @@ const accountLoginInputMode = computed(() => isGlobalAccountDialog.value ? "emai
 const accountLoginPlaceholder = computed(() => isGlobalAccountDialog.value ? "请输入邮箱地址" : "请输入手机号");
 const accountCodePlaceholder = computed(() => isGlobalAccountDialog.value ? "邮箱验证码" : "短信验证码");
 const accountLoginHint = computed(() => isGlobalAccountDialog.value
-  ? "提交后会使用邮箱验证码登录国际站，保存 Cookie，并自动同步到固定的指纹浏览器 profile。"
-  : "提交后会使用短信验证码登录国区，保存 Cookie，并自动同步到固定的指纹浏览器 profile。");
+  ? "兼容模式会使用邮箱验证码登录国际站，并保存 MakerHub Cookie。关联指纹浏览器后，以浏览器会话为准。"
+  : "兼容模式会使用短信验证码登录国区，并保存 MakerHub Cookie。关联指纹浏览器后，以浏览器会话为准。");
 const systemUpdateStatusLabel = computed(() => {
   const labelMap = {
     idle: "空闲",
@@ -1689,7 +1721,8 @@ async function applyRuntimeResources() {
   await runSystemUpdate("这会按当前容器进程设置重建 App / Worker 容器，页面会短暂不可用。确定继续吗？");
 }
 
-function resetAccountDialog(platform = "cn") {
+function resetAccountDialog(platform = "cn", mode = "browser") {
+  accountDialog.mode = mode === "manual" ? "manual" : "browser";
   accountDialog.platform = platform === "global" ? "global" : "cn";
   accountDialog.username = "";
   accountDialog.password = "";
@@ -1701,9 +1734,14 @@ function resetAccountDialog(platform = "cn") {
   clearAccountCodeTimer();
 }
 
-function openAccountDialog(platform = "cn") {
-  resetAccountDialog(platform);
+function openAccountDialog(platform = "cn", mode = "browser") {
+  resetAccountDialog(platform, mode);
   accountDialogOpen.value = true;
+}
+
+function setAccountDialogMode(mode) {
+  accountDialog.mode = mode === "manual" ? "manual" : "browser";
+  accountDialog.error = "";
 }
 
 function closeAccountDialog() {
@@ -1805,6 +1843,14 @@ async function submitAccountLogin() {
   }
 }
 
+async function submitAccountDialog() {
+  if (accountDialog.mode === "browser") {
+    await openBrowserAccount(accountDialog.platform, { closeDialog: true });
+    return;
+  }
+  await submitAccountLogin();
+}
+
 async function testSavedAccount(platform) {
   const key = platform === "global" ? "cookie_global" : "cookie_cn";
   testing[key] = true;
@@ -1841,17 +1887,21 @@ async function syncSavedAccount(platform) {
   }
 }
 
-async function openSavedAccountBrowser(item) {
-  const platform = item?.platform === "global" ? "global" : "cn";
-  const key = `browser_open_${platform}`;
+async function openBrowserAccount(platform, { closeDialog = false } = {}) {
+  const cleanPlatform = platform === "global" ? "global" : "cn";
+  const key = `browser_open_${cleanPlatform}`;
   testing[key] = true;
+  if (closeDialog) {
+    accountDialog.saving = true;
+    accountDialog.error = "";
+  }
   statuses.accounts = "";
   const popup = window.open("about:blank", "_blank");
   if (popup) {
     popup.opener = null;
   }
   try {
-    const payload = await apiRequest(`/api/config/online-accounts/${encodeURIComponent(platform)}/browser/open`, {
+    const payload = await apiRequest(`/api/config/online-accounts/${encodeURIComponent(cleanPlatform)}/browser/open`, {
       method: "POST",
     });
     applyConfigPayload(payload);
@@ -1863,14 +1913,30 @@ async function openSavedAccountBrowser(item) {
       window.open(publicUrl, "_blank", "noopener,noreferrer");
     }
     statuses.accounts = payload?.browser_session?.message || "指纹浏览器已打开，登录完成后会自动同步。";
+    if (closeDialog) {
+      accountDialogOpen.value = false;
+      resetAccountDialog(cleanPlatform);
+    }
   } catch (error) {
     if (popup) {
       popup.close();
     }
-    statuses.accounts = error instanceof Error ? error.message : "指纹浏览器启动失败。";
+    const message = error instanceof Error ? error.message : "指纹浏览器启动失败。";
+    if (closeDialog) {
+      accountDialog.error = message;
+    } else {
+      statuses.accounts = message;
+    }
   } finally {
     testing[key] = false;
+    if (closeDialog) {
+      accountDialog.saving = false;
+    }
   }
+}
+
+async function openSavedAccountBrowser(item) {
+  await openBrowserAccount(item?.platform);
 }
 
 async function syncSavedAccountBrowser(item) {

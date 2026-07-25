@@ -1,4 +1,3 @@
-import hmac
 import os
 import re
 import threading
@@ -15,7 +14,7 @@ from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR, S
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.cloakbrowser_session import CloakBrowserError, cloakbrowser_configured, collect_browser_session
-from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
+from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.batch_discovery import (
     extract_model_id,
     normalize_model_url,
@@ -795,7 +794,11 @@ class ArchiveTaskManager:
             return None
 
         current_cookie = sanitize_cookie_header(current.cookie)
-        if current_cookie != sanitize_cookie_header(expected_cookie):
+        expected_profile_id = str(profile_id or "").strip()
+        current_profile_id = str(current.browser_profile_id or "").strip()
+        if expected_profile_id and current_profile_id and current_profile_id != expected_profile_id:
+            return None
+        if not current_profile_id and current_cookie != sanitize_cookie_header(expected_cookie):
             return None
 
         next_cookie = sanitize_cookie_header(cookie) or current_cookie
@@ -831,6 +834,69 @@ class ArchiveTaskManager:
         )
         return next((item for item in saved.cookies if item.platform == platform), next_pair)
 
+    def _refresh_browser_session_for_task(self, platform: str) -> tuple[object | None, str]:
+        normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        try:
+            config = self.store.load()
+            current = next((item for item in config.cookies if item.platform == normalized_platform), None)
+        except Exception as exc:
+            return None, f"读取账号配置失败：{str(exc)[:240]}"
+        if current is None:
+            return None, "未找到对应平台的账号配置。"
+
+        profile_id = str(current.browser_profile_id or "").strip()
+        if not profile_id:
+            return current, ""
+
+        expected_cookie = sanitize_cookie_header(current.cookie)
+        if not cloakbrowser_configured():
+            self._persist_browser_recovery_session(
+                normalized_platform,
+                expected_cookie=expected_cookie,
+                cookie=expected_cookie,
+                profile_id=profile_id,
+                status="action_required",
+                message="已关联指纹浏览器，但浏览器服务未配置；归档不会使用历史 Cookie。",
+            )
+            return None, "已关联指纹浏览器，但浏览器服务未配置。"
+
+        try:
+            browser_result = collect_browser_session(normalized_platform, profile_id)
+        except CloakBrowserError as exc:
+            self._persist_browser_recovery_session(
+                normalized_platform,
+                expected_cookie=expected_cookie,
+                cookie=expected_cookie,
+                profile_id=profile_id,
+                status="action_required",
+                message=f"无法读取指纹浏览器登录态：{str(exc)[:240]}",
+            )
+            return None, f"无法读取关联的指纹浏览器登录态：{str(exc)[:240]}"
+
+        browser_cookie = sanitize_cookie_header(browser_result.cookie)
+        if not extract_auth_token(browser_cookie):
+            self._persist_browser_recovery_session(
+                normalized_platform,
+                expected_cookie=expected_cookie,
+                cookie=expected_cookie,
+                profile_id=browser_result.profile_id or profile_id,
+                status="action_required",
+                message="请先在关联的指纹浏览器中完成 MakerWorld 登录；归档不会使用历史 Cookie。",
+            )
+            return None, "关联的指纹浏览器尚未登录 MakerWorld，请完成浏览器登录后重试。"
+
+        saved = self._persist_browser_recovery_session(
+            normalized_platform,
+            expected_cookie=expected_cookie,
+            cookie=browser_cookie,
+            profile_id=browser_result.profile_id or profile_id,
+            status="synced",
+            message="已采用关联指纹浏览器的当前登录态。",
+        )
+        if saved is None:
+            return None, "指纹浏览器 profile 已切换，未采用旧 profile 的登录态。"
+        return saved, ""
+
     def _recover_browser_session_for_three_mf_gate(self, platform: str, *, primary: Optional[dict] = None) -> dict[str, str]:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
         if normalized_platform not in {"cn", "global"}:
@@ -843,8 +909,8 @@ class ArchiveTaskManager:
             current = next((item for item in config.cookies if item.platform == normalized_platform), None)
         except Exception as exc:
             return {"outcome": "error", "message": str(exc)[:240]}
-        if current is None or not sanitize_cookie_header(current.cookie):
-            return {"outcome": "skipped", "message": "当前平台没有可检查的 Cookie。"}
+        if current is None:
+            return {"outcome": "skipped", "message": "当前平台没有账号配置。"}
         if not current.browser_profile_id:
             return {"outcome": "skipped", "message": "当前平台未关联指纹浏览器 profile。"}
 
@@ -864,7 +930,6 @@ class ArchiveTaskManager:
 
         browser_cookie = sanitize_cookie_header(browser_result.cookie)
         browser_token = extract_auth_token(browser_cookie)
-        current_token = extract_auth_token(expected_cookie)
         if not browser_token:
             self._persist_browser_recovery_session(
                 normalized_platform,
@@ -872,19 +937,9 @@ class ArchiveTaskManager:
                 cookie=expected_cookie,
                 profile_id=browser_result.profile_id,
                 status="action_required",
-                message="指纹浏览器尚未登录 MakerWorld，已保留 MakerHub 当前登录态。",
+                message="指纹浏览器尚未登录 MakerWorld，归档不会使用 MakerHub 的历史 Cookie。",
             )
             return {"outcome": "not_logged_in", "message": "指纹浏览器未发现 MakerWorld 登录 token。"}
-        if not current_token or not hmac.compare_digest(current_token, browser_token):
-            self._persist_browser_recovery_session(
-                normalized_platform,
-                expected_cookie=expected_cookie,
-                cookie=expected_cookie,
-                profile_id=browser_result.profile_id,
-                status="account_mismatch",
-                message="指纹浏览器登录态与 MakerHub 当前账号不一致，已阻止自动覆盖。",
-            )
-            return {"outcome": "account_mismatch", "message": "浏览器 token 与当前账号不一致。"}
 
         if browser_cookie == expected_cookie:
             self._persist_browser_recovery_session(
@@ -3489,15 +3544,32 @@ class ArchiveTaskManager:
         )
 
     def _run_single_task(self, task_id: str, url: str, meta: Optional[dict] = None) -> None:
+        meta = meta if isinstance(meta, dict) else {}
         config = self.store.load()
+        browser_platform = normalize_makerworld_source(meta.get("source"), url)
+        browser_account = next(
+            (
+                item
+                for item in getattr(config, "cookies", []) or []
+                if str(getattr(item, "platform", "") or "").strip() == browser_platform
+            ),
+            None,
+        )
+        browser_session_changed = False
+        if browser_account is not None and str(getattr(browser_account, "browser_profile_id", "") or "").strip():
+            refreshed_account, refresh_error = self._refresh_browser_session_for_task(browser_platform)
+            if refresh_error:
+                raise RuntimeError(refresh_error)
+            browser_session_changed = parse_cookie_values(
+                getattr(refreshed_account, "cookie", "") or ""
+            ) != parse_cookie_values(getattr(browser_account, "cookie", "") or "")
+            config = self.store.load()
         cookie = _select_cookie(url, config)
         if not cookie:
-            raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
+            raise RuntimeError("未找到可用登录态，请在设置页完成指纹浏览器登录或配置兼容 Cookie。")
 
-        meta = meta if isinstance(meta, dict) else {}
         missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
         three_mf_download_task = bool(meta.get("three_mf_download"))
-        browser_session_recovery = bool(meta.get("browser_session_recovery"))
         browser_platform = normalize_makerworld_source(meta.get("source"), url)
         browser_profile_id = next(
             (
@@ -3510,6 +3582,7 @@ class ArchiveTaskManager:
         browser_three_mf_authorization = bool(
             browser_profile_id and cloakbrowser_configured()
         )
+        browser_session_recovery = bool(meta.get("browser_session_recovery")) or browser_session_changed
         instance_ids = _clean_instance_ids(meta.get("instance_ids"))
         archive_instance_ids = instance_ids if three_mf_download_task else []
         asset_lightweight_task = missing_3mf_retry or three_mf_download_task

@@ -21,7 +21,7 @@ test("browser session status maps operational states", () => {
 
 test("browser session message has a stable fallback", () => {
   assert.equal(browserSessionMessage({ browser_message: "已同步" }), "已同步");
-  assert.match(browserSessionMessage({}), /自动把 Cookie 同步/);
+  assert.match(browserSessionMessage({}), /指纹浏览器/);
 });
 
 test("unlinked browser is hidden for an archive-ready account", () => {
@@ -30,6 +30,11 @@ test("unlinked browser is hidden for an archive-ready account", () => {
 
 test("browser state is shown when verification requires browser recovery", () => {
   assert.equal(shouldShowBrowserSession({}, { action: "browser" }), true);
+});
+
+test("unlinked browser is visible for a manual compatibility account", () => {
+  assert.equal(browserSessionStatusLabel({ browser_status: "not_linked" }), "未关联浏览器");
+  assert.equal(shouldShowBrowserSession({ browser_status: "not_linked" }, { action: "none" }), true);
 });
 
 test("public URL uses configured value or current host port 9050", () => {

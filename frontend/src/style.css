@@ -348,6 +348,12 @@ html[data-theme="dark"] .mw-attachment-upload__drop-copy em {
   gap: 6px;
 }
 
+.online-account-login-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .online-account-overview span {
   display: inline-flex;
   align-items: center;
