@@ -79,6 +79,11 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertIn("return { Authorization: `Bearer ${token}` }", source)
         self.assertRegex(source, r"fetch\([^;]+\{ headers \}\)")
         self.assertRegex(source, r"puppeteer\.connect\(\{[\s\S]+?headers,")
+        self.assertIn('if (input.action === "click")', source)
+        self.assertIn("await button.click({ delay: 20 })", source)
+        self.assertIn("authorizationResponseMatches(response, instanceId)", source)
+        self.assertIn("await page.close().catch(() => undefined)", source)
+        self.assertNotIn("async function fetchAuthorization", source)
 
     def test_ensure_profile_reuses_saved_profile_id(self):
         with patch.object(
@@ -312,7 +317,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(bridge_payload["action"], "snapshot")
         self.assertEqual(bridge_payload["target_url"], "https://makerworld.com.cn/zh")
 
-    def test_browser_3mf_authorization_uses_profile_context_without_cookie_payload(self):
+    def test_browser_3mf_authorization_uses_target_page_click_without_cookie_payload(self):
         profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")
         running = cloakbrowser_session.CloakBrowserProfile(
             id="profile-cn",
@@ -340,15 +345,35 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 "cn",
                 "https://api.bambulab.cn/v1/design-service/instance/123/f3mf?type=download&fileType=3mf",
                 profile_id="profile-cn",
+                model_url="https://makerworld.com.cn/zh/models/456",
+                instance_id="123",
             )
 
         self.assertEqual(result["status_code"], 200)
         self.assertEqual(result["payload"]["name"], "part.3mf")
         bridge_payload = bridge_mock.call_args.args[0]
-        self.assertEqual(bridge_payload["action"], "fetch")
+        self.assertEqual(bridge_payload["action"], "click")
         self.assertEqual(bridge_payload["platform"], "cn")
+        self.assertEqual(
+            bridge_payload["model_url"],
+            "https://makerworld.com.cn/zh/models/456#profileId-123",
+        )
+        self.assertEqual(bridge_payload["instance_id"], "123")
         self.assertEqual(bridge_payload["cookies"], [])
         self.assertNotIn("raw_cookie", bridge_payload)
+
+    def test_browser_3mf_authorization_rejects_model_page_from_another_platform(self):
+        with patch.object(cloakbrowser_session, "_run_bridge") as bridge_mock:
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "模型页面"):
+                cloakbrowser_session.browser_authorize_3mf_download(
+                    "cn",
+                    "https://api.bambulab.cn/v1/design-service/instance/123/f3mf?type=download&fileType=3mf",
+                    profile_id="profile-cn",
+                    model_url="https://makerworld.com/zh/models/456",
+                    instance_id="123",
+                )
+
+        bridge_mock.assert_not_called()
 
     def test_browser_3mf_authorization_rejects_non_makerworld_endpoint_before_bridge(self):
         with patch.object(cloakbrowser_session, "_run_bridge") as bridge_mock:

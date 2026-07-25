@@ -4081,11 +4081,24 @@ def _browser_three_mf_authorization_failure(
     return failure
 
 
-def browser_authorize_3mf_download(platform: str, api_url: str, *, profile_id: str) -> dict:
+def browser_authorize_3mf_download(
+    platform: str,
+    api_url: str,
+    *,
+    profile_id: str,
+    model_url: str = "",
+    instance_id: str = "",
+) -> dict:
     # Import lazily because cloakbrowser_session reaches legacy_archiver through account discovery.
     from app.services.cloakbrowser_session import browser_authorize_3mf_download as authorize
 
-    return authorize(platform, api_url, profile_id=profile_id)
+    return authorize(
+        platform,
+        api_url,
+        profile_id=profile_id,
+        model_url=model_url,
+        instance_id=instance_id,
+    )
 
 
 def fetch_instance_3mf(
@@ -4098,6 +4111,7 @@ def fetch_instance_3mf(
     captcha_result_header: str = "",
     browser_authorization: bool = False,
     browser_profile_id: str = "",
+    model_page_url: str = "",
 ):
     """
     获取实例的 3MF 下载地址，允许外部传入 api_url，并自动回退不同 API Host。
@@ -4131,6 +4145,8 @@ def fetch_instance_3mf(
                 source_hint or normalize_makerworld_source(url=candidate),
                 candidate,
                 profile_id=browser_profile_id,
+                model_url=model_page_url or origin or "",
+                instance_id=str(inst_id or ""),
             )
         except Exception as exc:
             from app.services.cloakbrowser_session import CloakBrowserError
@@ -6734,6 +6750,7 @@ def archive_model(
                 captcha_result_header=three_mf_captcha_result_header,
                 browser_authorization=browser_three_mf_authorization,
                 browser_profile_id=browser_profile_id,
+                model_page_url=fetch_url,
             )
             if url3mf:
                 fetched_hint_hits += 1
@@ -6794,6 +6811,7 @@ def archive_model(
                     captcha_result_header=three_mf_captcha_result_header,
                     browser_authorization=browser_three_mf_authorization,
                     browser_profile_id=browser_profile_id,
+                    model_page_url=fetch_url,
                 )
                 if url3mf:
                     fetched_hint_hits += 1

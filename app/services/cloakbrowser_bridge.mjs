@@ -80,11 +80,14 @@ async function storageSnapshot(page) {
   }
 }
 
-function isMakerWorldPage(page, platform) {
+function isMakerWorldModelUrl(value, platform) {
   try {
-    const hostname = new URL(page.url()).hostname.toLowerCase();
+    const parsed = new URL(String(value || ""));
+    const hostname = parsed.hostname.toLowerCase();
     const domain = platform === "global" ? "makerworld.com" : "makerworld.com.cn";
-    return hostname === domain || hostname.endsWith(`.${domain}`);
+    return parsed.protocol === "https:"
+      && (hostname === domain || hostname.endsWith(`.${domain}`))
+      && /\/models\/\d+/i.test(parsed.pathname);
   } catch {
     return false;
   }
@@ -109,38 +112,6 @@ function isThreeMfAuthorizationUrl(value) {
   }
 }
 
-async function pageForAuthorization(context, platform, navigationTimeoutMs) {
-  const pages = await context.pages();
-  const existing = pages.find((page) => isMakerWorldPage(page, platform));
-  if (existing) return existing;
-  const page = pages[0] || await context.newPage();
-  const domain = platform === "global" ? "makerworld.com" : "makerworld.com.cn";
-  await page.goto(`https://${domain}/zh`, {
-    waitUntil: "domcontentloaded",
-    timeout: Math.max(Number(navigationTimeoutMs || 30000), 15000),
-  });
-  return page;
-}
-
-async function browserAuthorizationToken(page) {
-  try {
-    return await page.evaluate(() => {
-      const tokenNames = new Set(["token", "accesstoken", "access_token"]);
-      for (const storage of [window.localStorage, window.sessionStorage]) {
-        for (let index = 0; index < storage.length; index += 1) {
-          const key = storage.key(index);
-          if (!key || !tokenNames.has(key.toLowerCase())) continue;
-          const value = storage.getItem(key);
-          if (typeof value === "string" && value) return value;
-        }
-      }
-      return "";
-    });
-  } catch {
-    return "";
-  }
-}
-
 function sanitizedAuthorizationPayload(payload, text) {
   const body = payload && typeof payload === "object" ? payload : {};
   const data = body.data && typeof body.data === "object"
@@ -158,47 +129,65 @@ function sanitizedAuthorizationPayload(payload, text) {
   };
 }
 
-async function fetchAuthorization(page, targetUrl) {
-  if (!isThreeMfAuthorizationUrl(targetUrl)) {
-    throw new Error("invalid 3MF authorization URL");
-  }
-  const authToken = await browserAuthorizationToken(page);
-  const response = await page.evaluate(async ({ url, token }) => {
-    const headers = { Accept: "application/json, text/plain, */*" };
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-      headers.token = token;
-      headers["X-Token"] = token;
-      headers["X-Access-Token"] = token;
-    }
-    try {
-      const response = await fetch(url, {
-        credentials: "include",
-        headers,
-        cache: "no-store",
+function authorizationResponseMatches(response, instanceId) {
+  if (!isThreeMfAuthorizationUrl(response.url())) return false;
+  const matched = response.url().match(/\/instance\/(\d+)\/f3mf/i);
+  return !instanceId || matched?.[1] === String(instanceId);
+}
+
+async function findThreeMfDownloadButton(page, timeoutMs) {
+  const deadline = Date.now() + Math.max(Number(timeoutMs || 30000), 15000);
+  while (Date.now() < deadline) {
+    const handles = await page.$$("button, a, [role='button']");
+    for (const handle of handles) {
+      const matches = await handle.evaluate((element) => {
+        const style = window.getComputedStyle(element);
+        const text = String(element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+        return style.display !== "none"
+          && style.visibility !== "hidden"
+          && element.getBoundingClientRect().width > 0
+          && element.getBoundingClientRect().height > 0
+          && !element.hasAttribute("disabled")
+          && /(?:下载|download)\s*3mf/i.test(text);
       });
-      return {
-        status_code: response.status,
-        text: (await response.text()).slice(0, 16384),
-      };
-    } catch {
-      return {
-        status_code: 0,
-        text: "",
-      };
+      if (matches) return handle;
+      await handle.dispose();
     }
-  }, { url: targetUrl, token: authToken });
-  let payload = null;
-  try {
-    payload = response.text ? JSON.parse(response.text) : null;
-  } catch {
-    payload = null;
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  return {
-    status_code: Number(response.status_code || 0),
-    payload: sanitizedAuthorizationPayload(payload, response.text),
-    text: payload ? "" : String(response.text || "").slice(0, 1024),
-  };
+  throw new Error("model page did not expose an enabled 3MF download action");
+}
+
+async function clickAuthorization(context, platform, targetUrl, modelUrl, instanceId, navigationTimeoutMs) {
+  if (!isThreeMfAuthorizationUrl(targetUrl)) throw new Error("invalid 3MF authorization URL");
+  if (!isMakerWorldModelUrl(modelUrl, platform)) throw new Error("invalid MakerWorld model page URL");
+  const timeout = Math.max(Number(navigationTimeoutMs || 30000), 15000);
+  const page = await context.newPage();
+  try {
+    await page.goto(modelUrl, { waitUntil: "domcontentloaded", timeout });
+    const responsePromise = page.waitForResponse(
+      (response) => authorizationResponseMatches(response, instanceId),
+      { timeout },
+    );
+    const button = await findThreeMfDownloadButton(page, timeout);
+    await button.click({ delay: 20 });
+    await button.dispose();
+    const response = await responsePromise;
+    const text = (await response.text()).slice(0, 16384);
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    return {
+      status_code: Number(response.status() || 0),
+      payload: sanitizedAuthorizationPayload(payload, text),
+      text: payload ? "" : text.slice(0, 1024),
+    };
+  } finally {
+    await page.close().catch(() => undefined);
+  }
 }
 
 async function main() {
@@ -217,9 +206,15 @@ async function main() {
   try {
     const contexts = browser.browserContexts();
     const context = contexts[0] || browser.defaultBrowserContext();
-    if (input.action === "fetch") {
-      const page = await pageForAuthorization(context, String(input.platform || "cn"), input.navigation_timeout_ms);
-      const authorization = await fetchAuthorization(page, String(input.target_url || ""));
+    if (input.action === "click") {
+      const authorization = await clickAuthorization(
+        context,
+        String(input.platform || "cn"),
+        String(input.target_url || ""),
+        String(input.model_url || ""),
+        String(input.instance_id || ""),
+        input.navigation_timeout_ms,
+      );
       process.stdout.write(JSON.stringify({ ok: true, ...authorization }));
       return;
     }

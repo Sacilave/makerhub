@@ -1284,6 +1284,7 @@ class Missing3mfTest(unittest.TestCase):
                     "token=abc",
                     api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
                     origin="https://makerworld.com.cn",
+                    model_page_url="https://makerworld.com.cn/zh/models/123456",
                     browser_authorization=True,
                     browser_profile_id="profile-cn",
                 )
@@ -1295,6 +1296,8 @@ class Missing3mfTest(unittest.TestCase):
         self.assertIn("api.bambulab.cn", used_api_url)
         self.assertEqual(failure["state"], "available")
         browser_mock.assert_called_once()
+        self.assertEqual(browser_mock.call_args.kwargs["model_url"], "https://makerworld.com.cn/zh/models/123456")
+        self.assertEqual(browser_mock.call_args.kwargs["instance_id"], "2864062")
         direct_mock.assert_not_called()
 
     def test_fetch_instance_3mf_keeps_browser_confirmation_when_browser_authorization_is_rejected(self):

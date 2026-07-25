@@ -471,6 +471,8 @@ def _bridge_payload(
     action: str,
     cookies: list[dict[str, Any]] | None = None,
     target_url: str = "",
+    model_url: str = "",
+    instance_id: str = "",
     platform: str = "",
 ) -> dict[str, Any]:
     return {
@@ -479,6 +481,8 @@ def _bridge_payload(
         "auth_token": _auth_token(),
         "cookies": cookies or [],
         "target_url": str(target_url or "").strip(),
+        "model_url": str(model_url or "").strip(),
+        "instance_id": str(instance_id or "").strip(),
         "platform": normalize_platform(platform) if platform else "",
         "navigation_timeout_ms": max(_timeout_seconds() * 1000, 15000),
     }
@@ -500,13 +504,35 @@ def _is_browser_three_mf_authorization_url(url: str, platform: str) -> bool:
     )
 
 
+def _browser_model_page_url(model_url: str, platform: str, instance_id: str) -> str:
+    clean_model_url = str(model_url or "").strip()
+    clean_instance_id = str(instance_id or "").strip()
+    if not clean_model_url:
+        raise CloakBrowserError("缺少 3MF 对应的模型页面。")
+    try:
+        parsed = urlparse(clean_model_url)
+    except ValueError as exc:
+        raise CloakBrowserError("3MF 对应的模型页面无效。") from exc
+    hostname = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or not _hostname_matches_domains(hostname, PLATFORM_DOMAINS[platform])
+        or "/models/" not in parsed.path
+    ):
+        raise CloakBrowserError("3MF 对应的模型页面不属于当前平台。")
+    base_url = parsed._replace(fragment="").geturl()
+    return f"{base_url}#profileId-{clean_instance_id}" if clean_instance_id else base_url
+
+
 def browser_authorize_3mf_download(
     platform: str,
     api_url: str,
     *,
     profile_id: str,
+    model_url: str = "",
+    instance_id: str = "",
 ) -> dict[str, Any]:
-    """Request one 3MF authorization URL inside the saved browser profile.
+    """Use the saved browser profile to click one model instance's 3MF action.
 
     The bridge only returns a sanitized download payload. Browser cookies and tokens
     remain inside the profile and are never passed back to the archive request.
@@ -514,10 +540,12 @@ def browser_authorize_3mf_download(
     clean_platform = normalize_platform(platform)
     clean_profile_id = str(profile_id or "").strip()
     clean_api_url = str(api_url or "").strip()
+    clean_instance_id = str(instance_id or "").strip()
     if not clean_profile_id:
         raise CloakBrowserUnavailable("当前平台未关联指纹浏览器 profile。")
     if not _is_browser_three_mf_authorization_url(clean_api_url, clean_platform):
         raise CloakBrowserError("3MF 浏览器授权地址无效。")
+    page_url = _browser_model_page_url(model_url, clean_platform, clean_instance_id)
 
     with _operation_lock(clean_platform):
         profile = ensure_profile(clean_platform, clean_profile_id)
@@ -525,8 +553,10 @@ def browser_authorize_3mf_download(
         result = _run_bridge(
             _bridge_payload(
                 running.id,
-                action="fetch",
+                action="click",
                 target_url=clean_api_url,
+                model_url=page_url,
+                instance_id=clean_instance_id,
                 platform=clean_platform,
             )
         )
