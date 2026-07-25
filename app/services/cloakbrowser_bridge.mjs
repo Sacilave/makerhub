@@ -174,7 +174,13 @@ async function clickAuthorization(
   const authorizationTimeout = Math.max(Number(authorizationTimeoutMs || 90000), navigationTimeout);
   const page = await context.newPage();
   try {
-    await page.goto(modelUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
+    let navigationTimedOut = false;
+    try {
+      await page.goto(modelUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+      navigationTimedOut = true;
+    }
     const responsePromise = page.waitForResponse(
       (response) => authorizationResponseMatches(response, instanceId),
       { timeout: authorizationTimeout },
@@ -194,6 +200,7 @@ async function clickAuthorization(
       status_code: Number(response.status() || 0),
       payload: sanitizedAuthorizationPayload(payload, text),
       text: payload ? "" : text.slice(0, 1024),
+      navigation_timed_out: navigationTimedOut,
     };
   } finally {
     await page.close().catch(() => undefined);

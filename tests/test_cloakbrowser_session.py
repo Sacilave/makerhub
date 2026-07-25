@@ -145,6 +145,16 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         self.assertIn("button, a, [role='button'], .primaryButton", source)
 
+    def test_bridge_click_continues_after_navigation_timeout(self):
+        source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('error.name !== "TimeoutError"', source)
+        self.assertIn("navigation_timed_out: navigationTimedOut", source)
+        self.assertLess(
+            source.index('error.name !== "TimeoutError"'),
+            source.index("const button = await findThreeMfDownloadButton"),
+        )
+
     def test_ensure_profile_reuses_saved_profile_id(self):
         with patch.object(
             cloakbrowser_session,

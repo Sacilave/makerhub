@@ -1344,7 +1344,8 @@ class Missing3mfTest(unittest.TestCase):
                 legacy_archiver_module,
                 "browser_authorize_3mf_download",
                 side_effect=CloakBrowserBridgeError("指纹浏览器 CDP 操作超时。"),
-            ), patch.object(legacy_archiver_module, "flaresolverr_get_json") as direct_mock:
+            ), patch.object(legacy_archiver_module, "flaresolverr_get_json") as direct_mock, \
+                    patch.object(legacy_archiver_module, "append_business_log") as business_log_mock:
                 _name, _url, _used_api_url, failure = fetch_instance_3mf(
                     session,
                     2864062,
@@ -1361,6 +1362,9 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(failure["state"], "http_error")
         self.assertIn("暂时无法完成", failure["message"])
         direct_mock.assert_not_called()
+        business_log_mock.assert_called_once()
+        self.assertEqual(business_log_mock.call_args.args[:2], ("archive", "cloakbrowser_3mf_authorization_error"))
+        self.assertEqual(business_log_mock.call_args.kwargs["error"], "指纹浏览器 CDP 操作超时。")
 
     def test_fetch_instance_3mf_uses_flaresolverr_download_payload(self):
         original_wait = legacy_archiver_module._wait_before_three_mf_download

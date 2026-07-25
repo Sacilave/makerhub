@@ -115,6 +115,35 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(snapshot["instance_id"], "inst-ok")
         self.assertEqual(snapshot["updated_at"], "2026-06-12T10:00:00+08:00")
 
+    def test_mark_account_network_error_opens_transient_checking_gate(self):
+        account_health.mark_account_checking("cn", detail="正在检测")
+
+        snapshot = account_health.mark_account_network_error(
+            "cn",
+            detail="指纹浏览器导航超时",
+            model_id="123",
+            instance_id="instance-1",
+        )
+
+        self.assertEqual(snapshot["status"], "network_error")
+        self.assertEqual(snapshot["three_mf_gate"], "open")
+        self.assertEqual(snapshot["three_mf_reason"], "")
+        self.assertEqual(snapshot["detail"], "指纹浏览器导航超时")
+
+    def test_mark_account_network_error_preserves_confirmed_verification_gate(self):
+        account_health.update_three_mf_gate(
+            "cn",
+            gate="verification_required",
+            reason="browser_confirmation",
+            detail="需要浏览器确认",
+        )
+
+        snapshot = account_health.mark_account_network_error("cn", detail="连接超时")
+
+        self.assertEqual(snapshot["status"], "network_error")
+        self.assertEqual(snapshot["three_mf_gate"], "verification_required")
+        self.assertEqual(snapshot["three_mf_reason"], "browser_confirmation")
+
     def test_operational_status_prefers_three_mf_gate_over_account_probe(self):
         payload = account_health.operational_status_payload(
             "cn",

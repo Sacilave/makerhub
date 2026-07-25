@@ -270,6 +270,46 @@ def mark_account_ok(
     return dict(payload[normalized_platform])
 
 
+def mark_account_network_error(
+    platform: Any,
+    *,
+    reason: Any = "three_mf_http_error",
+    source: Any = "archive_download",
+    detail: Any = "",
+    model_url: Any = "",
+    model_id: Any = "",
+    instance_id: Any = "",
+    updated_at: Any = "",
+) -> dict[str, Any]:
+    normalized_platform = normalize_account_platform(platform, url=model_url)
+    payload = load_account_health()
+    current = dict(payload.get(normalized_platform) or _empty_snapshot(normalized_platform))
+    current.update(
+        {
+            "platform": normalized_platform,
+            "status": "network_error",
+            "reason": reason,
+            "source": source,
+            "detail": detail,
+            "model_url": model_url,
+            "model_id": model_id,
+            "instance_id": instance_id,
+            "updated_at": updated_at,
+        }
+    )
+    if normalize_three_mf_gate(current.get("three_mf_gate")) in {"open", "unknown"}:
+        current["three_mf_gate"] = "open"
+        current["three_mf_reason"] = ""
+        current["three_mf_detail"] = ""
+    payload[normalized_platform] = _normalize_snapshot(
+        normalized_platform,
+        current,
+        fill_updated_at=True,
+    )
+    save_account_health(payload)
+    return dict(payload[normalized_platform])
+
+
 def mark_account_checking(
     platform: Any,
     *,

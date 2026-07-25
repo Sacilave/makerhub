@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.13.12`
+> 当前版本：`v0.13.13`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-26 · v0.13.13
+
+- 指纹浏览器模型页导航超过 30 秒时不再提前终止；MakerHub 会继续从已渲染页面寻找下载按钮并等待授权响应。
+- 技术异常会结束“检测中”状态并保留可诊断日志，不会覆盖真实的人工验证或每日限额状态。
+- Web 进程新增或重排授权探测任务后会立即唤醒 Worker，不再受最长 10 分钟的阻塞退避影响。
+
 ### 2026-07-26 · v0.13.12
 
 - 指纹浏览器技术超时不再误报为人工验证，也不会暂停同平台其他归档任务；此类缺失 `3MF` 会自动重试。
@@ -202,12 +208,12 @@ uvicorn app.main:app --reload
 - 归档任务开始前会刷新关联 profile；浏览器未登录或服务不可达时会明确暂停，不会用历史 MakerHub Cookie 继续访问。
 - 设置页默认通过指纹浏览器添加账号；手工验证码登录降级为未关联 profile 时的兼容入口。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-25 · v0.13.10
 
 - 修复指纹浏览器真实点击 `3MF` 授权时无法识别 MakerWorld 下载按钮的问题：页面实际将该操作渲染为 `.primaryButton`，现在会正确点击并监听授权响应。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-25 · v0.13.9
 

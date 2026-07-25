@@ -231,6 +231,35 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
 
         worker_thread.assert_not_called()
 
+    def test_cross_process_queue_change_clears_blocked_worker_backoff(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        manager._last_pending_maintenance_at = time.monotonic()
+        manager._blocked_queue_retry_at = time.monotonic() + 60
+        manager._blocked_queue_signature = (1, "paused", "paused", "old", False)
+        manager.task_store = SimpleNamespace(
+            load_archive_queue_compact=lambda item_limit=1: {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "recovery",
+                        "status": "queued",
+                        "updated_at": "new",
+                        "meta": {"browser_session_recovery": True},
+                    }
+                ],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 2,
+            },
+        )
+
+        with patch.object(manager, "_ensure_worker") as ensure_worker:
+            manager.ensure_worker_for_pending()
+
+        self.assertEqual(manager._blocked_queue_retry_at, 0.0)
+        self.assertIsNone(manager._blocked_queue_signature)
+        ensure_worker.assert_called_once_with()
+
     def test_ensure_worker_for_pending_keeps_verification_queue_paused_while_gate_closed(self):
         manager = ArchiveTaskManager(background_enabled=False)
         paused_item = {

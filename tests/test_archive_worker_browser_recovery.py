@@ -341,7 +341,8 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
             }
         ]
 
-        with patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
+        with patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock, \
+                patch.object(archive_worker_module, "mark_account_network_error") as network_error_mock:
             failure = archive_worker_module._sync_account_health_for_archive_result(
                 platform="cn",
                 model_url="https://makerworld.com.cn/zh/models/123",
@@ -353,6 +354,13 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
 
         self.assertIsNone(failure)
         update_gate_mock.assert_not_called()
+        network_error_mock.assert_called_once_with(
+            "cn",
+            detail="指纹浏览器暂时无法完成 3MF 授权，请稍后自动重试。",
+            model_url="https://makerworld.com.cn/zh/models/123",
+            model_id="123",
+            instance_id="instance-1",
+        )
 
     def test_unchanged_browser_confirmation_gate_is_not_overwritten_by_parallel_auth_failure(self):
         missing_items = [

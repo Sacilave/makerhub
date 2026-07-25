@@ -4154,6 +4154,20 @@ def fetch_instance_3mf(
 
             if not isinstance(exc, CloakBrowserError):
                 raise
+            error_detail = str(exc).strip()[:300]
+            log(None, "指纹浏览器 3MF 授权失败:", error_detail or type(exc).__name__)
+            try:
+                append_business_log(
+                    "archive",
+                    "cloakbrowser_3mf_authorization_error",
+                    "指纹浏览器暂时无法完成 3MF 授权。",
+                    level="warning",
+                    instance_id=str(inst_id or ""),
+                    model_url=_trace_url(model_page_url or origin or ""),
+                    error=error_detail,
+                )
+            except Exception:
+                pass
             return "", "", candidate, {
                 "state": "http_error",
                 "message": "指纹浏览器暂时无法完成 3MF 授权，将稍后自动重试。",

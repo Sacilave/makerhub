@@ -24,6 +24,7 @@ from app.services.batch_discovery import (
 from app.services.account_health import (
     get_account_health,
     mark_account_checking,
+    mark_account_network_error,
     mark_account_ok,
     open_three_mf_gate,
     update_three_mf_gate,
@@ -562,6 +563,18 @@ def _account_health_failure_from_missing_items(
     return None
 
 
+def _account_health_http_error_from_missing_items(
+    missing_items: list[dict[str, Any]],
+) -> Optional[dict[str, str]]:
+    for item in missing_items:
+        if str(item.get("status") or "").strip() == "http_error":
+            return {
+                "detail": str(item.get("message") or "").strip(),
+                "instance_id": str(item.get("instance_id") or "").strip(),
+            }
+    return None
+
+
 def _preserve_browser_confirmation_gate(
     platform: str,
     classified_failure: Optional[dict[str, str]],
@@ -598,6 +611,7 @@ def _sync_account_health_for_archive_result(
     browser_session_recovery: bool = False,
 ) -> Optional[dict[str, str]]:
     classified_failure = _account_health_failure_from_missing_items(missing_items)
+    http_error = _account_health_http_error_from_missing_items(missing_items)
     if (
         classified_failure is not None
         and browser_session_recovery
@@ -622,6 +636,14 @@ def _sync_account_health_for_archive_result(
                 instance_id=classified_failure["instance_id"] or instance_id,
             )
             return classified_failure
+        elif http_error is not None:
+            mark_account_network_error(
+                platform,
+                detail=http_error["detail"],
+                model_url=model_url,
+                model_id=model_id,
+                instance_id=http_error["instance_id"] or instance_id,
+            )
         elif missing_3mf_retry and not missing_items:
             mark_account_ok(
                 platform,
@@ -765,6 +787,7 @@ class ArchiveTaskManager:
         self._batch_previews: dict[str, dict] = {}
         self._last_pending_maintenance_at = 0.0
         self._blocked_queue_retry_at = 0.0
+        self._blocked_queue_signature: tuple[Any, ...] | None = None
         self._cloakbrowser_recovery_lock = threading.Lock()
         self._cloakbrowser_recovery_attempted_at: dict[str, float] = {}
 
@@ -1923,7 +1946,7 @@ class ArchiveTaskManager:
         task = self._new_archive_queue_item(url, message=message, mode=mode, meta=meta)
         task_id = str(task["id"])
         queue = self.task_store.enqueue_archive_task(task)
-        self._blocked_queue_retry_at = 0.0
+        self._clear_blocked_queue_backoff()
         queue = queue if isinstance(queue, dict) else {}
         if queue.get("enqueued") is False and str(queue.get("existing_task_id") or "").strip():
             return str(queue.get("existing_task_id") or "").strip(), queue
@@ -2469,7 +2492,7 @@ class ArchiveTaskManager:
         retry_all: bool = True,
     ) -> dict:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
-        self._blocked_queue_retry_at = 0.0
+        self._clear_blocked_queue_backoff()
         primary_item = primary if isinstance(primary, dict) else {}
         verification_states = {"verification_required", "cloudflare", "auth_required", "cookie_invalid"}
         missing_payload = self.task_store.load_missing_3mf()
@@ -3011,6 +3034,30 @@ class ArchiveTaskManager:
             "message": f"已把 {len(normalized_items)} 个新增模型加入归档队列。",
         }
 
+    @staticmethod
+    def _queue_wakeup_signature(queue: dict) -> tuple[Any, ...]:
+        queued = list(queue.get("queued") or [])
+        first = queued[0] if queued and isinstance(queued[0], dict) else {}
+        first_meta = first.get("meta") if isinstance(first.get("meta"), dict) else {}
+        return (
+            int(queue.get("queued_count") or len(queued)),
+            str(first.get("id") or ""),
+            str(first.get("status") or ""),
+            str(first.get("updated_at") or ""),
+            bool(first_meta.get("browser_session_recovery")),
+        )
+
+    def _clear_blocked_queue_backoff(self) -> None:
+        self._blocked_queue_retry_at = 0.0
+        self._blocked_queue_signature = None
+
+    def _refresh_blocked_queue_backoff(self, queue: dict) -> None:
+        if self._blocked_queue_retry_at <= 0:
+            return
+        current_signature = self._queue_wakeup_signature(queue)
+        if self._blocked_queue_signature is not None and current_signature != self._blocked_queue_signature:
+            self._clear_blocked_queue_backoff()
+
     def _ensure_worker(self) -> None:
         if not self.background_enabled:
             return
@@ -3039,6 +3086,7 @@ class ArchiveTaskManager:
         if self._pending_maintenance_is_recent():
             queue = self._load_pending_queue_compact()
             if int(queue.get("queued_count") or 0) > 0:
+                self._refresh_blocked_queue_backoff(queue)
                 self._ensure_worker()
             return queue
 
@@ -3063,7 +3111,7 @@ class ArchiveTaskManager:
         loader = getattr(self.task_store, "load_archive_queue_compact", None)
         if callable(loader):
             try:
-                return loader(item_limit=0)
+                return loader(item_limit=1)
             except Exception:
                 pass
         return self.task_store.load_archive_queue()
@@ -3228,10 +3276,11 @@ class ArchiveTaskManager:
                 if has_active_batch:
                     time.sleep(ACTIVE_BATCH_IDLE_POLL_SECONDS)
                     continue
+                self._blocked_queue_signature = self._queue_wakeup_signature(queue)
                 self._blocked_queue_retry_at = time.monotonic() + 10 * 60
                 return
 
-            self._blocked_queue_retry_at = 0.0
+            self._clear_blocked_queue_backoff()
             candidate_url = normalize_source_url(str(candidate.get("url") or ""))
             with resource_slot("makerworld_page_api", detail=candidate_url):
                 if self._retire_current_worker_if_surplus():
