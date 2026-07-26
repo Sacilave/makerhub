@@ -28,10 +28,10 @@ from bs4 import BeautifulSoup
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.business_logs import append_business_log
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
-from app.services.flaresolverr_client import (
-    FlareSolverrError,
-    flaresolverr_get_json,
-    flaresolverr_get_text,
+from app.services.makerworld_browser_client import (
+    MakerWorldBrowserError,
+    makerworld_browser_get_json,
+    makerworld_browser_get_text,
 )
 from app.services.profile_rating import normalize_profile_rating
 from app.services.resource_limiter import resource_slot
@@ -680,7 +680,7 @@ def choose_unique_instance_filename(
         idx += 1
 
 
-def fetch_html_with_flaresolverr(session: requests.Session, url: str, raw_cookie: str) -> Optional[str]:
+def fetch_html_with_browser(session: requests.Session, url: str, raw_cookie: str) -> Optional[str]:
     cookie_header = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -697,10 +697,19 @@ def fetch_html_with_flaresolverr(session: requests.Session, url: str, raw_cookie
     if cookie_header:
         headers["Cookie"] = cookie_header
     try:
-        return flaresolverr_get_text(url, raw_cookie=cookie_header, headers=headers, session=session)
-    except FlareSolverrError as e:
-        log("FlareSolverr 获取页面失败:", e)
+        return makerworld_browser_get_text(
+            url,
+            raw_cookie=cookie_header,
+            headers=headers,
+            session=session,
+        )
+    except MakerWorldBrowserError as exc:
+        log("CloakBrowser 获取页面失败:", exc)
         return None
+
+
+# 批量和来源模块在后续迁移阶段切换后删除此兼容别名。
+fetch_html_with_flaresolverr = fetch_html_with_browser
 
 
 def _session_cookie_header(session: requests.Session) -> str:
@@ -1167,22 +1176,22 @@ def fetch_design_from_api(
         headers["Cookie"] = cookie_header
     for api_url in endpoints:
         try:
-            payload = flaresolverr_get_json(
+            payload = makerworld_browser_get_json(
                 api_url,
                 raw_cookie=cookie_header,
                 headers=headers,
                 session=session,
                 allow_non_json=True,
             )
-        except FlareSolverrError as exc:
-            log(logger, "FlareSolverr API 请求失败，尝试下一个候选:", api_url, exc)
+        except MakerWorldBrowserError as exc:
+            log(logger, "CloakBrowser API 请求失败，尝试下一个候选:", api_url, exc)
             continue
         if isinstance(payload, dict):
             design = _unwrap_design_payload(payload)
             if design:
                 payload_error = _design_payload_error(design, url)
                 if payload_error:
-                    log(logger, "FlareSolverr API 返回的模型数据无效，跳过:", api_url, payload_error)
+                    log(logger, "CloakBrowser API 返回的模型数据无效，跳过:", api_url, payload_error)
                 else:
                     _normalize_design_payload_identity(design, url)
                     return design
@@ -2566,7 +2575,7 @@ def _fetch_comment_reply_payload(
         api_host_hint=api_host_hint,
     ):
         try:
-            payload = flaresolverr_get_json(
+            payload = makerworld_browser_get_json(
                 api_url,
                 raw_cookie=_session_cookie_header(session),
                 headers=headers,
@@ -2574,7 +2583,7 @@ def _fetch_comment_reply_payload(
                 session=session,
                 allow_non_json=True,
             )
-        except FlareSolverrError:
+        except MakerWorldBrowserError:
             continue
         if payload is not None:
             if _extract_comment_replies_from_payload(payload, root_comment_id):
@@ -2614,7 +2623,7 @@ def _fetch_comment_list_payload(
         api_host_hint=api_host_hint,
     ):
         try:
-            payload = flaresolverr_get_json(
+            payload = makerworld_browser_get_json(
                 api_url,
                 raw_cookie=_session_cookie_header(session),
                 headers=headers,
@@ -2622,7 +2631,7 @@ def _fetch_comment_list_payload(
                 session=session,
                 allow_non_json=True,
             )
-        except FlareSolverrError:
+        except MakerWorldBrowserError:
             continue
         if payload is not None:
             if _extract_comment_list_items(payload):
@@ -4204,18 +4213,18 @@ def fetch_instance_3mf(
         if clean_captcha_result:
             headers["x-bbl-captcha-result"] = clean_captcha_result
         try:
-            data = flaresolverr_get_json(
+            data = makerworld_browser_get_json(
                 candidate,
                 raw_cookie=cookie_header,
                 headers=headers,
                 session=session,
                 allow_non_json=True,
             )
-        except FlareSolverrError as e:
+        except MakerWorldBrowserError as e:
             last_error = e
             failure = _classify_3mf_fetch_failure(text=str(e), source=candidate_source)
             last_failure = merge_three_mf_failure(last_failure, failure)
-            attempts.append({"method": "flaresolverr", "url": candidate, "status": "exception", "state": failure.get("state")})
+            attempts.append({"method": "cloakbrowser", "url": candidate, "status": "exception", "state": failure.get("state")})
             if _should_stop_three_mf_fetch(failure):
                 log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                 return "", "", candidate, last_failure
@@ -4223,7 +4232,7 @@ def fetch_instance_3mf(
         if not isinstance(data, dict):
             failure = _classify_3mf_fetch_failure(text="", source=candidate_source)
             last_failure = merge_three_mf_failure(last_failure, failure)
-            attempts.append({"method": "flaresolverr", "url": candidate, "status": "non-json", "state": failure.get("state")})
+            attempts.append({"method": "cloakbrowser", "url": candidate, "status": "non-json", "state": failure.get("state")})
             continue
         name, url = _extract_instance_download(data)
         if url:
@@ -4236,7 +4245,7 @@ def fetch_instance_3mf(
             source=candidate_source,
         )
         last_failure = merge_three_mf_failure(last_failure, failure)
-        attempts.append({"method": "flaresolverr", "url": candidate, "status": 200, "state": failure.get("state")})
+        attempts.append({"method": "cloakbrowser", "url": candidate, "status": 200, "state": failure.get("state")})
         if _should_stop_three_mf_fetch(failure):
             log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
             return "", "", candidate, last_failure
@@ -6400,16 +6409,16 @@ def archive_model(
 
     fetch_started_at = time.perf_counter()
     emit_progress(progress_callback, 12, "正在获取模型页面")
-    html_text = fetch_html_with_flaresolverr(sess, fetch_url, raw_cookie_header)
+    html_text = fetch_html_with_browser(sess, fetch_url, raw_cookie_header)
     if not html_text:
-        raise RuntimeError("FlareSolverr 获取模型页面失败，请检查 MAKERHUB_FLARESOLVERR_URL 和 FlareSolverr 服务状态。")
+        raise RuntimeError("CloakBrowser 获取模型页面失败，请检查指纹浏览器服务和当前平台 profile 状态。")
     elif "__NEXT_DATA__" not in html_text and "__NUXT__" not in html_text:
-        log(logger, "FlareSolverr 页面未包含 __NEXT_DATA__ 或 __NUXT__。")
+        log(logger, "CloakBrowser 页面未包含 __NEXT_DATA__ 或 __NUXT__。")
     timings_ms["fetch_html"] = _log_perf(
         "archive.fetch_html",
         fetch_started_at,
         logger=logger,
-        via="flaresolverr",
+        via="cloakbrowser",
         html_bytes=len(html_text or ""),
     )
 

@@ -12,10 +12,8 @@ import requests
 
 from app.core.timezone import now_iso
 from app.schemas.models import ProxyConfig
-from app.services.batch_discovery import discover_cookie_account_profile
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.proxy_policy import proxy_mapping
-from app.services.source_health import probe_cookie_auth_status
 
 
 MW_BROWSER_HEADERS = {
@@ -80,6 +78,33 @@ CONSENT_FORMS = {
 LOGIN_CONTEXT_TTL_SECONDS = 10 * 60
 _LOGIN_CONTEXT_LOCK = threading.Lock()
 _LOGIN_CONTEXTS: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str, Any]:
+    from app.services.batch_discovery import discover_cookie_account_profile as discover
+
+    return discover(platform, raw_cookie)
+
+
+def probe_cookie_auth_status(
+    platform: str,
+    raw_cookie: str,
+    proxy_config: Any,
+    *,
+    include_limit_guard: bool = False,
+    use_cache: bool = False,
+    allow_domestic_proxy: bool = False,
+) -> dict[str, Any]:
+    from app.services.source_health import probe_cookie_auth_status as probe
+
+    return probe(
+        platform,
+        raw_cookie,
+        proxy_config,
+        include_limit_guard=include_limit_guard,
+        use_cache=use_cache,
+        allow_domestic_proxy=allow_domestic_proxy,
+    )
 
 
 @dataclass

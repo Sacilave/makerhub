@@ -1248,13 +1248,13 @@ class Missing3mfTest(unittest.TestCase):
             session = SimpleNamespace(headers={"User-Agent": "test-agent"})
             calls = []
 
-            def fake_flaresolverr(url, **_kwargs):
+            def fake_browser_get(url, **_kwargs):
                 calls.append(url)
                 if len(calls) == 1:
                     return {"code": 1, "error": "Please log in to download models."}
                 return {"name": "ok.3mf", "url": "https://example.test/ok.3mf"}
 
-            with patch.object(legacy_archiver_module, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+            with patch.object(legacy_archiver_module, "makerworld_browser_get_json", side_effect=fake_browser_get):
                 name, url, used_api_url, failure = fetch_instance_3mf(
                     session,
                     2864062,
@@ -1284,7 +1284,7 @@ class Missing3mfTest(unittest.TestCase):
                     "payload": {"name": "browser.3mf", "url": "https://download.example.test/browser.3mf"},
                     "text": "",
                 },
-            ) as browser_mock, patch.object(legacy_archiver_module, "flaresolverr_get_json") as direct_mock:
+            ) as browser_mock, patch.object(legacy_archiver_module, "makerworld_browser_get_json") as direct_mock:
                 name, url, used_api_url, failure = fetch_instance_3mf(
                     session,
                     2864062,
@@ -1316,7 +1316,7 @@ class Missing3mfTest(unittest.TestCase):
                 legacy_archiver_module,
                 "browser_authorize_3mf_download",
                 return_value={"status_code": 401, "payload": {"message": "Please log in to download models."}, "text": ""},
-            ), patch.object(legacy_archiver_module, "flaresolverr_get_json") as direct_mock:
+            ), patch.object(legacy_archiver_module, "makerworld_browser_get_json") as direct_mock:
                 _name, _url, _used_api_url, failure = fetch_instance_3mf(
                     session,
                     2864062,
@@ -1344,7 +1344,7 @@ class Missing3mfTest(unittest.TestCase):
                 legacy_archiver_module,
                 "browser_authorize_3mf_download",
                 side_effect=CloakBrowserBridgeError("指纹浏览器 CDP 操作超时。"),
-            ), patch.object(legacy_archiver_module, "flaresolverr_get_json") as direct_mock, \
+            ), patch.object(legacy_archiver_module, "makerworld_browser_get_json") as direct_mock, \
                     patch.object(legacy_archiver_module, "append_business_log") as business_log_mock:
                 _name, _url, _used_api_url, failure = fetch_instance_3mf(
                     session,
@@ -1366,18 +1366,18 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(business_log_mock.call_args.args[:2], ("archive", "cloakbrowser_3mf_authorization_error"))
         self.assertEqual(business_log_mock.call_args.kwargs["error"], "指纹浏览器 CDP 操作超时。")
 
-    def test_fetch_instance_3mf_uses_flaresolverr_download_payload(self):
+    def test_fetch_instance_3mf_uses_cloakbrowser_download_payload(self):
         original_wait = legacy_archiver_module._wait_before_three_mf_download
         try:
             legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
             session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
             calls = []
 
-            def fake_flaresolverr(url, **kwargs):
+            def fake_browser_get(url, **kwargs):
                 calls.append((url, kwargs))
-                return {"name": "from-flaresolverr.3mf", "url": "https://example.test/from-flaresolverr.3mf"}
+                return {"name": "from-cloakbrowser.3mf", "url": "https://example.test/from-cloakbrowser.3mf"}
 
-            with patch.object(legacy_archiver_module, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+            with patch.object(legacy_archiver_module, "makerworld_browser_get_json", side_effect=fake_browser_get):
                 name, url, used_api_url, failure = fetch_instance_3mf(
                     session,
                     2864062,
@@ -1388,8 +1388,8 @@ class Missing3mfTest(unittest.TestCase):
         finally:
             legacy_archiver_module._wait_before_three_mf_download = original_wait
 
-        self.assertEqual(name, "from-flaresolverr.3mf")
-        self.assertEqual(url, "https://example.test/from-flaresolverr.3mf")
+        self.assertEqual(name, "from-cloakbrowser.3mf")
+        self.assertEqual(url, "https://example.test/from-cloakbrowser.3mf")
         self.assertEqual(failure["state"], "available")
         self.assertEqual(used_api_url, calls[0][0])
         self.assertIn("Cookie", calls[0][1]["headers"])
@@ -1493,7 +1493,7 @@ class Missing3mfTest(unittest.TestCase):
             self.assertEqual(missing[0]["downloadState"], "missing")
             self.assertEqual(missing[0]["downloadMessage"], "3MF 文件尚未保存到本地，等待重新下载。")
 
-    def test_download_file_does_not_use_flaresolverr(self):
+    def test_download_file_does_not_use_cloakbrowser(self):
         class FakeStreamResponse:
             def __enter__(self):
                 return self
@@ -1515,13 +1515,21 @@ class Missing3mfTest(unittest.TestCase):
                 self.calls.append((url, timeout, stream))
                 return FakeStreamResponse()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            legacy_archiver_module,
+            "makerworld_browser_get_text",
+        ) as browser_text_mock, patch.object(
+            legacy_archiver_module,
+            "makerworld_browser_get_json",
+        ) as browser_json_mock:
             session = FakeSession()
             dest = Path(temp_dir) / "asset.jpg"
             download_file(session, "https://cdn.example.test/asset.jpg", dest)
             self.assertEqual(dest.read_bytes(), b"real-bytes")
 
         self.assertEqual(session.calls[0][0], "https://cdn.example.test/asset.jpg")
+        browser_text_mock.assert_not_called()
+        browser_json_mock.assert_not_called()
 
 
 if __name__ == "__main__":

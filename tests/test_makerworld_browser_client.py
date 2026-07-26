@@ -45,11 +45,20 @@ class MakerWorldBrowserClientTest(unittest.TestCase):
             response = client.makerworld_browser_get(
                 "https://makerworld.com.cn/zh/models/1",
                 raw_cookie="token=old",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": "Bearer old",
+                    "token": "old",
+                },
             )
 
         self.assertEqual(response.profile_id, "profile-cn")
         self.assertEqual(fetch_mock.call_args.kwargs["profile_id"], "profile-cn")
         self.assertEqual(fetch_mock.call_args.kwargs["cookie_items"], [])
+        self.assertEqual(
+            fetch_mock.call_args.kwargs["headers"],
+            {"Accept": "application/json"},
+        )
 
     def test_unlinked_profile_can_seed_legacy_cookie(self):
         config = SimpleNamespace(

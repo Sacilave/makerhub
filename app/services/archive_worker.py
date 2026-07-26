@@ -75,6 +75,9 @@ BATCH_CHILD_TRANSIENT_FAILURE_TOKENS = (
     "connection refused",
     "temporarily unavailable",
     "timed out",
+    "cloakbrowser 请求超时",
+    "cloakbrowser 连接中断",
+    "cloakbrowser 服务暂时不可用",
 )
 CLOAKBROWSER_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
 CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE = (

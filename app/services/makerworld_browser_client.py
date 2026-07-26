@@ -62,6 +62,27 @@ def _linked_profile(platform: str) -> tuple[str, bool]:
     return "", False
 
 
+def _headers_for_profile(
+    headers: dict[str, str] | None,
+    *,
+    linked: bool,
+) -> dict[str, str]:
+    if not linked:
+        return dict(headers or {})
+    stale_auth_headers = {
+        "authorization",
+        "cookie",
+        "token",
+        "x-access-token",
+        "x-token",
+    }
+    return {
+        str(name): str(value)
+        for name, value in (headers or {}).items()
+        if value is not None and str(name).strip().lower() not in stale_auth_headers
+    }
+
+
 def _is_retryable_browser_error(exc: CloakBrowserError) -> bool:
     detail = str(exc or "").lower()
     if isinstance(exc, CloakBrowserUnavailable):
@@ -133,6 +154,7 @@ def makerworld_browser_get(
     except Exception as exc:
         raise MakerWorldBrowserError("读取 MakerWorld 浏览器配置失败。") from exc
     cookie_items = [] if linked else browser_cookie_items(raw_cookie, clean_platform)
+    request_headers = _headers_for_profile(headers, linked=linked)
 
     for attempt in range(2):
         try:
@@ -140,7 +162,7 @@ def makerworld_browser_get(
                 clean_platform,
                 target_url,
                 profile_id=profile_id,
-                headers=headers,
+                headers=request_headers,
                 cookie_items=cookie_items,
                 timeout_seconds=timeout_seconds,
             )

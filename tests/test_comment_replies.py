@@ -69,8 +69,8 @@ class CommentRepliesTest(unittest.TestCase):
                 return self._payload(url, params, headers, None)
             return self._payload
 
-        def patch_flaresolverr(self):
-            return patch.object(legacy_archiver, "flaresolverr_get_json", side_effect=self.flare_get_json)
+        def patch_browser_client(self):
+            return patch.object(legacy_archiver, "makerworld_browser_get_json", side_effect=self.flare_get_json)
 
     def test_catalog_normalizes_wrapped_reply_lists(self):
         comment = {
@@ -450,7 +450,7 @@ class CommentRepliesTest(unittest.TestCase):
         }
         session = self._DummySession(reply_payload)
 
-        with session.patch_flaresolverr():
+        with session.patch_browser_client():
             bundle = collect_comments(
                 next_data,
                 design,
@@ -508,7 +508,7 @@ class CommentRepliesTest(unittest.TestCase):
         }
         session = self._DummySession(reply_payload)
 
-        with session.patch_flaresolverr():
+        with session.patch_browser_client():
             bundle = collect_comments(
                 next_data,
                 design,
@@ -549,7 +549,7 @@ class CommentRepliesTest(unittest.TestCase):
         }
         session = self._DummySession(reply_payload)
 
-        with session.patch_flaresolverr():
+        with session.patch_browser_client():
             bundle = collect_comments(
                 {},
                 design,
@@ -617,7 +617,7 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        with session.patch_flaresolverr():
+        with session.patch_browser_client():
             bundle = collect_comments(
                 {},
                 {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 3},
@@ -658,7 +658,7 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        with session.patch_flaresolverr():
+        with session.patch_browser_client():
             bundle = collect_comments(
                 {},
                 {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 41},
@@ -684,7 +684,7 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        with session.patch_flaresolverr():
+        with session.patch_browser_client():
             bundle = collect_comments(
                 {},
                 {"id": "2475775", "url": "https://makerworld.com.cn/zh/models/2475775", "commentCount": 432},
@@ -726,7 +726,7 @@ class CommentRepliesTest(unittest.TestCase):
         session = self._DummySession(payload)
         legacy_archiver._comment_service_endpoint_candidates = fake_candidates
         try:
-            with session.patch_flaresolverr():
+            with session.patch_browser_client():
                 bundle = collect_comments(
                     {},
                     {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 1},
@@ -789,7 +789,7 @@ class CommentRepliesTest(unittest.TestCase):
         session = self._DummySession(payload)
         legacy_archiver._comment_service_endpoint_candidates = fake_candidates
         try:
-            with session.patch_flaresolverr():
+            with session.patch_browser_client():
                 bundle = collect_comments(
                     {},
                     {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 1},
@@ -867,7 +867,7 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        with session.patch_flaresolverr():
+        with session.patch_browser_client():
             bundle = collect_comments(
                 {},
                 {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 1},
@@ -911,7 +911,7 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        with session.patch_flaresolverr():
+        with session.patch_browser_client():
             bundle = collect_comments(
                 {},
                 {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 1},

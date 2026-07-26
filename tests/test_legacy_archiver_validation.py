@@ -13,7 +13,7 @@ class _ApiSession:
 
     def get(self, url, timeout=None, headers=None):
         self.calls.append(url)
-        raise AssertionError("MakerWorld control requests must use FlareSolverr")
+        raise AssertionError("MakerWorld control requests must use CloakBrowser")
 
 
 class LegacyArchiverValidationTest(unittest.TestCase):
@@ -45,11 +45,11 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         session = _ApiSession()
         calls = []
 
-        def fake_flaresolverr(url, **_kwargs):
+        def fake_browser_get(url, **_kwargs):
             calls.append(url)
             return None
 
-        with patch.object(legacy_archiver, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+        with patch.object(legacy_archiver, "makerworld_browser_get_json", side_effect=fake_browser_get):
             design = legacy_archiver.fetch_design_from_api(
                 session,
                 "",
@@ -64,7 +64,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
     def test_fetch_design_from_api_accepts_matching_cn_payload(self):
         session = _ApiSession()
 
-        def fake_flaresolverr(url, **_kwargs):
+        def fake_browser_get(url, **_kwargs):
             if "api.bambulab.cn" in url:
                 return {
                     "id": "2416065",
@@ -74,7 +74,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
                 }
             return None
 
-        with patch.object(legacy_archiver, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+        with patch.object(legacy_archiver, "makerworld_browser_get_json", side_effect=fake_browser_get):
             design = legacy_archiver.fetch_design_from_api(
                 session,
                 "",
@@ -90,7 +90,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         session = _ApiSession()
         calls = []
 
-        def fake_flaresolverr(url, **_kwargs):
+        def fake_browser_get(url, **_kwargs):
             calls.append(url)
             if "api.bambulab.com" in url:
                 return {
@@ -108,7 +108,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
                 }
             return None
 
-        with patch.object(legacy_archiver, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+        with patch.object(legacy_archiver, "makerworld_browser_get_json", side_effect=fake_browser_get):
             design = legacy_archiver.fetch_design_from_api(
                 session,
                 "",
@@ -120,13 +120,13 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertIn("api.bambulab.com", calls[0])
         self.assertEqual(session.calls, [])
 
-    def test_fetch_design_from_api_uses_flaresolverr_without_requests(self):
+    def test_fetch_design_from_api_uses_cloakbrowser_without_requests(self):
         session = _ApiSession()
         with patch(
-            "app.services.legacy_archiver.flaresolverr_get_json",
+            "app.services.legacy_archiver.makerworld_browser_get_json",
             return_value={
                 "id": "2416065",
-                "title": "FlareSolverr model",
+                "title": "CloakBrowser model",
                 "coverUrl": "https://cdn.example.com/cn.jpg",
                 "instances": [],
             },
@@ -138,21 +138,21 @@ class LegacyArchiverValidationTest(unittest.TestCase):
             )
 
         self.assertIsInstance(design, dict)
-        self.assertEqual(design["title"], "FlareSolverr model")
+        self.assertEqual(design["title"], "CloakBrowser model")
         self.assertEqual(session.calls, [])
 
-    def test_fetch_html_with_flaresolverr_uses_flaresolverr_without_old_fallback(self):
+    def test_fetch_html_with_browser_uses_cloakbrowser_without_requests_fallback(self):
         class FailingSession:
             headers = {"User-Agent": "test-agent"}
 
             def get(self, *_args, **_kwargs):
-                raise AssertionError("MakerWorld HTML must use FlareSolverr")
+                raise AssertionError("MakerWorld HTML must use CloakBrowser")
 
         with patch(
-            "app.services.legacy_archiver.flaresolverr_get_text",
+            "app.services.legacy_archiver.makerworld_browser_get_text",
             return_value="<html><script id=\"__NEXT_DATA__\"></script></html>",
         ):
-            html = legacy_archiver.fetch_html_with_flaresolverr(
+            html = legacy_archiver.fetch_html_with_browser(
                 FailingSession(),
                 "https://makerworld.com.cn/zh/models/2416065",
                 "token=abc",
@@ -173,7 +173,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         """
 
         with TemporaryDirectory() as temp_dir, patch(
-            "app.services.legacy_archiver.fetch_html_with_flaresolverr",
+            "app.services.legacy_archiver.fetch_html_with_browser",
             return_value=makerworld_404_html,
         ), patch(
             "app.services.legacy_archiver.fetch_design_from_api",

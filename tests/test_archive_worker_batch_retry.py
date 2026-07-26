@@ -1098,6 +1098,10 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
             )
         )
 
+    def test_cloakbrowser_timeout_and_disconnect_are_transient_batch_failures(self):
+        self.assertTrue(_is_transient_batch_child_failure("CloakBrowser 请求超时。"))
+        self.assertTrue(_is_transient_batch_child_failure("CloakBrowser 连接中断。"))
+
     def test_refresh_batch_keeps_non_transient_failure_at_normal_limit(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)
