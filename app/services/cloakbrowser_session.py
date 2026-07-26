@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 import subprocess
@@ -55,6 +55,7 @@ ALLOWED_BROWSER_FETCH_HEADERS = {
     "x-app-version",
     "x-bbl-client-name",
     "x-bbl-client-version",
+    "x-bbl-captcha-result",
     "x-token",
 }
 
@@ -95,7 +96,7 @@ class CloakBrowserFetchResult:
     status_code: int
     content_type: str
     text: str
-    headers: dict[str, str]
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 def normalize_platform(platform: str) -> str:

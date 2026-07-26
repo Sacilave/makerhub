@@ -215,6 +215,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 headers={
                     "Accept": "text/html",
                     "Referer": "https://makerworld.com.cn/",
+                    "x-bbl-captcha-result": "verified",
                     "Cookie": "must-not-cross-the-bridge",
                     "Host": "attacker.example",
                 },
@@ -230,6 +231,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(payload["headers"], {
             "Accept": "text/html",
             "Referer": "https://makerworld.com.cn/",
+            "x-bbl-captcha-result": "verified",
         })
         self.assertEqual(payload["cookies"][0]["name"], "token")
 

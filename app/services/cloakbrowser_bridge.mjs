@@ -130,6 +130,7 @@ const ALLOWED_FETCH_HEADERS = new Set([
   "x-app-version",
   "x-bbl-client-name",
   "x-bbl-client-version",
+  "x-bbl-captcha-result",
   "x-token",
 ]);
 
