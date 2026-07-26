@@ -54,6 +54,7 @@ IMAGE_CLEANUP_MAX_ATTEMPTS = 5
 HELPER_CLEANUP_INITIAL_DELAY_SECONDS = 15
 HELPER_CLEANUP_RETRY_DELAY_SECONDS = 10
 HELPER_CLEANUP_MAX_ATTEMPTS = 6
+OBSOLETE_BUNDLED_CONTAINER_NAMES = {"makerhub-flaresolverr"}
 _IMAGE_CLEANUP_THREAD: threading.Thread | None = None
 _IMAGE_CLEANUP_LOCK = threading.Lock()
 _HELPER_CLEANUP_THREAD: threading.Thread | None = None
@@ -68,7 +69,7 @@ PACKAGED_CANONICAL_COMPOSE_PATH = ROOT_DIR / "compose.yaml"
 POSTGRES_COMPOSE_MIGRATION_MESSAGE = (
     "当前版本将归档模型索引迁移到 Postgres。检测到当前容器仍是旧 compose，"
     "缺少 MAKERHUB_DATABASE_URL / makerhub-postgres 服务，或仍使用旧的 /app/state、/app/archive、/app/local 分散挂载；"
-    "请先按示例 compose 改成 App + Worker + Postgres + FlareSolverr 部署，并使用 /app/config + /app/data 新目录布局后，再执行网页更新。"
+    "请先按示例 compose 改成 App + Worker + Postgres + CloakBrowser 部署，并使用 /app/config + /app/data 新目录布局后，再执行网页更新。"
 )
 
 
@@ -1984,6 +1985,26 @@ def _cleanup_release_group_backups(client: DockerSocketClient, group: dict[str, 
             )
 
 
+def _cleanup_obsolete_bundled_containers(
+    client: DockerSocketClient,
+    request_id: str,
+) -> list[str]:
+    removed: list[str] = []
+    for item in client.list_containers(all_containers=True):
+        names = {
+            str(name or "").strip().lstrip("/")
+            for name in item.get("Names") or []
+        }
+        if not names.intersection(OBSOLETE_BUNDLED_CONTAINER_NAMES):
+            continue
+        container_id = str(item.get("Id") or "").strip()
+        if not container_id:
+            continue
+        client.remove_container(container_id, force=True, missing_ok=True)
+        removed.append(container_id)
+    return removed
+
+
 def run_release_group_transaction(
     client: DockerSocketClient,
     *,
@@ -2118,6 +2139,26 @@ def run_update_helper(
             last_error="",
         )
         _cleanup_release_group_backups(client, group)
+        try:
+            removed_obsolete = _cleanup_obsolete_bundled_containers(client, request_id)
+        except Exception as exc:  # noqa: BLE001
+            append_business_log(
+                "system",
+                "self_update_cleanup_warning",
+                "新版本已就绪，但旧内置 FlareSolverr 容器清理失败。",
+                level="warning",
+                request_id=request_id,
+                error=_friendly_error_message(exc),
+            )
+        else:
+            if removed_obsolete:
+                append_business_log(
+                    "system",
+                    "self_update_obsolete_container_removed",
+                    "已清理旧内置 FlareSolverr 容器。",
+                    request_id=request_id,
+                    container_ids=removed_obsolete,
+                )
         _schedule_old_update_image_cleanup(request_id)
         return 0
     except Exception as exc:  # noqa: BLE001

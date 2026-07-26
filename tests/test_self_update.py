@@ -1,7 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import yaml
 
 from app.services import self_update
 
@@ -123,8 +125,12 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertNotIn("makerhub_password_123456", compose_text)
         self.assertNotIn("MAKERHUB_ADMIN_PASSWORD", compose_text)
         self.assertIn("MAKERHUB_POSTGRES_PASSWORD", compose_text)
-        self.assertIn("MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1", compose_text)
-        self.assertIn("makerhub-flaresolverr", compose_text)
+        compose = yaml.safe_load(compose_text)
+        self.assertEqual(
+            set(compose["services"]),
+            {"makerhub-app", "makerhub-worker", "makerhub-postgres", "cloakbrowser"},
+        )
+        self.assertNotIn("FLARESOLVERR", compose_text.upper())
         self.assertIn("# - /var/run/docker.sock:/var/run/docker.sock", compose_text)
         self.assertNotIn("      - /var/run/docker.sock:/var/run/docker.sock", compose_text)
         self.assertGreaterEqual(compose_text.count("    depends_on:"), 2)
@@ -140,15 +146,8 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertNotIn("/app/archive", compose_text)
         self.assertNotIn("/app/local", compose_text)
 
-    def test_external_flaresolverr_compose_uses_env_url_without_embedded_service(self):
-        compose_text = (ROOT_DIR / "compose.external-flaresolverr.yaml").read_text(encoding="utf-8")
-
-        self.assertIn("MAKERHUB_FLARESOLVERR_URL: ${MAKERHUB_FLARESOLVERR_URL", compose_text)
-        self.assertNotIn("makerhub-flaresolverr", compose_text)
-        self.assertNotIn("ghcr.io/flaresolverr/flaresolverr", compose_text)
-        self.assertNotIn("makerhub-postgres", compose_text)
-        self.assertNotIn("/volume4/docker/docker/makerhub:/app/config", compose_text)
-        self.assertNotIn("/app/data", compose_text)
+    def test_external_flaresolverr_compose_is_removed(self):
+        self.assertFalse((ROOT_DIR / "compose.external-flaresolverr.yaml").exists())
 
     def test_compose_requires_cloakbrowser_token_and_binds_manager_locally(self):
         required_token = (
@@ -381,14 +380,14 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
 
             self.assertFalse(status["supported"])
             self.assertTrue(status["compose_migration_required"])
-            self.assertIn("FlareSolverr", status["compose_migration_reason"])
+            self.assertIn("CloakBrowser", status["compose_migration_reason"])
             self.assertIn("MAKERHUB_DATABASE_URL", status["compose_example"])
             self.assertNotIn("MAKERHUB_ADMIN_PASSWORD", status["compose_example"])
             self.assertIn("makerhub-postgres", status["compose_example"])
             self.assertNotIn("makerhub_password_123456", status["compose_example"])
             self.assertIn("MAKERHUB_POSTGRES_PASSWORD", status["compose_example"])
-            self.assertIn("MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1", status["compose_example"])
-            self.assertIn("makerhub-flaresolverr", status["compose_example"])
+            self.assertNotIn("FLARESOLVERR", status["compose_example"].upper())
+            self.assertIn("makerhub-cloakbrowser", status["compose_example"])
             self.assertIn("# - /var/run/docker.sock:/var/run/docker.sock", status["compose_example"])
             self.assertNotIn("      - /var/run/docker.sock:/var/run/docker.sock", status["compose_example"])
             self.assertGreaterEqual(status["compose_example"].count("    depends_on:"), 2)
@@ -1447,6 +1446,99 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertTrue(
             any(call.args[1] == "self_update_cleanup_warning" for call in append_log.call_args_list)
         )
+
+    def test_cleanup_obsolete_bundled_containers_removes_exact_legacy_name_only(self):
+        client = Mock()
+        client.list_containers.return_value = [
+            {"Id": "legacy", "Names": ["/makerhub-flaresolverr"]},
+            {"Id": "shared", "Names": ["/shared-flaresolverr"]},
+            {"Id": "similar", "Names": ["/makerhub-flaresolverr-custom"]},
+        ]
+
+        removed = self_update._cleanup_obsolete_bundled_containers(client, "request-1")
+
+        self.assertEqual(removed, ["legacy"])
+        client.list_containers.assert_called_once_with(all_containers=True)
+        client.remove_container.assert_called_once_with(
+            "legacy",
+            force=True,
+            missing_ok=True,
+        )
+
+    def test_update_helper_does_not_cleanup_obsolete_container_when_readiness_fails(self):
+        client = Mock()
+        client.inspect_container.return_value = {"Id": "app-old", "Name": "/makerhub-app"}
+        group = {"request_id": "request-1", "roles": [], "committed": False}
+        with patch.object(self_update, "DockerSocketClient", return_value=client), patch.object(
+            self_update,
+            "prepare_release_group",
+            return_value=group,
+        ), patch.object(self_update, "activate_release_group"), patch.object(
+            self_update,
+            "verify_release_group",
+            side_effect=RuntimeError("not ready"),
+        ), patch.object(self_update, "_cleanup_obsolete_bundled_containers") as cleanup, patch.object(
+            self_update,
+            "append_business_log",
+        ):
+            result = self_update.run_update_helper(
+                request_id="request-1",
+                container_id="app-old",
+                image_ref="ghcr.io/example/makerhub:v0.14.0",
+            )
+
+        self.assertEqual(result, 1)
+        cleanup.assert_not_called()
+
+    def test_update_helper_cleans_obsolete_container_after_readiness_and_commit(self):
+        client = Mock()
+        client.inspect_container.return_value = {"Id": "app-old", "Name": "/makerhub-app"}
+        group = {"request_id": "request-1", "roles": [], "committed": False}
+        events = []
+
+        def verify(_client, _group):
+            events.append("readiness")
+
+        def commit(_client, release_group):
+            events.append("commit")
+            release_group["committed"] = True
+            return release_group
+
+        def cleanup(_client, _request_id):
+            events.append("cleanup")
+            return ["legacy"]
+
+        with patch.object(self_update, "DockerSocketClient", return_value=client), patch.object(
+            self_update,
+            "prepare_release_group",
+            return_value=group,
+        ), patch.object(self_update, "activate_release_group"), patch.object(
+            self_update,
+            "verify_release_group",
+            side_effect=verify,
+        ), patch.object(
+            self_update,
+            "commit_release_group",
+            side_effect=commit,
+        ), patch.object(
+            self_update,
+            "_cleanup_release_group_backups",
+        ), patch.object(
+            self_update,
+            "_cleanup_obsolete_bundled_containers",
+            side_effect=cleanup,
+        ), patch.object(self_update, "append_business_log"), patch.object(
+            self_update,
+            "_schedule_old_update_image_cleanup",
+        ):
+            result = self_update.run_update_helper(
+                request_id="request-1",
+                container_id="app-old",
+                image_ref="ghcr.io/example/makerhub:v0.14.0",
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(events, ["readiness", "commit", "cleanup"])
 
     def test_delayed_cleanup_removes_old_image_after_success(self):
         with tempfile.TemporaryDirectory() as temp_dir:

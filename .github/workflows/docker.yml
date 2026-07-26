@@ -58,10 +58,7 @@ jobs:
         env:
           MAKERHUB_POSTGRES_PASSWORD: ci-postgres-password
           MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ci-cloakbrowser-token
-          MAKERHUB_FLARESOLVERR_URL: http://flaresolverr.example.test:8191/v1
-        run: |
-          docker compose -f compose.yaml config --quiet
-          docker compose -f compose.yaml -f compose.external-flaresolverr.yaml config --quiet
+        run: docker compose -f compose.yaml config --quiet
 
       - name: Check release version
         run: python scripts/check_release_version.py

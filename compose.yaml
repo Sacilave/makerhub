@@ -11,9 +11,6 @@ services:
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
       MAKERHUB_WEB_WORKERS: "1"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
-      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
-      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
-      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
@@ -45,9 +42,6 @@ services:
       MAKERHUB_WORKER_CONCURRENCY: "2"
       MAKERHUB_HEAVY_JOB_NICE: "10"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
-      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
-      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
-      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
@@ -80,14 +74,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    restart: unless-stopped
-
-  flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
-    container_name: makerhub-flaresolverr
-    environment:
-      LOG_LEVEL: info
-      TZ: Asia/Shanghai
     restart: unless-stopped
 
   cloakbrowser:

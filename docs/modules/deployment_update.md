@@ -3,7 +3,7 @@
 ## 职责
 
 - 维护 Dockerfile、compose、entrypoint 和运行环境变量。
-- 支持 App / Worker / Postgres 三容器部署。
+- 支持 App / Worker / Postgres / CloakBrowser 四容器部署。
 - 在显式挂载 Docker socket 时提供设置页一键更新能力：拉镜像、重建 worker/app、延迟清理旧镜像。
 - 检测旧 compose 是否缺少数据库配置，并给出升级保护提示。
 - 维护 README 部署说明、compose 示例、iOS 快捷指令下载链接。
@@ -47,12 +47,13 @@
   - 更新状态存于 `makerhub_json_state:system_update`。
   - 数据库索引状态由 Core/归档索引模块维护。
 - Docker:
-  - `compose.yaml` 是唯一完整部署定义；`compose.external-flaresolverr.yaml` 只能与它合并使用，并且只覆盖外部 FlareSolverr 地址和禁用内置服务的 profile。
+  - `compose.yaml` 是唯一完整部署定义，不再需要外部 FlareSolverr override。
   - 默认 compose 不挂载 `/var/run/docker.sock`；只有用户显式 opt-in 后，设置页才可直接网页更新。
   - App / Worker 依赖 Postgres 的 `service_healthy`，App、Worker、Postgres 都必须保留 healthcheck。
   - 默认目录布局为 `/app/config/{config,logs,state}` 与 `/app/data`，compose 只映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
   - `makerhub-app` 和 `makerhub-worker` 应使用同一镜像版本。
   - CloakBrowser token 必填且 Manager 默认绑定 `127.0.0.1`；仅在可信 LAN 下显式设置绑定地址和公共 URL。
+  - 新 App / Worker readiness 和发布组提交成功后，一键更新会 best-effort 删除精确命名为 `makerhub-flaresolverr` 的旧内置容器；共享或自定义 FlareSolverr 不处理。
   - 只有明确设置 `MAKERHUB_TRUSTED_PROXIES` 时才信任反向代理头，拒绝宽泛公网网段。
 
 ## 常用测试命令

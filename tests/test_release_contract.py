@@ -75,12 +75,7 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertEqual(_step(verify, "Run frontend tests")["run"], "npm test")
         self.assertEqual(_step(verify, "Build frontend")["run"], "npm run build")
         compose_run = _step(verify, "Validate Compose files")["run"]
-        self.assertIn("compose.yaml", compose_run)
-        self.assertIn("compose.external-flaresolverr.yaml", compose_run)
-        self.assertIn(
-            "docker compose -f compose.yaml -f compose.external-flaresolverr.yaml config --quiet",
-            compose_run,
-        )
+        self.assertEqual(compose_run.strip(), "docker compose -f compose.yaml config --quiet")
         self.assertIn("scripts/check_release_version.py", _step(verify, "Check release version")["run"])
         self.assertEqual(_step(verify, "Build image")["with"]["push"], "false")
 
@@ -161,24 +156,8 @@ class ReadmeCloakBrowserContractTest(unittest.TestCase):
 
 
 class DeploymentComposeContractTest(unittest.TestCase):
-    def test_external_flaresolverr_file_is_a_minimal_override(self):
-        payload = yaml.safe_load(
-            (ROOT_DIR / "compose.external-flaresolverr.yaml").read_text(encoding="utf-8")
-        )
-
-        self.assertEqual(set(payload), {"services"})
-        services = payload["services"]
-        self.assertEqual(set(services), {"makerhub-app", "makerhub-worker", "flaresolverr"})
-        expected_url = "${MAKERHUB_FLARESOLVERR_URL:?set MAKERHUB_FLARESOLVERR_URL in .env}"
-        self.assertEqual(
-            services["makerhub-app"],
-            {"environment": {"MAKERHUB_FLARESOLVERR_URL": expected_url}},
-        )
-        self.assertEqual(
-            services["makerhub-worker"],
-            {"environment": {"MAKERHUB_FLARESOLVERR_URL": expected_url}},
-        )
-        self.assertEqual(services["flaresolverr"], {"profiles": ["bundled-flaresolverr"]})
+    def test_external_flaresolverr_override_is_removed(self):
+        self.assertFalse((ROOT_DIR / "compose.external-flaresolverr.yaml").exists())
 
     def test_canonical_compose_keeps_security_and_readiness_contracts(self):
         compose = yaml.safe_load((ROOT_DIR / "compose.yaml").read_text(encoding="utf-8"))
@@ -188,6 +167,10 @@ class DeploymentComposeContractTest(unittest.TestCase):
             "?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}"
         )
 
+        self.assertEqual(
+            set(services),
+            {"makerhub-app", "makerhub-worker", "makerhub-postgres", "cloakbrowser"},
+        )
         for name in ("makerhub-app", "makerhub-worker", "makerhub-postgres"):
             self.assertIn("healthcheck", services[name])
         for name in ("makerhub-app", "makerhub-worker"):
@@ -200,6 +183,9 @@ class DeploymentComposeContractTest(unittest.TestCase):
                 required_token,
             )
         app_environment = services["makerhub-app"]["environment"]
+        worker_environment = services["makerhub-worker"]["environment"]
+        self.assertFalse(any("FLARESOLVERR" in name for name in app_environment))
+        self.assertFalse(any("FLARESOLVERR" in name for name in worker_environment))
         self.assertIn("MAKERHUB_TRUSTED_PROXIES", app_environment)
         self.assertEqual(app_environment["MAKERHUB_TRUSTED_PROXIES"], "${MAKERHUB_TRUSTED_PROXIES:-}")
         self.assertEqual(
