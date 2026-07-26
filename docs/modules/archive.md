@@ -4,7 +4,7 @@
 
 - 提交单模型归档任务。
 - 对作者页、收藏夹、合集进行批量预扫描和入队。
-- 调用 MakerWorld/Bambu API、Scrapling 和必要 fallback 获取模型详情。
+- 通过对应 CloakBrowser profile 调用 MakerWorld/Bambu 控制面，使用现有辅助解析器获取模型详情。
 - 下载图片、评论、附件、打印配置、3MF 文件。
 - 维护缺失 3MF 列表、下载限额、防重复入队和失败原因。
 - 支持重建模型索引、修复 3MF 映射。
@@ -40,6 +40,8 @@
 - `discover_batch_model_urls()`
 - `resolve_batch_source_name()`
 - `normalize_source_url()`
+- `makerworld_browser_get()` / `makerworld_browser_get_text()` / `makerworld_browser_get_json()`
+- `browser_authorize_3mf_download()`
 - `fetch_with_scrapling()` / Scrapling helper
 - `reserve_three_mf_download_slot()`
 - `inspect_3mf_file()` / `resolve_model_instance_files()`
@@ -65,7 +67,10 @@
 ## 修改时不能破坏
 
 - Cookie 失效、Cloudflare、403/404/418、HTML 验证页要给出可诊断错误，不能把整段 HTML 写到 UI 或日志。
-- 能用 Scrapling 的地方优先用 Scrapling；fallback 要有日志 trace，但不要泄露 Cookie/Token。
+- MakerWorld 页面和 JSON 控制请求必须复用对应 CloakBrowser profile；已关联 profile 不得注入 MakerHub 旧 Cookie / Token，国内和国际 profile 不得串用。
+- CloakBrowser `5xx`、CDP 超时和断开按网络错误重试；只有真实 `401/403`、登录页、Cloudflare challenge 或验证载荷才能更新账号/gate 状态。
+- 图片、附件和已取得签名直链的 `3MF` 必须保留普通下载器直连，不得把大文件塞进浏览器通道；真实 `3MF` 点击授权不得内部重复。
+- Scrapling 只保留既有辅助抓取和解析职责；fallback 要有日志 trace，但不要泄露 Cookie/Token。
 - 批量发现结果要和源端总数形成闭环；数量不匹配时应保留状态并提示，不要误归档或误标删除。
 - 同一任务不能重复入队；缺失 3MF 重试也要检查已排队任务。
 - 3MF 每日/站点限额命中后要暂停自动重试，避免每天半夜反复触发上限。

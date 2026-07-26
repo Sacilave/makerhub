@@ -1,5 +1,12 @@
 # 更新说明
 
+## 2026-07-27 · v0.14.0
+
+- MakerWorld 页面、批量列表、评论、来源卡、账号 Web 探测和 `3MF` 下载地址 API 统一通过对应 CloakBrowser profile 请求；每次抓取使用独立临时页并在结束后关闭，不影响用户页面。
+- 已关联 profile 的浏览器 Cookie 优先，MakerHub 旧 Cookie / Token 不再反向覆盖；未关联旧账号仍保留一次性兼容注入路径，国内与国际 profile 严格隔离。
+- 删除 FlareSolverr 客户端、默认服务、环境变量和外部 Compose override，部署收敛为 App、Worker、Postgres、CloakBrowser 四容器；网页更新仅在 App / Worker readiness 和发布提交成功后清理旧内置容器。
+- CloakBrowser `5xx`、CDP 超时和断开归类为可重试网络错误；图片、附件和已取得签名直链的 `3MF` 仍由普通下载器直连，真实 `3MF` 点击授权不做内部重复。
+
 ## 2026-07-26 · v0.13.14
 
 - 修复 CloakBrowser 临时返回 HTTP `5xx` 时被误判为 MakerWorld 登录失效的问题；账号状态不再错误变成“需要重新登录”，也不会关闭平台级 `3MF` gate。

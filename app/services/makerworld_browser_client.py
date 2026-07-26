@@ -73,6 +73,7 @@ def _headers_for_profile(
         "authorization",
         "cookie",
         "token",
+        "user-agent",
         "x-access-token",
         "x-token",
     }

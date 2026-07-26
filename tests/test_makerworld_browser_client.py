@@ -49,6 +49,7 @@ class MakerWorldBrowserClientTest(unittest.TestCase):
                     "Accept": "application/json",
                     "Authorization": "Bearer old",
                     "token": "old",
+                    "User-Agent": "stale-fingerprint",
                 },
             )
 

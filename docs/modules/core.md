@@ -111,6 +111,7 @@ Runtime diagnostics include database table summaries, state-event counts, recent
 - 业务日志运行期必须读写 `makerhub_logs`；不要新增旧 `/app/config/logs/*.log` 写入分支。
 - 高频状态事件和纯成功追踪日志应在后端合并或降噪；失败、告警和用户动作日志必须保留。
 - 保存 Cookie/Token/分享码/公网地址不能把明文写进业务日志。
+- 已关联账号的 CloakBrowser profile 是 MakerWorld 运行登录态来源；不得用数据库里的旧 Cookie / Token 覆盖 profile 当前会话。
 - Token 权限必须由后端校验，前端隐藏按钮不能替代后端权限。
 - 保存设置后要更新资源限制和相关后台任务触发逻辑。
 - Cookie 保存后触发关注作者/收藏夹同步时应快速返回，耗时工作交给 worker。

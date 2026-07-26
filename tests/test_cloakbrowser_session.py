@@ -215,6 +215,9 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 headers={
                     "Accept": "text/html",
                     "Referer": "https://makerworld.com.cn/",
+                    "User-Agent": "must-use-profile-fingerprint",
+                    "X-BBL-App-Source": "makerworld",
+                    "X-BBL-Client-Type": "web",
                     "x-bbl-captcha-result": "verified",
                     "Cookie": "must-not-cross-the-bridge",
                     "Host": "attacker.example",
@@ -231,6 +234,8 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(payload["headers"], {
             "Accept": "text/html",
             "Referer": "https://makerworld.com.cn/",
+            "X-BBL-App-Source": "makerworld",
+            "X-BBL-Client-Type": "web",
             "x-bbl-captcha-result": "verified",
         })
         self.assertEqual(payload["cookies"][0]["name"], "token")
@@ -282,6 +287,10 @@ class CloakBrowserSessionTest(unittest.TestCase):
         fetch_end = source.index("async function main")
         fetch_source = source[fetch_start:fetch_end]
         self.assertIn("const page = await context.newPage()", fetch_source)
+        self.assertIn("const profileCookies = (await context.cookies()).filter", fetch_source)
+        self.assertIn("await page.setRequestInterception(true)", fetch_source)
+        self.assertIn('request.abort("blockedbyclient")', fetch_source)
+        self.assertNotIn("page.setExtraHTTPHeaders", fetch_source)
         self.assertIn("await page.close().catch(() => undefined)", fetch_source)
 
     def test_ensure_profile_reuses_saved_profile_id(self):

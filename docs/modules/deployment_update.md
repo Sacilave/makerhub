@@ -47,7 +47,7 @@
   - 更新状态存于 `makerhub_json_state:system_update`。
   - 数据库索引状态由 Core/归档索引模块维护。
 - Docker:
-  - `compose.yaml` 是唯一完整部署定义，不再需要外部 FlareSolverr override。
+  - `compose.yaml` 是唯一完整部署定义，不再需要额外的浏览器抓取 override。
   - 默认 compose 不挂载 `/var/run/docker.sock`；只有用户显式 opt-in 后，设置页才可直接网页更新。
   - App / Worker 依赖 Postgres 的 `service_healthy`，App、Worker、Postgres 都必须保留 healthcheck。
   - 默认目录布局为 `/app/config/{config,logs,state}` 与 `/app/data`，compose 只映射 `/app/config`、`/app/data` 和 Postgres 数据目录。

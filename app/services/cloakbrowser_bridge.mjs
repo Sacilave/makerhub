@@ -124,10 +124,11 @@ const ALLOWED_FETCH_HEADERS = new Set([
   "origin",
   "referer",
   "token",
-  "user-agent",
   "x-access-token",
   "x-app-name",
   "x-app-version",
+  "x-bbl-app-source",
+  "x-bbl-client-type",
   "x-bbl-client-name",
   "x-bbl-client-version",
   "x-bbl-captcha-result",
@@ -140,8 +141,44 @@ function cleanFetchHeaders(headers) {
   for (const [name, value] of Object.entries(source)) {
     const cleanName = String(name || "").trim();
     if (!cleanName || !ALLOWED_FETCH_HEADERS.has(cleanName.toLowerCase()) || value == null) continue;
-    result[cleanName] = String(value);
+    result[cleanName.toLowerCase()] = String(value);
   }
+  return result;
+}
+
+function headerExists(headers, targetName) {
+  const normalizedTarget = String(targetName || "").toLowerCase();
+  return Object.keys(headers).some((name) => name.toLowerCase() === normalizedTarget);
+}
+
+function isControlApiUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return parsed.hostname.toLowerCase().startsWith("api.bambulab.")
+      || parsed.pathname.startsWith("/api/")
+      || parsed.pathname.startsWith("/v1/");
+  } catch {
+    return false;
+  }
+}
+
+function headersWithBrowserAuth(headers, cookies, targetUrl) {
+  const result = { ...headers };
+  if (!isControlApiUrl(targetUrl)) return result;
+  const cookieValues = new Map(
+    (Array.isArray(cookies) ? cookies : [])
+      .filter((item) => item && item.name && item.value != null)
+      .map((item) => [String(item.name).toLowerCase(), String(item.value)]),
+  );
+  const token = cookieValues.get("token")
+    || cookieValues.get("access_token")
+    || cookieValues.get("accesstoken")
+    || "";
+  if (!token) return result;
+  if (!headerExists(result, "authorization")) result.authorization = `Bearer ${token}`;
+  if (!headerExists(result, "token")) result.token = token;
+  if (!headerExists(result, "x-token")) result["x-token"] = token;
+  if (!headerExists(result, "x-access-token")) result["x-access-token"] = token;
   return result;
 }
 
@@ -151,8 +188,20 @@ async function fetchBrowserResponse(context, platform, targetUrl, headers, cooki
   if (cleanCookies.length) await context.setCookie(...cleanCookies);
   const page = await context.newPage();
   try {
-    const cleanHeaders = cleanFetchHeaders(headers);
-    if (Object.keys(cleanHeaders).length) await page.setExtraHTTPHeaders(cleanHeaders);
+    const profileCookies = (await context.cookies()).filter((item) => (
+      hostnameMatchesDomains(String(item?.domain || ""), platformDomains(platform))
+    ));
+    const cleanHeaders = headersWithBrowserAuth(cleanFetchHeaders(headers), profileCookies, targetUrl);
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      if (!isAllowedBrowserFetchUrl(request.url(), platform)) {
+        void request.abort("blockedbyclient").catch(() => undefined);
+        return;
+      }
+      void request.continue({
+        headers: { ...request.headers(), ...cleanHeaders },
+      }).catch(() => undefined);
+    });
     const response = await page.goto(targetUrl, {
       waitUntil: "domcontentloaded",
       timeout: Math.max(Number(timeoutMs || 30000), 15000),

@@ -4,22 +4,22 @@
 
 # MakerHub
 
-> 当前版本：`v0.13.14`
+> 当前版本：`v0.14.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
 MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务器的 MakerWorld 本地归档系统。它不是公开模型站，而是把你关注、收藏、下载和本地积累的模型统一整理成自己的 MakerWorld 私有资料库。
 
-你可以归档单个模型，也可以批量归档作者页、收藏夹、合集；可以创建订阅定时同步新模型；也可以把手机、网页或本地文件夹里的 `3MF`、`STL`、`STEP`、`OBJ`、压缩包和附件导入 MakerHub。当前默认推荐 App / Worker / Postgres / FlareSolverr / CloakBrowser 五容器部署：App 负责页面和 API，Worker 负责后台抓取、整理和索引重建，Postgres 保存结构化配置、任务状态、业务日志和模型卡片索引，FlareSolverr 负责 MakerWorld 控制面抓取，CloakBrowser 提供浏览器登录态采集容器。
+你可以归档单个模型，也可以批量归档作者页、收藏夹、合集；可以创建订阅定时同步新模型；也可以把手机、网页或本地文件夹里的 `3MF`、`STL`、`STEP`、`OBJ`、压缩包和附件导入 MakerHub。当前默认推荐 App / Worker / Postgres / CloakBrowser 四容器部署：App 负责页面和 API，Worker 负责后台抓取、整理和索引重建，Postgres 保存结构化配置、任务状态、业务日志和模型卡片索引，CloakBrowser 保存 MakerWorld 登录 profile 并承载控制面抓取。
 
 ## 当前重点
 
 - 数据库化运行状态：配置、Cookie / Token、订阅、来源库 metadata、任务状态、分享记录、限流状态、系统更新状态和业务日志进入 Postgres。
 - 模型索引入库：归档模型卡片索引写入 `archive_model_index`，模型库、订阅库和来源库读取更稳定。
-- 五容器默认部署：默认 Compose 调整为 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`、`makerhub-flaresolverr`、`makerhub-cloakbrowser`。
+- 四容器默认部署：默认 Compose 包含 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`、`makerhub-cloakbrowser`。
 - 数据库索引重建：首次连接数据库后由 Worker 自动遍历历史归档库建立模型卡片索引；设置页不再保留旧的手动补全入口。
-- FlareSolverr 抓取通道：MakerWorld 页面、列表、评论和下载地址 API 走 FlareSolverr；图片、附件和 `3MF` 静态文件仍由普通下载器直接保存，`3MF` 直链保存失败会重新标记为缺失。
-- CloakBrowser 登录桥接：关联国内 / 国际固定 profile 后，指纹浏览器是唯一的 MakerWorld 登录态来源；归档开始前会读取浏览器当前会话，服务短暂不可用时可使用最近一次从该 profile 同步的有效会话继续普通抓取，浏览器未登录时明确暂停。
+- CloakBrowser 单通道：MakerWorld 页面、列表、评论和下载地址 API 统一复用国内 / 国际固定 profile；后台请求使用独立临时页，不导航或关闭用户页面。
+- 静态文件直连：图片、附件和已取得签名直链的 `3MF` 仍由普通下载器保存，避免大文件占用浏览器通道；失败后会重新标记为缺失。
 - 系统更新更安全：旧 compose 缺少 Postgres 配置时会阻止网页一键更新，并提示先升级 compose。
 - 文档重整：补齐架构说明、模块边界、Compose 安装、升级说明和 V0.7.0 更新记录。
 
@@ -39,13 +39,12 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 
 ## 架构
 
-推荐生产部署由三类服务组成：
+推荐生产部署由四个服务组成：
 
 - `makerhub-app`：FastAPI API、Vue SPA、登录鉴权、轻量写操作和页面数据读取。
 - `makerhub-worker`：归档队列、订阅同步、源端刷新、本地整理、模型索引重建和封面生成。
 - `makerhub-postgres`：结构化配置、JSON 状态、业务日志、模型卡片索引和索引状态。
-- `makerhub-flaresolverr`：MakerWorld 页面和控制面 API 的 Cloudflare 浏览器通道。
-- `makerhub-cloakbrowser`：浏览器登录态采集容器，保存可复用的 MakerWorld 浏览器 profile、Cookie 和本地会话数据。
+- `makerhub-cloakbrowser`：保存可复用的 MakerWorld 浏览器 profile、Cookie 和本地会话数据，并处理页面与控制面 API 请求。
 
 数据边界：
 
@@ -105,17 +104,7 @@ MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=change-this-cloakbrowser-token
 
 `MAKERHUB_CLOAKBROWSER_AUTH_TOKEN` 为必填项，App、Worker 和 CloakBrowser Manager 使用同一个强随机 token。端口 `9050` 默认只绑定 `127.0.0.1`，仅允许宿主机本地访问 Manager。若确需从局域网其他终端管理，显式设置 `MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=<LAN IP>` 和对应的 `MAKERHUB_CLOAKBROWSER_PUBLIC_URL`；这会扩大攻击面，应通过防火墙仅允许可信 LAN 地址访问，禁止直接暴露到公网。
 
-仓库默认 `compose.yaml` 会新建 `makerhub-flaresolverr`。如果你已经有可用的 FlareSolverr，使用 `compose.external-flaresolverr.yaml`，并在 `.env` 里增加：
-
-```env
-MAKERHUB_FLARESOLVERR_URL=http://你的FlareSolverr地址:端口/v1
-```
-
-`compose.yaml` 是唯一完整部署定义，不要从 README 复制或另存服务片段。需要外部 FlareSolverr 时，`compose.external-flaresolverr.yaml` 只覆盖 App / Worker 的地址并禁用内置服务：
-
-```bash
-docker compose -f compose.yaml -f compose.external-flaresolverr.yaml up -d
-```
+`compose.yaml` 是唯一完整部署定义，不要从 README 复制或另存服务片段，也不需要额外的浏览器抓取 override。
 
 ### 3. 启动
 
@@ -139,9 +128,9 @@ http://你的服务器IP:9042
 
 `/app/logs`、`/app/state`、`/app/archive`、`/app/local` 默认不再单独映射。新业务日志和结构化运行状态写入 Postgres；容器内 `/app/config/logs`、`/app/config/state` 仅保留给兼容挂载、上传暂存、预览队列 marker、备份和临时文件使用。
 
-MakerWorld 页面、作者 / 收藏 / 合集列表、评论和 `3MF` 下载地址 API 依赖 FlareSolverr。FlareSolverr 不可用时这些控制面请求会直接失败；已经拿到的图片、附件和 `3MF` 静态文件 URL 仍由 MakerHub 普通下载器直接保存，不会把大文件流量压到 FlareSolverr 上。若 `3MF` 静态直链实际保存失败，实例会写回 `cloudflare` / `http_error` / `missing` 状态并进入缺失 `3MF` 重试队列。
+MakerWorld 页面、作者 / 收藏 / 合集列表、评论和 `3MF` 下载地址 API 统一通过对应 CloakBrowser profile 请求。每次控制请求创建独立临时页并在结束后关闭，不会操作用户已打开的页面；国内和国际 profile 严格隔离，关联 profile 后不会再用 MakerHub 旧 Cookie 或 Token 覆盖浏览器登录态。CloakBrowser 短暂 `5xx`、CDP 超时或断开会按网络故障重试，不会直接提示重新登录。
 
-CloakBrowser 用于保存 MakerWorld 浏览器登录态，并为后续 `3MF` 探针确认提供可持久化的浏览器 profile。设置页默认通过“打开浏览器”关联或复用 `MakerHub CN` / `MakerHub Global` 固定 profile；在浏览器中完成登录后，MakerHub 自动读取当前会话，也可以点击“从浏览器同步”立即读取。关联 profile 后，浏览器会话会覆盖旧账号 Cookie，归档开始前也会再次读取浏览器会话；浏览器未登录时任务会暂停并提示浏览器操作。CloakBrowser 服务短暂不可用时，普通抓取可继续使用最近一次从该 profile 同步的有效会话；需要实时浏览器授权的 `3MF` 操作会按网络故障自动重试，不会误报为重新登录。手工验证码登录仅保留给未关联 profile 的兼容账号。它不是 FlareSolverr 的替代下载器，也不负责图片、附件或 `3MF` 静态文件的大文件传输。
+设置页默认通过“打开浏览器”关联或复用 `MakerHub CN` / `MakerHub Global` 固定 profile；在浏览器中完成登录后，MakerHub 自动读取当前会话，也可以点击“从浏览器同步”立即读取。未关联 profile 的旧账号仅在兼容路径中允许一次性注入现有 Cookie。需要真实交互的 `3MF` 授权仍在临时页点击一次，不做内部重复点击；已经拿到的图片、附件和 `3MF` 静态文件 URL 继续由 MakerHub 普通下载器保存。若静态直链保存失败，实例会写回 `cloudflare` / `http_error` / `missing` 状态并进入缺失 `3MF` 重试队列。
 
 ## 从旧版升级
 
@@ -150,21 +139,21 @@ CloakBrowser 用于保存 MakerWorld 浏览器登录态，并为后续 `3MF` 探
 ```bash
 docker rm -f makerhub || true
 docker rm -f makerhub-api makerhub-web || true
-docker compose pull makerhub-app makerhub-worker makerhub-postgres flaresolverr cloakbrowser
-docker compose up -d
+docker compose pull makerhub-app makerhub-worker makerhub-postgres cloakbrowser
+docker compose up -d --remove-orphans
 ```
 
 如果设置页提示“需改 compose”，说明当前容器缺少 `MAKERHUB_DATABASE_URL`、`makerhub-postgres`，或仍使用旧 `/app/archive`、`/app/local` 分散挂载。请先升级 compose，再使用网页一键更新。
 
-首次网页更新不能代替这次 compose 迁移：旧镜像没有内置 canonical `compose.yaml`，先替换为本版本的 `compose.yaml` 并用命令行启动 App / Worker / Postgres；之后才可在可信内网、显式挂载 Docker socket 的前提下使用设置页更新。网页更新会拉取同一发布组的镜像，依次校验 App HTTP 就绪和 Worker 心跳；任一候选失败会执行整组回滚，保留旧容器。
+首次网页更新不能代替这次 compose 迁移：旧镜像没有内置 canonical `compose.yaml`，先替换为本版本的 `compose.yaml` 并用命令行启动 App / Worker / Postgres / CloakBrowser；之后才可在可信内网、显式挂载 Docker socket 的前提下使用设置页更新。网页更新会拉取同一发布组的镜像，依次校验 App HTTP 就绪和 Worker 心跳；任一候选失败会执行整组回滚，保留旧容器。成功提交后只会 best-effort 清理旧版内置浏览器抓取容器，不会处理共享或自定义容器。
 
 旧部署如果原来把模型直接放在宿主机 `/volume2/entertainment/3D打印/makerhub` 根目录下，不需要移动历史模型目录。继续把这个目录映射到容器 `/app/data` 即可；本地导入入口保留在宿主机 `/volume2/entertainment/3D打印/makerhub/local/`，容器内就是 `/app/data/local`。
 
 手动更新命令：
 
 ```bash
-docker compose pull makerhub-app makerhub-worker makerhub-postgres flaresolverr cloakbrowser
-docker compose up -d
+docker compose pull makerhub-app makerhub-worker makerhub-postgres cloakbrowser
+docker compose up -d --remove-orphans
 ```
 
 默认 compose 不再挂载 Docker socket，因此设置页不会默认拥有宿主机 Docker 控制权限。只有明确需要网页一键更新时，才取消 `compose.yaml` 中 `/var/run/docker.sock:/var/run/docker.sock` 那一行注释，并仅在可信内网环境使用；不挂载时请用上面的手动更新命令。
@@ -190,6 +179,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-27 · v0.14.0
+
+- MakerWorld 页面、批量列表、评论、来源卡、账号 Web 探测和 `3MF` 下载地址 API 统一复用对应 CloakBrowser profile；后台临时页不会影响用户页面。
+- 默认部署收敛为 App、Worker、Postgres、CloakBrowser 四个容器，删除旧浏览器抓取客户端、服务、环境变量和外部 override；网页更新仅在 readiness 成功后清理旧内置容器。
+- 已关联 profile 不再被 MakerHub 旧 Cookie / Token 覆盖；浏览器瞬时故障归为网络错误，图片、附件和已授权 `3MF` 直链继续并行直连下载。
+
 ### 2026-07-26 · v0.13.14
 
 - CloakBrowser 临时 HTTP `5xx` 不再被误判为登录失效，也不会关闭平台级 `3MF` gate。
@@ -202,14 +197,14 @@ uvicorn app.main:app --reload
 - 技术异常会结束“检测中”状态并保留可诊断日志，不会覆盖真实的人工验证或每日限额状态。
 - Web 进程新增或重排授权探测任务后会立即唤醒 Worker，不再受最长 10 分钟的阻塞退避影响。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-26 · v0.13.12
 
 - 指纹浏览器技术超时不再误报为人工验证，也不会暂停同平台其他归档任务；此类缺失 `3MF` 会自动重试。
 - 同一浏览器 profile 在 App / Worker 子进程间串行操作，授权响应可独立等待 90 秒，避免并发页面操作和过早超时。
 - 当前模型遇到技术错误后不再继续点击其余实例，减少无效授权请求和下载次数浪费。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-25 · v0.13.11
 
