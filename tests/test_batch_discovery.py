@@ -220,9 +220,9 @@ class BatchDiscoveryTest(unittest.TestCase):
             headers = {"User-Agent": "test-agent"}
 
             def get(self, url, **_kwargs):
-                raise AssertionError("batch discovery API must use FlareSolverr")
+                raise AssertionError("batch discovery API must use CloakBrowser")
 
-        def fake_flaresolverr(url, **_kwargs):
+        def fake_browser_get(url, **_kwargs):
             calls.append(url)
             if len(calls) == 1:
                 return {"hits": [], "total": 0}
@@ -234,8 +234,8 @@ class BatchDiscoveryTest(unittest.TestCase):
             return_value=["https://api.example.test/empty", "https://api.example.test/full"],
         ), patch.object(
             batch_discovery,
-            "flaresolverr_get_json",
-            side_effect=fake_flaresolverr,
+            "makerworld_browser_get_json",
+            side_effect=fake_browser_get,
         ), patch.object(batch_discovery, "_append_discovery_debug"):
             payload = batch_discovery._api_get_json(
                 FakeSession(),
@@ -250,12 +250,12 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(payload["total"], 1)
 
-    def test_fetch_listing_html_uses_flaresolverr_without_curl_fallback(self):
+    def test_fetch_listing_html_uses_cloakbrowser_without_curl_fallback(self):
         session = requests.Session()
 
         with patch.object(
             batch_discovery,
-            "fetch_html_with_flaresolverr",
+            "fetch_html_with_browser",
             return_value="<html><script id=\"__NEXT_DATA__\"></script></html>",
         ):
             html = batch_discovery._fetch_listing_html(
@@ -266,16 +266,16 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         self.assertIn("__NEXT_DATA__", html)
 
-    def test_api_get_json_uses_flaresolverr_without_requests(self):
+    def test_api_get_json_uses_cloakbrowser_without_requests(self):
         calls = []
 
         class FailingSession:
             headers = {"User-Agent": "test-agent"}
 
             def get(self, *_args, **_kwargs):
-                raise AssertionError("batch discovery API must use FlareSolverr")
+                raise AssertionError("batch discovery API must use CloakBrowser")
 
-        def fake_flaresolverr(url, **kwargs):
+        def fake_browser_get(url, **kwargs):
             calls.append((url, kwargs))
             if url.endswith("/empty"):
                 return {"hits": [], "total": 0}
@@ -287,8 +287,8 @@ class BatchDiscoveryTest(unittest.TestCase):
             return_value=["https://api.example.test/empty", "https://api.example.test/full"],
         ), patch.object(
             batch_discovery,
-            "flaresolverr_get_json",
-            side_effect=fake_flaresolverr,
+            "makerworld_browser_get_json",
+            side_effect=fake_browser_get,
         ), patch.object(batch_discovery, "_append_discovery_debug"):
             payload = batch_discovery._api_get_json(
                 FailingSession(),

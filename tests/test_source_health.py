@@ -445,8 +445,8 @@ class SourceHealthCardsTest(unittest.TestCase):
         session = RecordingSession()
         with patch.object(source_health, "_make_session", return_value=session), patch.object(
             source_health,
-            "flaresolverr_get_text",
-            side_effect=AssertionError("auth API probes must not use FlareSolverr"),
+            "makerworld_browser_get",
+            side_effect=AssertionError("auth API probes must keep their direct request path"),
         ):
             payload = source_health._probe_auth_endpoints("global", "token=abc", proxy)
 
@@ -476,8 +476,8 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         with patch.object(source_health, "_make_session", return_value=UnauthorizedSession()), patch.object(
             source_health,
-            "flaresolverr_get_text",
-            side_effect=AssertionError("auth API probes must not use FlareSolverr"),
+            "makerworld_browser_get",
+            side_effect=AssertionError("auth API probes must keep their direct request path"),
         ):
             payload = source_health._probe_auth_endpoints("global", "token=expired", None)
 
@@ -501,8 +501,8 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         with patch.object(source_health, "_make_session", return_value=RedirectSession()), patch.object(
             source_health,
-            "flaresolverr_get_text",
-            side_effect=AssertionError("auth API probes must not use FlareSolverr"),
+            "makerworld_browser_get",
+            side_effect=AssertionError("auth API probes must keep their direct request path"),
         ):
             payload = source_health._probe_auth_endpoints("global", "", None)
 
@@ -510,23 +510,47 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(payload["state"], "http_error")
         self.assertEqual([item["status_code"] for item in payload["results"]], [302, 302])
 
-    def test_web_probe_uses_flaresolverr_without_session_get(self):
+    def test_web_probe_uses_cloakbrowser_status_without_session_get(self):
         class FailingSession:
             def close(self):
                 return None
 
             def get(self, *_args, **_kwargs):
-                raise AssertionError("source health web probe must use FlareSolverr")
+                raise AssertionError("source health web probe must use CloakBrowser")
 
         with patch.object(source_health, "_make_session", return_value=FailingSession()), patch.object(
             source_health,
-            "flaresolverr_get_text",
-            return_value="<html><script id=\"__NEXT_DATA__\"></script></html>",
+            "makerworld_browser_get",
+            return_value=SimpleNamespace(
+                status_code=200,
+                text="<html><script id=\"__NEXT_DATA__\"></script></html>",
+                headers={"content-type": "text/html"},
+                url="https://makerworld.com.cn/zh",
+            ),
         ):
             payload = source_health._probe_platform_web_page("cn", "token=abc", None)
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["state"], "ok")
+        self.assertEqual(payload["results"][0]["engine"], "cloakbrowser")
+
+    def test_web_probe_preserves_cloakbrowser_unauthorized_status(self):
+        session = SimpleNamespace(close=lambda: None)
+        with patch.object(source_health, "_make_session", return_value=session), patch.object(
+            source_health,
+            "makerworld_browser_get",
+            return_value=SimpleNamespace(
+                status_code=403,
+                text="<html>login</html>",
+                headers={"content-type": "text/html"},
+                url="https://makerworld.com.cn/zh",
+            ),
+        ):
+            payload = source_health._probe_platform_web_page("cn", "token=expired", None)
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["state"], "auth_required")
+        self.assertEqual(payload["results"][0]["status_code"], 403)
 
     def test_cookie_partial_success_message_avoids_probe_count_jargon(self):
         message = source_health._build_cookie_auth_message(

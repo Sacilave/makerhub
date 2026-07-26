@@ -15,7 +15,7 @@ from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.account_health import load_account_health, snapshot_to_source_card
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
-from app.services.flaresolverr_client import FlareSolverrError, flaresolverr_get_text
+from app.services.makerworld_browser_client import makerworld_browser_get
 from app.services.proxy_policy import effective_proxy_cache_state, proxy_mapping
 from app.services.state_events import publish_state_event
 from app.services.three_mf import (
@@ -614,7 +614,7 @@ def _probe_platform_web_page(platform: str, raw_cookie: str, proxy_config: Any) 
     headers = _build_request_headers(PLATFORM_ORIGINS.get(platform_key, ""), raw_cookie)
     started = time.perf_counter()
     try:
-        text = flaresolverr_get_text(
+        response = makerworld_browser_get(
             url,
             headers=headers,
             raw_cookie=raw_cookie,
@@ -624,11 +624,11 @@ def _probe_platform_web_page(platform: str, raw_cookie: str, proxy_config: Any) 
         return _web_probe_payload_from_response(
             platform=platform_key,
             url=url,
-            status_code=200,
-            text=text or "",
-            headers={},
+            status_code=int(response.status_code or 0),
+            text=response.text or "",
+            headers=dict(response.headers or {}),
             elapsed_ms=elapsed_ms,
-            engine="flaresolverr",
+            engine="cloakbrowser",
         )
     except Exception as exc:
         return {

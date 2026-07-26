@@ -706,12 +706,6 @@ def fetch_html_with_browser(session: requests.Session, url: str, raw_cookie: str
     except MakerWorldBrowserError as exc:
         log("CloakBrowser 获取页面失败:", exc)
         return None
-
-
-# 批量和来源模块在后续迁移阶段切换后删除此兼容别名。
-fetch_html_with_flaresolverr = fetch_html_with_browser
-
-
 def _session_cookie_header(session: requests.Session) -> str:
     try:
         return "; ".join(

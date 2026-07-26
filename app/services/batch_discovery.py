@@ -11,12 +11,15 @@ from bs4 import BeautifulSoup
 from app.core.settings import LOGS_DIR
 from app.services.business_logs import append_structured_log
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
-from app.services.flaresolverr_client import FlareSolverrError, flaresolverr_get_json
 from app.services.legacy_archiver import (
     extract_next_data,
     fetch_design_from_api,
-    fetch_html_with_flaresolverr,
+    fetch_html_with_browser,
     parse_cookies,
+)
+from app.services.makerworld_browser_client import (
+    MakerWorldBrowserError,
+    makerworld_browser_get_json,
 )
 
 
@@ -119,10 +122,10 @@ def extract_model_id(url: str) -> str:
 
 
 def _fetch_listing_html(session: requests.Session, page_url: str, raw_cookie: str) -> str:
-    html = fetch_html_with_flaresolverr(session, page_url, raw_cookie)
+    html = fetch_html_with_browser(session, page_url, raw_cookie)
     if html:
         return html
-    raise RuntimeError("FlareSolverr 获取来源页面失败。")
+    raise RuntimeError("CloakBrowser 获取来源页面失败。")
 
 
 def _extract_auth_token(raw_cookie: str) -> str:
@@ -217,7 +220,7 @@ def _api_get_json(
     for api_url in _service_endpoint_candidates(source_url, service_name, path):
         started = time.time()
         try:
-            payload = flaresolverr_get_json(
+            payload = makerworld_browser_get_json(
                 api_url,
                 raw_cookie=raw_cookie,
                 headers=headers,
@@ -225,14 +228,14 @@ def _api_get_json(
                 session=session,
                 allow_non_json=True,
             )
-        except FlareSolverrError as exc:
+        except MakerWorldBrowserError as exc:
             _append_discovery_debug(
                 "api_error",
                 api_url=api_url,
                 service=service_name,
                 path=path,
                 params=params or {},
-                engine="flaresolverr",
+                engine="cloakbrowser",
                 error=str(exc),
                 elapsed_ms=round((time.time() - started) * 1000, 1),
             )
@@ -244,7 +247,7 @@ def _api_get_json(
                 service=service_name,
                 path=path,
                 params=params or {},
-                engine="flaresolverr",
+                engine="cloakbrowser",
                 elapsed_ms=round((time.time() - started) * 1000, 1),
             )
             continue
@@ -257,7 +260,7 @@ def _api_get_json(
                 service=service_name,
                 path=path,
                 params=params or {},
-                engine="flaresolverr",
+                engine="cloakbrowser",
                 elapsed_ms=round((time.time() - started) * 1000, 1),
                 total=(hits_payload or {}).get("total"),
                 payload_summary=payload_summary,
@@ -269,7 +272,7 @@ def _api_get_json(
             service=service_name,
             path=path,
             params=params or {},
-            engine="flaresolverr",
+            engine="cloakbrowser",
             elapsed_ms=round((time.time() - started) * 1000, 1),
             uid=_extract_uid(payload),
             hits=len((hits_payload or {}).get("hits") or []),
