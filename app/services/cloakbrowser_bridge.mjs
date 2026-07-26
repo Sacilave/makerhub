@@ -93,6 +93,89 @@ function isMakerWorldModelUrl(value, platform) {
   }
 }
 
+function platformDomains(platform) {
+  return platform === "global"
+    ? ["makerworld.com", "bambulab.com"]
+    : ["makerworld.com.cn", "bambulab.cn"];
+}
+
+function hostnameMatchesDomains(hostname, domains) {
+  const cleanHostname = String(hostname || "").trim().toLowerCase().replace(/^\.+/, "");
+  return domains.some((domain) => cleanHostname === domain || cleanHostname.endsWith(`.${domain}`));
+}
+
+function isAllowedBrowserFetchUrl(value, platform) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return parsed.protocol === "https:"
+      && !parsed.username
+      && !parsed.password
+      && (!parsed.port || parsed.port === "443")
+      && hostnameMatchesDomains(parsed.hostname, platformDomains(platform));
+  } catch {
+    return false;
+  }
+}
+
+const ALLOWED_FETCH_HEADERS = new Set([
+  "accept",
+  "accept-language",
+  "authorization",
+  "origin",
+  "referer",
+  "token",
+  "user-agent",
+  "x-access-token",
+  "x-app-name",
+  "x-app-version",
+  "x-bbl-client-name",
+  "x-bbl-client-version",
+  "x-token",
+]);
+
+function cleanFetchHeaders(headers) {
+  const source = headers && typeof headers === "object" ? headers : {};
+  const result = {};
+  for (const [name, value] of Object.entries(source)) {
+    const cleanName = String(name || "").trim();
+    if (!cleanName || !ALLOWED_FETCH_HEADERS.has(cleanName.toLowerCase()) || value == null) continue;
+    result[cleanName] = String(value);
+  }
+  return result;
+}
+
+async function fetchBrowserResponse(context, platform, targetUrl, headers, cookies, timeoutMs) {
+  if (!isAllowedBrowserFetchUrl(targetUrl, platform)) throw new Error("invalid browser fetch URL");
+  const cleanCookies = (Array.isArray(cookies) ? cookies : []).map(cleanCookie).filter(Boolean);
+  if (cleanCookies.length) await context.setCookie(...cleanCookies);
+  const page = await context.newPage();
+  try {
+    const cleanHeaders = cleanFetchHeaders(headers);
+    if (Object.keys(cleanHeaders).length) await page.setExtraHTTPHeaders(cleanHeaders);
+    const response = await page.goto(targetUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: Math.max(Number(timeoutMs || 30000), 15000),
+    });
+    if (!response) throw new Error("browser fetch did not return a response");
+    const finalUrl = page.url();
+    if (!isAllowedBrowserFetchUrl(finalUrl, platform)) throw new Error("browser fetch redirected outside allowed domains");
+    const responseHeaders = response.headers();
+    const safeHeaders = {};
+    for (const name of ["content-type", "retry-after", "location"]) {
+      if (responseHeaders[name]) safeHeaders[name] = String(responseHeaders[name]);
+    }
+    return {
+      status_code: Number(response.status() || 0),
+      url: finalUrl,
+      content_type: String(responseHeaders["content-type"] || ""),
+      headers: safeHeaders,
+      text: await response.text(),
+    };
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
 function isThreeMfAuthorizationUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
@@ -226,6 +309,18 @@ async function main() {
   try {
     const contexts = browser.browserContexts();
     const context = contexts[0] || browser.defaultBrowserContext();
+    if (input.action === "fetch") {
+      const fetched = await fetchBrowserResponse(
+        context,
+        String(input.platform || "cn"),
+        String(input.target_url || ""),
+        input.headers,
+        input.cookies,
+        input.navigation_timeout_ms,
+      );
+      process.stdout.write(JSON.stringify({ ok: true, ...fetched }));
+      return;
+    }
     if (input.action === "click") {
       const authorization = await clickAuthorization(
         context,

@@ -42,6 +42,21 @@ PLATFORM_DOMAINS = {
     "cn": ("makerworld.com.cn", "bambulab.cn"),
     "global": ("makerworld.com", "bambulab.com"),
 }
+ALLOWED_BROWSER_FETCH_HEADERS = {
+    "accept",
+    "accept-language",
+    "authorization",
+    "origin",
+    "referer",
+    "token",
+    "user-agent",
+    "x-access-token",
+    "x-app-name",
+    "x-app-version",
+    "x-bbl-client-name",
+    "x-bbl-client-version",
+    "x-token",
+}
 
 class CloakBrowserError(RuntimeError):
     pass
@@ -73,6 +88,16 @@ class CloakBrowserSessionResult:
     navigation_error: str = ""
 
 
+@dataclass(frozen=True)
+class CloakBrowserFetchResult:
+    profile_id: str
+    url: str
+    status_code: int
+    content_type: str
+    text: str
+    headers: dict[str, str]
+
+
 def normalize_platform(platform: str) -> str:
     return "global" if str(platform or "").strip().lower() == "global" else "cn"
 
@@ -83,6 +108,34 @@ def _hostname_matches_domains(hostname: str, domains: tuple[str, ...]) -> bool:
         clean_hostname == domain or clean_hostname.endswith(f".{domain}")
         for domain in domains
     )
+
+
+def _validate_browser_fetch_url(url: str, platform: str) -> str:
+    clean_platform = normalize_platform(platform)
+    try:
+        parsed = urlparse(str(url or "").strip())
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise CloakBrowserError("指纹浏览器抓取目标地址无效。") from exc
+    hostname = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or port not in {None, 443}
+        or not _hostname_matches_domains(hostname, PLATFORM_DOMAINS[clean_platform])
+    ):
+        raise CloakBrowserError("指纹浏览器抓取目标地址不属于当前 MakerWorld 平台。")
+    return parsed._replace(fragment="").geturl()
+
+
+def _safe_browser_fetch_headers(headers: dict[str, str] | None) -> dict[str, str]:
+    return {
+        str(name).strip(): str(value)
+        for name, value in (headers or {}).items()
+        if str(name).strip().lower() in ALLOWED_BROWSER_FETCH_HEADERS and value is not None
+    }
 
 
 def cloakbrowser_configured() -> bool:
@@ -483,6 +536,64 @@ def _bridge_payload(
         "navigation_timeout_ms": max(_timeout_seconds() * 1000, 15000),
         "authorization_timeout_ms": AUTHORIZATION_TIMEOUT_SECONDS * 1000,
     }
+
+
+def browser_fetch(
+    platform: str,
+    url: str,
+    *,
+    profile_id: str = "",
+    headers: dict[str, str] | None = None,
+    cookie_items: list[dict[str, Any]] | None = None,
+    timeout_seconds: int | None = None,
+) -> CloakBrowserFetchResult:
+    clean_platform = normalize_platform(platform)
+    clean_url = _validate_browser_fetch_url(url, clean_platform)
+    try:
+        operation_timeout = int(timeout_seconds or _timeout_seconds())
+    except (TypeError, ValueError):
+        operation_timeout = _timeout_seconds()
+    operation_timeout = max(min(operation_timeout, 180), 5)
+    clean_profile_id = str(profile_id or "").strip()
+
+    with resource_slot(
+        _profile_resource_name(clean_platform, clean_profile_id),
+        detail="fetch",
+    ):
+        profile = ensure_profile(clean_platform, clean_profile_id)
+        running, _launched_here = launch_profile(profile)
+        payload = _bridge_payload(
+            running.id,
+            action="fetch",
+            cookies=_normalize_structured_cookie_items(cookie_items, clean_platform),
+            target_url=clean_url,
+            platform=clean_platform,
+        )
+        payload["headers"] = _safe_browser_fetch_headers(headers)
+        payload["navigation_timeout_ms"] = operation_timeout * 1000
+        result = _run_bridge(
+            payload,
+            timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
+        )
+
+    final_url = _validate_browser_fetch_url(str(result.get("url") or clean_url), clean_platform)
+    try:
+        status_code = max(int(result.get("status_code") or 0), 0)
+    except (TypeError, ValueError):
+        status_code = 0
+    response_headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+    return CloakBrowserFetchResult(
+        profile_id=running.id,
+        url=final_url,
+        status_code=status_code,
+        content_type=str(result.get("content_type") or "")[:240],
+        text=str(result.get("text") or ""),
+        headers={
+            str(name).lower(): str(value)[:1000]
+            for name, value in response_headers.items()
+            if str(name).lower() in {"content-type", "retry-after", "location"}
+        },
+    )
 
 
 def _is_browser_three_mf_authorization_url(url: str, platform: str) -> bool:

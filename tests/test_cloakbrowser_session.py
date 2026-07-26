@@ -169,6 +169,119 @@ class CloakBrowserSessionTest(unittest.TestCase):
             source.index("const button = await findThreeMfDownloadButton"),
         )
 
+    def test_browser_fetch_rejects_non_makerworld_target(self):
+        with patch.object(cloakbrowser_session, "ensure_profile") as ensure_mock:
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "目标地址"):
+                cloakbrowser_session.browser_fetch("cn", "https://example.com/private")
+
+        ensure_mock.assert_not_called()
+
+    def test_browser_fetch_uses_temporary_profile_page_and_returns_structured_result(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        bridge_result = {
+            "status_code": 200,
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "content_type": "text/html; charset=utf-8",
+            "text": "<html>ok</html>",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+            },
+            clear=True,
+        ), patch.object(
+            cloakbrowser_session,
+            "ensure_profile",
+            return_value=profile,
+        ), patch.object(
+            cloakbrowser_session,
+            "launch_profile",
+            return_value=(profile, False),
+        ), patch.object(
+            cloakbrowser_session,
+            "_run_bridge",
+            return_value=bridge_result,
+        ) as bridge_mock:
+            result = cloakbrowser_session.browser_fetch(
+                "cn",
+                "https://makerworld.com.cn/zh/models/1",
+                profile_id="profile-cn",
+                headers={
+                    "Accept": "text/html",
+                    "Referer": "https://makerworld.com.cn/",
+                    "Cookie": "must-not-cross-the-bridge",
+                    "Host": "attacker.example",
+                },
+                cookie_items=[{"name": "token", "value": "legacy", "domain": ".makerworld.com.cn"}],
+            )
+
+        self.assertEqual(result.profile_id, "profile-cn")
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.content_type, "text/html; charset=utf-8")
+        self.assertEqual(result.text, "<html>ok</html>")
+        payload = bridge_mock.call_args.args[0]
+        self.assertEqual(payload["action"], "fetch")
+        self.assertEqual(payload["headers"], {
+            "Accept": "text/html",
+            "Referer": "https://makerworld.com.cn/",
+        })
+        self.assertEqual(payload["cookies"][0]["name"], "token")
+
+    def test_browser_fetch_rejects_redirect_outside_platform_domains(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+            },
+            clear=True,
+        ), patch.object(
+            cloakbrowser_session,
+            "ensure_profile",
+            return_value=profile,
+        ), patch.object(
+            cloakbrowser_session,
+            "launch_profile",
+            return_value=(profile, False),
+        ), patch.object(
+            cloakbrowser_session,
+            "_run_bridge",
+            return_value={
+                "status_code": 302,
+                "url": "https://attacker.example/login",
+                "content_type": "text/html",
+                "text": "",
+            },
+        ):
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "目标地址"):
+                cloakbrowser_session.browser_fetch(
+                    "cn",
+                    "https://makerworld.com.cn/zh/models/1",
+                    profile_id="profile-cn",
+                )
+
+    def test_bridge_fetch_uses_a_new_page_and_always_closes_it(self):
+        source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('if (input.action === "fetch")', source)
+        self.assertIn("async function fetchBrowserResponse", source)
+        fetch_start = source.index("async function fetchBrowserResponse")
+        fetch_end = source.index("async function main")
+        fetch_source = source[fetch_start:fetch_end]
+        self.assertIn("const page = await context.newPage()", fetch_source)
+        self.assertIn("await page.close().catch(() => undefined)", fetch_source)
+
     def test_ensure_profile_reuses_saved_profile_id(self):
         with patch.object(
             cloakbrowser_session,
