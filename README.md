@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.14.3`
+> 当前版本：`v0.14.4`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -179,6 +179,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-27 · v0.14.4
+
+- 指纹浏览器验证恢复期间，3MF 下载子任务成功后会继续放行下一个暂停任务，避免账号和验证状态已正常但归档队列停住。
+- 恢复链仍保持单任务探测：只有真实下载成功才继续推进，再次遇到验证时会停止，避免批量消耗下载次数。
+
 ### 2026-07-27 · v0.14.3
 
 - CloakBrowser profile 重启后，如果 Bambu 账号仍有效，MakerHub 会自动点击官方“继续”确认并恢复 MakerWorld session，不再要求重复输入账号或验证码。
@@ -189,14 +194,14 @@ uvicorn app.main:app --reload
 - 打开或同步 CloakBrowser profile 时，优先使用浏览器内部登录态直接换取 Bambu ticket 并完成 MakerWorld 回跳，不再反复停在“继续”确认页。
 - ticket 直连只访问当前平台的 Bambu / MakerWorld 官方端点；失败时保留原登录页供人工处理，不会自动跳过 CAPTCHA、短信或其他验证。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-27 · v0.14.1
 
 - `3MF` 验证恢复改为单任务探测链：每次只放行 1 个暂停任务，真实下载成功后才继续下一个，再次触发验证时立即停止。
 - 验证暂停与恢复改为 Postgres 原子更新，只标记当前探测模型；普通归档仍使用原有并发设置。
 - 过期的 CloakBrowser、账号定时检测和订阅来源结果不再覆盖新 Cookie，修复 `config.cookies` 并发冲突和误报登录状态。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-27 · v0.14.0
 

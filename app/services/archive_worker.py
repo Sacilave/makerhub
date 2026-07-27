@@ -3881,7 +3881,7 @@ class ArchiveTaskManager:
                         "source": account_platform,
                     },
                 )
-        elif browser_three_mf_authorization and missing_3mf_retry and not missing_items:
+        elif browser_three_mf_authorization and (missing_3mf_retry or three_mf_download_task) and not missing_items:
             resumed_count = self._resume_paused_missing_3mf_retry_tasks_for_platform(account_platform)
             if resumed_count:
                 _log_archive(

@@ -280,6 +280,49 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         self.assertEqual(run_mock.call_args.kwargs["browser_profile_id"], "profile-cn")
         resume_mock.assert_called_once_with("cn")
 
+    def test_browser_recovery_3mf_stage_success_resumes_next_paused_task(self):
+        manager, _store = self._manager_with_cookie("token=same; refreshToken=fresh")
+        manager.task_store = SimpleNamespace(
+            replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
+            remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
+            update_active_task=lambda *_args, **_kwargs: None,
+            complete_archive_task=lambda *_args, **_kwargs: None,
+        )
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(
+                    archive_worker_module,
+                    "collect_browser_session",
+                    return_value=CloakBrowserSessionResult(profile_id="profile-cn", cookie="token=same; refreshToken=fresh"),
+                ), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": True, "state": "open"}), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(
+                    archive_worker_module,
+                    "run_archive_model_job",
+                    return_value={"model_id": "123", "base_name": "Demo", "work_dir": "", "missing_3mf": []},
+                ), \
+                patch.object(archive_worker_module, "mark_account_ok"), \
+                patch.object(manager, "_resume_paused_missing_3mf_retry_tasks_for_platform", return_value=1) as resume_mock, \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_single_task(
+                "task-browser-stage",
+                "https://makerworld.com.cn/zh/models/123",
+                {
+                    "three_mf_download": True,
+                    "browser_session_recovery": True,
+                    "source": "cn",
+                    "instance_ids": ["profile-1"],
+                },
+            )
+
+        resume_mock.assert_called_once_with("cn")
+
     def test_3mf_retry_prefers_saved_browser_profile_before_direct_authorization(self):
         manager, _store = self._manager_with_cookie("token=same; refreshToken=fresh")
         manager.task_store = SimpleNamespace(
