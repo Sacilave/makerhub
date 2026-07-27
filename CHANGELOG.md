@@ -1,5 +1,10 @@
 # 更新说明
 
+## 2026-07-27 · v0.14.2
+
+- CloakBrowser 登录启动和后台会话同步会优先在关联 profile 内调用 Bambu 官方 ticket 接口，再跳转到对应 MakerWorld 回调；已有浏览器登录态不再反复停在“继续”确认页。
+- ticket 交换固定限制在当前平台的 Bambu / MakerWorld 官方域名，并同时支持浏览器 Cookie 与 localStorage token；接口失败或返回无效 ticket 时保留原登录页，继续允许人工完成 CAPTCHA、短信或其他验证。
+
 ## 2026-07-27 · v0.14.1
 
 - `3MF` 验证恢复改为单任务探测链：一次只放行 1 个暂停任务，真实下载成功后再放行下一个，再次遇到 MakerWorld 验证时立即停止，不再一次恢复整个平台队列。

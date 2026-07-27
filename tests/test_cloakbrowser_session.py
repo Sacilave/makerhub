@@ -169,6 +169,18 @@ class CloakBrowserSessionTest(unittest.TestCase):
             source.index("const button = await findThreeMfDownloadButton"),
         )
 
+    def test_bridge_exchanges_official_ticket_before_login_page_fallback(self):
+        source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("async function tryDirectTicketLogin", source)
+        self.assertIn('"https://api.bambulab.cn/v1/user-service/user/ticket"', source)
+        self.assertIn('"https://makerworld.com.cn/api/sign-in/ticket"', source)
+        self.assertIn('input.action === "login" || input.action === "sync"', source)
+        self.assertLess(
+            source.index("await tryDirectTicketLogin"),
+            source.index("await page.goto(String(input.target_url)"),
+        )
+
     def test_browser_fetch_rejects_non_makerworld_target(self):
         with patch.object(cloakbrowser_session, "ensure_profile") as ensure_mock:
             with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "目标地址"):
@@ -482,7 +494,11 @@ class CloakBrowserSessionTest(unittest.TestCase):
         with patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
                 patch.object(cloakbrowser_session, "launch_profile", return_value=(running, True)), \
                 patch.object(cloakbrowser_session, "makerworld_ticket_url", return_value=""), \
-                patch.object(cloakbrowser_session, "_run_bridge", return_value={"ok": True, "cookies": [], "storage": []}), \
+                patch.object(
+                    cloakbrowser_session,
+                    "_run_bridge",
+                    return_value={"ok": True, "cookies": [], "storage": []},
+                ) as bridge_mock, \
                 patch.object(cloakbrowser_session, "stop_profile") as stop_mock, \
                 patch.dict(
                     os.environ,
@@ -495,6 +511,9 @@ class CloakBrowserSessionTest(unittest.TestCase):
             result = cloakbrowser_session.prepare_browser_login("cn")
 
         self.assertEqual(result.profile_id, "profile-cn")
+        bridge_payload = bridge_mock.call_args.args[0]
+        self.assertEqual(bridge_payload["action"], "login")
+        self.assertEqual(bridge_payload["platform"], "cn")
         stop_mock.assert_not_called()
 
     def test_collect_browser_session_navigates_blank_profile_to_platform_home(self):
@@ -522,7 +541,8 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         self.assertEqual(result.cookie, "token=browser-token")
         bridge_payload = bridge_mock.call_args.args[0]
-        self.assertEqual(bridge_payload["action"], "snapshot")
+        self.assertEqual(bridge_payload["action"], "sync")
+        self.assertEqual(bridge_payload["platform"], "cn")
         self.assertEqual(bridge_payload["target_url"], "https://makerworld.com.cn/zh")
 
     def test_browser_3mf_authorization_uses_target_page_click_without_cookie_payload(self):

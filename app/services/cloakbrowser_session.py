@@ -706,6 +706,7 @@ def synchronize_browser_session(
                     action="seed",
                     cookies=browser_cookie_items(raw_cookie, clean_platform, structured_items),
                     target_url=target_url,
+                    platform=clean_platform,
                 )
             )
             current_url = str(snapshot.get("current_url") or "")
@@ -741,12 +742,14 @@ def prepare_browser_login(
         profile = ensure_profile(clean_platform, profile_id)
         running, launched_here = launch_profile(profile)
         target_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config) or browser_login_url(clean_platform)
+        action = "seed" if raw_cookie and target_url != browser_login_url(clean_platform) else "login"
         snapshot = _run_bridge(
             _bridge_payload(
                 running.id,
-                action="seed",
+                action=action,
                 cookies=browser_cookie_items(raw_cookie, clean_platform) if raw_cookie else [],
                 target_url=target_url,
+                platform=clean_platform,
             )
         )
         return CloakBrowserSessionResult(
@@ -767,8 +770,9 @@ def collect_browser_session(platform: str, profile_id: str) -> CloakBrowserSessi
         snapshot = _run_bridge(
             _bridge_payload(
                 running.id,
-                action="snapshot",
+                action="sync",
                 target_url=f"{PLATFORM_ORIGINS[clean_platform]}/zh",
+                platform=clean_platform,
             )
         )
         return CloakBrowserSessionResult(

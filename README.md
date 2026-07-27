@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.14.1`
+> 当前版本：`v0.14.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -179,6 +179,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-27 · v0.14.2
+
+- 打开或同步 CloakBrowser profile 时，优先使用浏览器内部登录态直接换取 Bambu ticket 并完成 MakerWorld 回跳，不再反复停在“继续”确认页。
+- ticket 直连只访问当前平台的 Bambu / MakerWorld 官方端点；失败时保留原登录页供人工处理，不会自动跳过 CAPTCHA、短信或其他验证。
+
 ### 2026-07-27 · v0.14.1
 
 - `3MF` 验证恢复改为单任务探测链：每次只放行 1 个暂停任务，真实下载成功后才继续下一个，再次触发验证时立即停止。
@@ -191,14 +196,14 @@ uvicorn app.main:app --reload
 - 默认部署收敛为 App、Worker、Postgres、CloakBrowser 四个容器，删除旧浏览器抓取客户端、服务、环境变量和外部 override；网页更新仅在 readiness 成功后清理旧内置容器。
 - 已关联 profile 不再被 MakerHub 旧 Cookie / Token 覆盖；浏览器瞬时故障归为网络错误，图片、附件和已授权 `3MF` 直链继续并行直连下载。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-26 · v0.13.14
 
 - CloakBrowser 临时 HTTP `5xx` 不再被误判为登录失效，也不会关闭平台级 `3MF` gate。
 - 普通归档可在浏览器服务短暂不可用时使用最近同步的有效会话继续；没有有效会话时显示网络异常。
 - 批量任务会自动重试 CloakBrowser HTTP `5xx`，避免偶发 `502` 直接终止模型归档。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-26 · v0.13.13
 
