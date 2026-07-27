@@ -169,17 +169,17 @@ class CloakBrowserSessionTest(unittest.TestCase):
             source.index("const button = await findThreeMfDownloadButton"),
         )
 
-    def test_bridge_exchanges_official_ticket_before_login_page_fallback(self):
+    def test_bridge_completes_official_login_confirmation_after_navigation(self):
         source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("async function tryDirectTicketLogin", source)
-        self.assertIn('"https://api.bambulab.cn/v1/user-service/user/ticket"', source)
-        self.assertIn('"https://makerworld.com.cn/api/sign-in/ticket"', source)
+        self.assertIn("completeBambuLoginConfirmation", source)
+        self.assertIn("hasMakerWorldSessionCookie", source)
         self.assertIn('input.action === "login" || input.action === "sync"', source)
         self.assertLess(
-            source.index("await tryDirectTicketLogin"),
-            source.index("await page.goto(String(input.target_url)"),
+            source.index("await page.goto(targetUrl"),
+            source.index("await completeBambuLoginConfirmation"),
         )
+        self.assertNotIn("tryDirectTicketLogin", source)
 
     def test_browser_fetch_rejects_non_makerworld_target(self):
         with patch.object(cloakbrowser_session, "ensure_profile") as ensure_mock:

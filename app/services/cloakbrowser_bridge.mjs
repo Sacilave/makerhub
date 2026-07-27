@@ -2,25 +2,21 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  browserAuthTokenForUrl,
+  completeBambuLoginConfirmation,
+  hasMakerWorldSessionCookie,
+  isBambuLoginConfirmationUrl,
+  isMakerWorldUrl,
+  makerWorldHomeUrl,
+  normalizePlatform,
+} from "./cloakbrowser_login.mjs";
+
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const requireFromFrontend = createRequire(path.join(ROOT_DIR, "frontend", "node_modules", "package.json"));
 const puppeteer = requireFromFrontend("puppeteer-core");
-const TICKET_LOGIN_CONFIG = {
-  cn: {
-    bambuOrigin: "https://bambulab.cn",
-    makerWorldOrigin: "https://makerworld.com.cn",
-    ticketEndpoint: "https://api.bambulab.cn/v1/user-service/user/ticket",
-    callbackEndpoint: "https://makerworld.com.cn/api/sign-in/ticket",
-  },
-  global: {
-    bambuOrigin: "https://bambulab.com",
-    makerWorldOrigin: "https://makerworld.com",
-    ticketEndpoint: "https://api.bambulab.com/v1/user-service/user/ticket",
-    callbackEndpoint: "https://makerworld.com/api/sign-in/ticket",
-  },
-};
 
 async function readInput() {
   const chunks = [];
@@ -165,115 +161,6 @@ function headerExists(headers, targetName) {
   return Object.keys(headers).some((name) => name.toLowerCase() === normalizedTarget);
 }
 
-function normalizePlatform(platform) {
-  return String(platform || "").trim().toLowerCase() === "global" ? "global" : "cn";
-}
-
-function isBambuLoginConfirmationUrl(value, platform) {
-  const config = TICKET_LOGIN_CONFIG[normalizePlatform(platform)];
-  try {
-    const parsed = new URL(String(value || ""));
-    const target = new URL(parsed.searchParams.get("to") || "");
-    return parsed.origin === config.bambuOrigin
-      && /\/sign-in\/?$/i.test(parsed.pathname)
-      && parsed.searchParams.get("ticket") === "1"
-      && target.origin === config.makerWorldOrigin
-      && target.pathname.replace(/\/$/, "") === "/api/sign-in/ticket";
-  } catch {
-    return false;
-  }
-}
-
-function storedAuthToken(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") return "";
-  for (const bucketName of ["local", "session"]) {
-    const bucket = snapshot[bucketName] && typeof snapshot[bucketName] === "object"
-      ? snapshot[bucketName]
-      : {};
-    for (const [key, value] of Object.entries(bucket)) {
-      if (!["token", "accesstoken", "access_token"].includes(String(key).toLowerCase())) continue;
-      const token = String(value || "").trim();
-      if (token && token.length <= 16384) return token;
-    }
-  }
-  return "";
-}
-
-async function browserStorageAuthToken(pages, platform) {
-  const domains = platformDomains(normalizePlatform(platform));
-  for (const page of pages) {
-    const snapshot = await storageSnapshot(page);
-    if (!snapshot) continue;
-    try {
-      const hostname = new URL(String(snapshot.origin || "")).hostname;
-      if (!hostnameMatchesDomains(hostname, domains)) continue;
-    } catch {
-      continue;
-    }
-    const token = storedAuthToken(snapshot);
-    if (token) return token;
-  }
-  return "";
-}
-
-function ticketFromResponseText(text) {
-  try {
-    const payload = JSON.parse(String(text || ""));
-    if (!payload || typeof payload !== "object") return "";
-    const ticket = String(payload.ticket || payload.data?.ticket || "").trim();
-    return ticket.length <= 4096 ? ticket : "";
-  } catch {
-    return "";
-  }
-}
-
-async function tryDirectTicketLogin(context, page, pages, platform, timeoutMs) {
-  const cleanPlatform = normalizePlatform(platform);
-  const config = TICKET_LOGIN_CONFIG[cleanPlatform];
-  const storageToken = await browserStorageAuthToken(pages, cleanPlatform);
-  const headers = {
-    accept: "application/json, text/plain, */*",
-    "accept-language": cleanPlatform === "cn" ? "zh-CN,zh;q=0.9,en;q=0.8" : "en-US,en;q=0.9",
-    origin: config.bambuOrigin,
-    referer: `${config.bambuOrigin}/zh-cn/sign-in`,
-    "x-bbl-app-source": "makerworld",
-    "x-bbl-client-name": "MakerWorld",
-    "x-bbl-client-type": "web",
-    "x-bbl-client-version": "00.00.00.01",
-  };
-  if (storageToken) headers.authorization = `Bearer ${storageToken}`;
-
-  try {
-    const response = await fetchBrowserResponse(
-      context,
-      cleanPlatform,
-      config.ticketEndpoint,
-      headers,
-      [],
-      timeoutMs,
-    );
-    if (response.status_code < 200 || response.status_code >= 400) return false;
-    const ticket = ticketFromResponseText(response.text);
-    if (!ticket) return false;
-
-    const callback = new URL(config.callbackEndpoint);
-    callback.searchParams.set("to", `${config.makerWorldOrigin}/zh`);
-    callback.searchParams.set("ticket", ticket);
-    try {
-      await page.goto(callback.toString(), {
-        waitUntil: "domcontentloaded",
-        timeout: Math.max(Number(timeoutMs || 30000), 15000),
-      });
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    } catch (error) {
-      if (!(error instanceof Error) || error.name !== "TimeoutError") return false;
-    }
-    return new URL(page.url()).origin === config.makerWorldOrigin;
-  } catch {
-    return false;
-  }
-}
-
 function isControlApiUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
@@ -288,15 +175,7 @@ function isControlApiUrl(value) {
 function headersWithBrowserAuth(headers, cookies, targetUrl) {
   const result = { ...headers };
   if (!isControlApiUrl(targetUrl)) return result;
-  const cookieValues = new Map(
-    (Array.isArray(cookies) ? cookies : [])
-      .filter((item) => item && item.name && item.value != null)
-      .map((item) => [String(item.name).toLowerCase(), String(item.value)]),
-  );
-  const token = cookieValues.get("token")
-    || cookieValues.get("access_token")
-    || cookieValues.get("accesstoken")
-    || "";
+  const token = browserAuthTokenForUrl(cookies, targetUrl);
   if (!token) return result;
   if (!headerExists(result, "authorization")) result.authorization = `Bearer ${token}`;
   if (!headerExists(result, "token")) result.token = token;
@@ -514,27 +393,22 @@ async function main() {
     const pages = await context.pages();
     const page = pages[0] || await context.newPage();
     const platform = normalizePlatform(input.platform);
-    let directTicketCompleted = false;
-    if (input.action === "login" || input.action === "sync") {
-      const shouldAttemptDirectTicket = input.action === "login"
-        || isBambuLoginConfirmationUrl(page.url(), platform);
-      if (shouldAttemptDirectTicket) {
-        directTicketCompleted = await tryDirectTicketLogin(
-          context,
-          page,
-          pages,
-          platform,
-          input.navigation_timeout_ms,
-        );
-      }
-    }
+    const isLoginAction = input.action === "login" || input.action === "sync";
+    const makerWorldSessionReady = isLoginAction
+      && hasMakerWorldSessionCookie(await context.cookies(), platform);
+    const targetUrl = makerWorldSessionReady
+      ? makerWorldHomeUrl(platform)
+      : String(input.target_url || "");
     const currentUrl = page.url();
-    const shouldNavigate = !directTicketCompleted && input.target_url && (
-      input.action === "seed" || input.action === "login" || !/^https?:\/\//i.test(currentUrl)
+    const shouldNavigate = targetUrl && (
+      input.action === "seed"
+      || input.action === "login"
+      || !/^https?:\/\//i.test(currentUrl)
+      || (makerWorldSessionReady && !isMakerWorldUrl(currentUrl, platform))
     );
     if (shouldNavigate) {
       try {
-        await page.goto(String(input.target_url), {
+        await page.goto(targetUrl, {
           waitUntil: "domcontentloaded",
           timeout: Math.max(Number(input.navigation_timeout_ms || 30000), 15000),
         });
@@ -542,6 +416,14 @@ async function main() {
       } catch (error) {
         navigationError = error instanceof Error ? error.message : String(error || "navigation failed");
       }
+    }
+    if (isLoginAction && isBambuLoginConfirmationUrl(page.url(), platform)) {
+      await completeBambuLoginConfirmation(
+        context,
+        page,
+        platform,
+        input.navigation_timeout_ms,
+      );
     }
     const currentPages = await context.pages();
     const storage = [];

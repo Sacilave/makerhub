@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.14.2`
+> 当前版本：`v0.14.3`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -179,6 +179,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-27 · v0.14.3
+
+- CloakBrowser profile 重启后，如果 Bambu 账号仍有效，MakerHub 会自动点击官方“继续”确认并恢复 MakerWorld session，不再要求重复输入账号或验证码。
+- 登录恢复必须检测到非空 MakerWorld token 才算成功；控制面请求按目标域名选择有效 token，避免空 Cookie 覆盖仍可用的 Bambu 登录态。
+
 ### 2026-07-27 · v0.14.2
 
 - 打开或同步 CloakBrowser profile 时，优先使用浏览器内部登录态直接换取 Bambu ticket 并完成 MakerWorld 回跳，不再反复停在“继续”确认页。
@@ -190,14 +195,14 @@ uvicorn app.main:app --reload
 - 验证暂停与恢复改为 Postgres 原子更新，只标记当前探测模型；普通归档仍使用原有并发设置。
 - 过期的 CloakBrowser、账号定时检测和订阅来源结果不再覆盖新 Cookie，修复 `config.cookies` 并发冲突和误报登录状态。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-27 · v0.14.0
 
 - MakerWorld 页面、批量列表、评论、来源卡、账号 Web 探测和 `3MF` 下载地址 API 统一复用对应 CloakBrowser profile；后台临时页不会影响用户页面。
 - 默认部署收敛为 App、Worker、Postgres、CloakBrowser 四个容器，删除旧浏览器抓取客户端、服务、环境变量和外部 override；网页更新仅在 readiness 成功后清理旧内置容器。
 - 已关联 profile 不再被 MakerHub 旧 Cookie / Token 覆盖；浏览器瞬时故障归为网络错误，图片、附件和已授权 `3MF` 直链继续并行直连下载。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-26 · v0.13.14
 

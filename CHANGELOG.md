@@ -1,5 +1,10 @@
 # 更新说明
 
+## 2026-07-27 · v0.14.3
+
+- 修复 CloakBrowser profile 重启后 MakerWorld session Cookie 消失、每次打开都要求重新登录的问题：Bambu 账号仍有效时会自动识别官方“继续 / 登出”确认页并点击“继续”，确认 MakerWorld 产生非空 token 后才判定恢复成功。
+- 移除仅凭回跳 URL 判断 ticket 登录成功的错误路径；浏览器控制面请求会按目标域名选择非空 token，避免空的 MakerWorld token 覆盖仍有效的 Bambu token。
+
 ## 2026-07-27 · v0.14.2
 
 - CloakBrowser 登录启动和后台会话同步会优先在关联 profile 内调用 Bambu 官方 ticket 接口，再跳转到对应 MakerWorld 回调；已有浏览器登录态不再反复停在“继续”确认页。
