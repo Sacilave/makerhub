@@ -146,7 +146,7 @@ class ReadmeCloakBrowserContractTest(unittest.TestCase):
         )
         local_bind = (
             "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:"
-            "${MAKERHUB_CLOAKBROWSER_PORT:-9050}:8080"
+            "9050:8080"
         )
 
         self.assertGreaterEqual(compose.count(required_token), 3)
@@ -195,7 +195,7 @@ class DeploymentComposeContractTest(unittest.TestCase):
             services["cloakbrowser"]["ports"],
             [
                 "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:"
-                "${MAKERHUB_CLOAKBROWSER_PORT:-9050}:8080"
+                "9050:8080"
             ],
         )
 
@@ -221,7 +221,7 @@ class DeploymentComposeContractTest(unittest.TestCase):
             with self.subTest(service=service_name, setting="worker_concurrency"):
                 self.assertEqual(
                     services[service_name]["environment"]["MAKERHUB_WORKER_CONCURRENCY"],
-                    "${MAKERHUB_WORKER_CONCURRENCY:-4}",
+                    "4",
                 )
         for service_name, service in services.items():
             with self.subTest(service=service_name):
@@ -229,8 +229,8 @@ class DeploymentComposeContractTest(unittest.TestCase):
                 self.assertEqual(
                     service["logging"]["options"],
                     {
-                        "max-size": "${MAKERHUB_LOG_MAX_SIZE:-10m}",
-                        "max-file": "${MAKERHUB_LOG_MAX_FILES:-3}",
+                        "max-size": "10m",
+                        "max-file": "3",
                     },
                 )
 
@@ -240,9 +240,10 @@ class DeploymentComposeContractTest(unittest.TestCase):
 
         self.assertIn("MAKERHUB_POSTGRES_PASSWORD=\n", env_example)
         self.assertIn("MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=\n", env_example)
-        self.assertIn("MAKERHUB_CONFIG_PATH=./data/config", env_example)
-        self.assertIn("MAKERHUB_ARCHIVE_PATH=./data/archive", env_example)
-        self.assertIn("MAKERHUB_WORKER_CONCURRENCY=4", env_example)
+        self.assertNotIn("MAKERHUB_CONFIG_PATH=./data/config", env_example)
+        self.assertNotIn("MAKERHUB_ARCHIVE_PATH=./data/archive", env_example)
+        self.assertNotIn("MAKERHUB_WORKER_CONCURRENCY=4", env_example)
+        self.assertIn("其余默认配置已直接写入 compose.yaml", env_example)
         self.assertNotIn("change-this", env_example)
         self.assertIn(".env", gitignore.splitlines())
         self.assertIn(".env.*", gitignore.splitlines())

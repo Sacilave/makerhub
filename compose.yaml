@@ -1,29 +1,29 @@
 x-logging: &default-logging
   driver: local
   options:
-    max-size: ${MAKERHUB_LOG_MAX_SIZE:-10m}
-    max-file: ${MAKERHUB_LOG_MAX_FILES:-3}
+    max-size: 10m
+    max-file: "3"
 
 services:
   makerhub-app:
-    image: ${MAKERHUB_IMAGE:-ghcr.io/s450586793/makerhub:latest}
+    image: ghcr.io/s450586793/makerhub:latest
     container_name: makerhub-app
     init: true
     ports:
-      - "${MAKERHUB_HTTP_BIND_ADDRESS:-0.0.0.0}:${MAKERHUB_HTTP_PORT:-9042}:8000"
+      - "9042:8000"
     environment:
-      TZ: ${TZ:-Asia/Shanghai}
+      TZ: Asia/Shanghai
       MAKERHUB_ENTRYPOINT: app
       MAKERHUB_PROCESS_ROLE: app
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
-      MAKERHUB_WEB_WORKERS: ${MAKERHUB_WEB_WORKERS:-1}
-      MAKERHUB_WORKER_CONCURRENCY: ${MAKERHUB_WORKER_CONCURRENCY:-4}
+      MAKERHUB_WEB_WORKERS: "1"
+      MAKERHUB_WORKER_CONCURRENCY: "4"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
-      MAKERHUB_CLOAKBROWSER_TIMEOUT: ${MAKERHUB_CLOAKBROWSER_TIMEOUT:-30}
+      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
       MAKERHUB_TRUSTED_PROXIES: ${MAKERHUB_TRUSTED_PROXIES:-}
     volumes:
       - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
@@ -46,21 +46,21 @@ services:
     restart: unless-stopped
 
   makerhub-worker:
-    image: ${MAKERHUB_IMAGE:-ghcr.io/s450586793/makerhub:latest}
+    image: ghcr.io/s450586793/makerhub:latest
     container_name: makerhub-worker
     init: true
     environment:
-      TZ: ${TZ:-Asia/Shanghai}
+      TZ: Asia/Shanghai
       MAKERHUB_ENTRYPOINT: worker
       MAKERHUB_PROCESS_ROLE: worker
       MAKERHUB_BACKGROUND_TASKS: "true"
-      MAKERHUB_WORKER_CONCURRENCY: ${MAKERHUB_WORKER_CONCURRENCY:-4}
-      MAKERHUB_HEAVY_JOB_NICE: ${MAKERHUB_HEAVY_JOB_NICE:-10}
+      MAKERHUB_WORKER_CONCURRENCY: "4"
+      MAKERHUB_HEAVY_JOB_NICE: "10"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
-      MAKERHUB_CLOAKBROWSER_TIMEOUT: ${MAKERHUB_CLOAKBROWSER_TIMEOUT:-30}
+      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
     volumes:
       - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
       - ${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data
@@ -80,10 +80,10 @@ services:
     restart: unless-stopped
 
   makerhub-postgres:
-    image: ${MAKERHUB_POSTGRES_IMAGE:-postgres:16-alpine}
+    image: postgres:16-alpine
     container_name: makerhub-postgres
     environment:
-      TZ: ${TZ:-Asia/Shanghai}
+      TZ: Asia/Shanghai
       POSTGRES_DB: makerhub
       POSTGRES_USER: makerhub
       POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
@@ -99,12 +99,12 @@ services:
     restart: unless-stopped
 
   cloakbrowser:
-    image: ${MAKERHUB_CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser-manager@sha256:44836e982192e8fedb28617f2d39192bdef91f8dd62cf36c522c96d7d8e15914}
+    image: cloakhq/cloakbrowser-manager@sha256:44836e982192e8fedb28617f2d39192bdef91f8dd62cf36c522c96d7d8e15914
     container_name: makerhub-cloakbrowser
     ports:
-      - "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:${MAKERHUB_CLOAKBROWSER_PORT:-9050}:8080"
+      - "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
     environment:
-      TZ: ${TZ:-Asia/Shanghai}
+      TZ: Asia/Shanghai
       AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
     volumes:
       - ${MAKERHUB_CLOAKBROWSER_DATA_PATH:-./data/cloakbrowser}:/data

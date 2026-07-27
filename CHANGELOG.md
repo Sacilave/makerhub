@@ -1,5 +1,11 @@
 # 更新说明
 
+## 2026-07-28 · v0.15.1
+
+- 精简公开部署配置：镜像、端口、时区、并发、超时和日志轮转等稳定默认值直接写入仓库根目录的 `compose.yaml`。
+- `.env.example` 只保留 PostgreSQL 密码、CloakBrowser token 和少量实例覆盖项；默认四容器部署不再要求用户重复填写常规参数。
+- README 明确默认 Compose 可直接部署，并集中说明 DSM 路径、远程 CloakBrowser 与可信代理等真正需要按实例调整的配置。
+
 ## 2026-07-27 · v0.15.0
 
 - Canonical Compose 改为可移植部署：配置、归档、Postgres 和 CloakBrowser 数据目录默认位于项目 `./data/`，并可通过 `.env` 覆盖为 DSM、Unraid 或其他服务器路径。

@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.0`
+> 当前版本：`v0.15.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -70,6 +70,8 @@ MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=
 ```
 
 可以分别使用 `openssl rand -hex 32` 生成。`MAKERHUB_POSTGRES_PASSWORD` 建议只使用英文和数字，避免数据库 URL 转义问题。`MAKERHUB_CLOAKBROWSER_AUTH_TOKEN` 是必填的强随机访问令牌，App、Worker 和 CloakBrowser Manager 使用同一个值。
+
+镜像、端口、时区、并发、超时和日志轮转等运行默认值已经直接写在仓库根目录的 `compose.yaml` 中，不需要在 `.env` 里重复配置。默认文件可直接用于完整四容器部署；`.env` 只保存密钥和少量实例差异。
 
 默认数据保存在 `compose.yaml` 同目录的 `./data/` 下：
 
@@ -129,18 +131,17 @@ App 和 Worker 始终共享 `MAKERHUB_CONFIG_PATH` 与 `MAKERHUB_ARCHIVE_PATH`�
 
 ## 常用配置
 
-| 变量 | 默认值 | 说明 |
+大多数运行参数直接使用 `compose.yaml` 中的默认值。通常只有下面这些实例参数需要通过 `.env` 覆盖：
+
+| 变量 | Compose 默认值 | 说明 |
 | --- | --- | --- |
-| `MAKERHUB_HTTP_BIND_ADDRESS` | `0.0.0.0` | Web 服务监听地址 |
-| `MAKERHUB_HTTP_PORT` | `9042` | Web 服务宿主机端口 |
-| `MAKERHUB_WORKER_CONCURRENCY` | `4` | 归档 Worker 并发，范围 `1-4` |
+| `MAKERHUB_CONFIG_PATH` | `./data/config` | 配置、状态与备份目录 |
+| `MAKERHUB_ARCHIVE_PATH` | `./data/archive` | 模型、图片、附件和导入目录 |
+| `MAKERHUB_POSTGRES_DATA_PATH` | `./data/postgres` | PostgreSQL 数据目录 |
+| `MAKERHUB_CLOAKBROWSER_DATA_PATH` | `./data/cloakbrowser` | 浏览器 profile 与会话目录 |
 | `MAKERHUB_CLOAKBROWSER_BIND_ADDRESS` | `127.0.0.1` | Manager 宿主机监听地址 |
-| `MAKERHUB_CLOAKBROWSER_PORT` | `9050` | Manager 宿主机端口 |
 | `MAKERHUB_CLOAKBROWSER_PUBLIC_URL` | 空 | 用户浏览器能够访问的 Manager 地址 |
 | `MAKERHUB_TRUSTED_PROXIES` | 空 | 允许提供转发头的受控代理地址 |
-| `MAKERHUB_LOG_MAX_SIZE` | `10m` | 单个容器日志文件上限 |
-| `MAKERHUB_LOG_MAX_FILES` | `3` | 每个容器保留的日志文件数 |
-| `MAKERHUB_IMAGE` | `ghcr.io/s450586793/makerhub:latest` | App 与 Worker 共用镜像 |
 
 不要把 `MAKERHUB_TRUSTED_PROXIES` 设置为 `*`、`0.0.0.0/0` 或公网网段。默认不信任 `X-Forwarded-*` 请求头。
 
@@ -153,7 +154,7 @@ docker compose pull
 docker compose up -d --remove-orphans
 ```
 
-App 和 Worker 使用同一个 `MAKERHUB_IMAGE`，应始终作为同一发布组更新。更新后可以检查：
+App 和 Worker 在 `compose.yaml` 中使用同一个 MakerHub 镜像，应始终作为同一发布组更新。更新后可以检查：
 
 ```bash
 docker compose ps
@@ -225,6 +226,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-28 · v0.15.1
+
+- 镜像、端口、时区、并发、超时和日志轮转等稳定默认值直接写入公开的 `compose.yaml`。
+- `.env.example` 只保留必填密钥和少量实例覆盖项，默认四容器部署无需重复填写常规参数。
+
 ### 2026-07-27 · v0.15.0
 
 - Compose 改为可移植路径，默认数据写入项目 `./data/`，DSM、Unraid 和其他 NAS 通过 `.env` 覆盖宿主机目录。
@@ -235,11 +241,6 @@ npm --prefix frontend run build
 
 - 指纹浏览器验证恢复期间，`3MF` 下载子任务成功后会继续放行下一个暂停任务。
 - 恢复链保持单任务探测，再次遇到验证或下载失败时停止，避免批量消耗下载次数。
-
-### 2026-07-27 · v0.14.3
-
-- CloakBrowser profile 重启后，如果 Bambu 账号仍有效，MakerHub 会自动完成官方“继续”确认并恢复 MakerWorld session。
-- 登录恢复必须检测到非空 MakerWorld token 才算成功，避免空 Cookie 覆盖有效登录态。
 
 <details>
 <summary>历史版本</summary>

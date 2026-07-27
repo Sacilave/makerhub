@@ -160,7 +160,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         )
         local_bind = (
             "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:"
-            "${MAKERHUB_CLOAKBROWSER_PORT:-9050}:8080"
+            "9050:8080"
         )
 
         compose_text = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")

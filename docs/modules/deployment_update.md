@@ -50,6 +50,7 @@
 - Docker:
   - `compose.yaml` 是唯一完整部署定义，不再需要额外的浏览器抓取 override。
   - 宿主机配置、归档、Postgres 和 CloakBrowser 目录分别由 `MAKERHUB_CONFIG_PATH`、`MAKERHUB_ARCHIVE_PATH`、`MAKERHUB_POSTGRES_DATA_PATH`、`MAKERHUB_CLOAKBROWSER_DATA_PATH` 控制；默认写入 Compose 同目录的 `./data/`。
+  - 镜像、端口、时区、并发、超时和日志轮转使用 `compose.yaml` 中的明确默认值；`.env.example` 只保留必填密钥和少量实例覆盖项。
   - `.env.example` 的必填密钥必须保持空值，真实 `.env` 和默认本地 `data/` 必须被 Git 忽略。
   - 默认 compose 不挂载 `/var/run/docker.sock`；只有用户显式 opt-in 后，设置页才可直接网页更新。
   - App / Worker 依赖 Postgres 的 `service_healthy`，App、Worker、Postgres 都必须保留 healthcheck。
