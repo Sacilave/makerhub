@@ -2398,12 +2398,57 @@ class TaskStateStore:
             )
         return {"summary": summary, "queue": queue}
 
-    def resume_verification_paused_archive_tasks(self, selector=None) -> dict:
-        resumed_count = 0
+    def pause_verification_archive_tasks(self, selector=None, *, message: str) -> dict:
+        paused_count = 0
+        paused_items: list[dict[str, Any]] = []
+        clean_message = str(message or "").strip()
 
         def _mutate(payload: dict) -> dict:
-            nonlocal resumed_count
+            nonlocal paused_count, paused_items
             queued = []
+            paused_items = []
+            now = china_now_iso()
+            for raw_item in payload.get("queued") or []:
+                normalized = _normalize_archive_runtime_item(raw_item, "queued")
+                status = str(normalized.get("status") or "queued").strip().lower()
+                should_pause = status in {"", "queued", "pending"} and (
+                    selector is None or selector(normalized)
+                )
+                if should_pause:
+                    normalized["status"] = "paused"
+                    normalized["blocked_reason"] = "needs_verification"
+                    normalized["message"] = clean_message
+                    normalized["updated_at"] = now
+                    paused_items.append(dict(normalized))
+                queued.append(normalized)
+
+            paused_count = len(paused_items)
+            payload["queued"] = queued
+            return payload
+
+        queue = self._update_archive_queue(_mutate)
+        queue["paused_count"] = paused_count
+        queue["paused_items"] = paused_items
+        return queue
+
+    def resume_verification_paused_archive_tasks(
+        self,
+        selector=None,
+        *,
+        limit: Optional[int] = None,
+        message: str = ARCHIVE_VERIFICATION_RESUMED_MESSAGE,
+        meta_updates: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        resumed_count = 0
+        resumed_items: list[dict[str, Any]] = []
+        resume_limit = None if limit is None else max(int(limit or 0), 0)
+        clean_message = str(message or ARCHIVE_VERIFICATION_RESUMED_MESSAGE)
+        clean_meta_updates = dict(meta_updates or {})
+
+        def _mutate(payload: dict) -> dict:
+            nonlocal resumed_count, resumed_items
+            queued = []
+            resumed_items = []
             now = china_now_iso()
             for item in payload.get("queued") or []:
                 normalized = _normalize_archive_runtime_item(item, "queued")
@@ -2420,12 +2465,17 @@ class TaskStateStore:
                         )
                     )
                 )
-                if verification_paused and (selector is None or selector(normalized)):
+                within_limit = resume_limit is None or resumed_count < resume_limit
+                if verification_paused and within_limit and (selector is None or selector(normalized)):
                     normalized["status"] = "queued"
-                    normalized["message"] = ARCHIVE_VERIFICATION_RESUMED_MESSAGE
+                    normalized["message"] = clean_message
                     normalized["updated_at"] = now
+                    if clean_meta_updates:
+                        meta = normalized.get("meta") if isinstance(normalized.get("meta"), dict) else {}
+                        normalized["meta"] = {**meta, **clean_meta_updates}
                     normalized.pop("blocked_reason", None)
                     resumed_count += 1
+                    resumed_items.append(dict(normalized))
                 queued.append(normalized)
 
             payload["queued"] = queued
@@ -2433,6 +2483,7 @@ class TaskStateStore:
 
         queue = self._update_archive_queue(_mutate)
         queue["resumed_count"] = resumed_count
+        queue["resumed_items"] = resumed_items
         return queue
 
     def resume_browser_session_recovery_task(

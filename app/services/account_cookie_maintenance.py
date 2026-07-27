@@ -141,12 +141,13 @@ def run_account_cookie_maintenance_once(
     config_store = store or JsonStore()
     config = config_store.load()
     cookies = list(getattr(config, "cookies", []) or [])
-    next_cookies: list[CookiePair] = []
+    checks: list[dict[str, Any]] = []
     result: dict[str, Any] = {
         "checked": 0,
         "ok": 0,
         "failed": 0,
         "skipped": 0,
+        "stale_ignored": 0,
         "items": [],
         "last_run_at": now,
     }
@@ -155,7 +156,6 @@ def run_account_cookie_maintenance_once(
         platform = "global" if str(cookie_pair.platform or "").strip().lower() == "global" else "cn"
         raw_cookie = sanitize_cookie_header(cookie_pair.cookie)
         if not raw_cookie:
-            next_cookies.append(cookie_pair)
             result["skipped"] += 1
             continue
 
@@ -186,11 +186,50 @@ def run_account_cookie_maintenance_once(
             "last_tested_at": str(metadata.get("last_tested_at") or now),
             "updated_at": str(metadata.get("updated_at") or now),
         }
-        next_cookies.append(_merge_cookie_metadata(cookie_pair, metadata))
         result["checked"] += 1
-        item = {"platform": platform, "status": status, "message": message}
+        item = {"platform": platform, "status": status, "message": message, "stale_ignored": False}
         result["items"].append(item)
+        checks.append(
+            {
+                "platform": platform,
+                "expected_cookie": raw_cookie,
+                "metadata": metadata,
+                "status": status,
+                "message": message,
+                "result_item": item,
+            }
+        )
 
+    applied_checks: set[int] = set()
+    if checks:
+        def apply_latest(latest_config):
+            applied_checks.clear()
+            for index, check in enumerate(checks):
+                platform = str(check["platform"])
+                current = next((item for item in latest_config.cookies if item.platform == platform), None)
+                if current is None:
+                    continue
+                if sanitize_cookie_header(current.cookie) != str(check["expected_cookie"]):
+                    continue
+                merged = _merge_cookie_metadata(current, check["metadata"])
+                latest_config.cookies = [
+                    merged if item.platform == platform else item
+                    for item in latest_config.cookies
+                ]
+                applied_checks.add(index)
+            return latest_config
+
+        config_store.update(apply_latest)
+
+    for index, check in enumerate(checks):
+        if index not in applied_checks:
+            result["stale_ignored"] += 1
+            check["result_item"]["stale_ignored"] = True
+            continue
+
+        platform = str(check["platform"])
+        status = str(check["status"])
+        message = str(check["message"])
         update_account_health(
             platform,
             status=status,
@@ -212,8 +251,6 @@ def run_account_cookie_maintenance_once(
         elif status == "ok":
             result["ok"] += 1
 
-    config.cookies = next_cookies
-    config_store.save(config)
     _save_state({"last_run_at": now, "last_result": result})
     if result["checked"]:
         append_business_log(
@@ -224,6 +261,7 @@ def run_account_cookie_maintenance_once(
             ok=int(result["ok"]),
             failed=int(result["failed"]),
             skipped=int(result["skipped"]),
+            stale_ignored=int(result["stale_ignored"]),
         )
         _publish_dashboard_refresh()
     return result

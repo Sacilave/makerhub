@@ -188,6 +188,55 @@ class AccountCookieMaintenanceTest(unittest.TestCase):
         self.assertEqual(saved.browser_message, "指纹浏览器登录态已同步。")
         self.assertEqual(saved.browser_synced_at, "2026-07-12T02:58:27+08:00")
 
+    def test_cookie_check_ignores_result_when_browser_cookie_changes_during_probe(self):
+        config = self.store.load()
+        config.cookies = [
+            CookiePair(
+                platform="cn",
+                cookie="token=old",
+                status="ok",
+                message="旧登录态",
+                browser_profile_id="profile-cn",
+            )
+        ]
+        self.store.save(config)
+
+        def fake_metadata(**_kwargs):
+            latest = self.store.load()
+            latest.cookies = [
+                latest.cookies[0].model_copy(
+                    update={
+                        "cookie": "token=new",
+                        "status": "ok",
+                        "message": "指纹浏览器新登录态",
+                        "browser_synced_at": "2026-07-27T02:20:00+08:00",
+                    }
+                )
+            ]
+            self.store.save(latest)
+            return {
+                "platform": "cn",
+                "status": "verification_required",
+                "message": "旧 Cookie 需要验证。",
+                "last_tested_at": "2026-07-27T02:21:00+08:00",
+                "updated_at": "2026-07-27T02:21:00+08:00",
+            }
+
+        with patch.object(account_cookie_maintenance, "china_now_iso", return_value="2026-07-27T02:21:00+08:00"), \
+                patch.object(account_cookie_maintenance, "online_account_metadata_from_cookie", side_effect=fake_metadata), \
+                patch.object(account_cookie_maintenance, "update_account_health") as update_health_mock, \
+                patch.object(account_cookie_maintenance, "update_three_mf_gate") as update_gate_mock, \
+                patch.object(account_cookie_maintenance, "append_business_log"):
+            result = account_cookie_maintenance.run_account_cookie_maintenance_once(store=self.store, force=True)
+
+        current = self.store.load().cookies[0]
+        self.assertEqual(current.cookie, "token=new")
+        self.assertEqual(current.message, "指纹浏览器新登录态")
+        self.assertEqual(result["stale_ignored"], 1)
+        self.assertEqual(result["failed"], 0)
+        update_health_mock.assert_not_called()
+        update_gate_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

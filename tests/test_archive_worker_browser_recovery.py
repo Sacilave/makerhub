@@ -151,6 +151,33 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         self.assertEqual(saved.cookie, browser_result.cookie)
         self.assertEqual(saved.browser_status, "synced")
 
+    def test_stale_browser_sync_result_does_not_overwrite_newer_cookie(self):
+        manager, store = self._manager_with_cookie("token=old; refreshToken=old")
+        config = store.load()
+        config.cookies = [
+            config.cookies[0].model_copy(
+                update={
+                    "cookie": "token=new; refreshToken=new",
+                    "browser_message": "较新的登录态",
+                }
+            )
+        ]
+        store.save(config)
+
+        saved = manager._persist_browser_recovery_session(
+            "cn",
+            expected_cookie="token=old; refreshToken=old",
+            cookie="token=stale; refreshToken=stale",
+            profile_id="profile-cn",
+            status="synced",
+            message="过期的同步结果",
+        )
+
+        self.assertIsNone(saved)
+        current = store.load().cookies[0]
+        self.assertEqual(current.cookie, "token=new; refreshToken=new")
+        self.assertEqual(current.browser_message, "较新的登录态")
+
     def test_task_session_refresh_rejects_a_logged_out_browser_without_using_old_cookie(self):
         manager, store = self._manager_with_cookie("token=old; refreshToken=old")
         browser_result = CloakBrowserSessionResult(

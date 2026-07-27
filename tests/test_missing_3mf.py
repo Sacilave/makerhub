@@ -5,7 +5,7 @@ import zipfile
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import app.services.archive_worker as archive_worker_module
 import app.services.legacy_archiver as legacy_archiver_module
@@ -732,15 +732,27 @@ class Missing3mfTest(unittest.TestCase):
             "active": [],
             "recent_failures": [],
         }
-        saved = []
         ensured = []
-        marked_platform_status = []
+        resumed_queue = {
+            **queue,
+            "queued": [
+                {
+                    **queue["queued"][0],
+                    "status": "queued",
+                    "message": "验证已完成，正在探测 3MF 下载权限",
+                    "meta": {**queue["queued"][0]["meta"], "browser_session_recovery": True},
+                },
+                queue["queued"][1],
+            ],
+            "resumed_count": 1,
+        }
+        resumed_queue["resumed_items"] = [resumed_queue["queued"][0]]
+        resume_mock = Mock(return_value=resumed_queue)
+        retrying_calls = []
         manager.task_store = SimpleNamespace(
             load_missing_3mf=lambda: {"items": []},
-            mark_missing_3mf_retrying=lambda *_args, **_kwargs: None,
-            mark_missing_3mf_platform_status=lambda *args, **kwargs: marked_platform_status.append((args, kwargs)),
-            load_archive_queue=lambda: queue,
-            save_archive_queue=lambda payload: saved.append(payload) or payload,
+            mark_missing_3mf_retrying=lambda *args, **kwargs: retrying_calls.append((args, kwargs)),
+            resume_verification_paused_archive_tasks=resume_mock,
         )
         manager._ensure_worker = lambda: ensured.append(True)
 
@@ -749,15 +761,14 @@ class Missing3mfTest(unittest.TestCase):
 
         self.assertTrue(result["accepted"])
         self.assertEqual(result["resumed_count"], 1)
-        self.assertEqual(saved[0]["queued"][0]["status"], "queued")
-        self.assertEqual(saved[0]["queued"][0]["message"], "验证已完成，等待重新下载 3MF")
-        self.assertTrue(saved[0]["queued"][0]["meta"]["browser_session_recovery"])
-        self.assertNotIn("blocked_reason", saved[0]["queued"][0])
-        self.assertEqual(saved[0]["queued"][1]["status"], "paused")
+        self.assertEqual(resumed_queue["queued"][0]["status"], "queued")
+        self.assertTrue(resumed_queue["queued"][0]["meta"]["browser_session_recovery"])
+        self.assertEqual(resumed_queue["queued"][1]["status"], "paused")
         self.assertEqual(ensured, [True])
-        self.assertEqual(marked_platform_status, [
-            (("cn",), {"status": "queued", "message": "验证已完成，等待重新下载 3MF"})
-        ])
+        self.assertEqual(resume_mock.call_args.kwargs["limit"], 1)
+        self.assertEqual(resume_mock.call_args.kwargs["meta_updates"], {"browser_session_recovery": True})
+        self.assertEqual(len(retrying_calls), 1)
+        self.assertEqual(retrying_calls[0][1]["status"], "queued")
 
     def test_verified_browser_authorization_resumes_paused_three_mf_stage(self):
         manager = ArchiveTaskManager(background_enabled=False)
@@ -778,18 +789,30 @@ class Missing3mfTest(unittest.TestCase):
             "active": [],
             "recent_failures": [],
         }
-        saved = []
+        resumed_item = {
+            **queue["queued"][0],
+            "status": "queued",
+            "meta": {**queue["queued"][0]["meta"], "browser_session_recovery": True},
+        }
+        resume_mock = Mock(
+            return_value={
+                **queue,
+                "queued": [resumed_item],
+                "resumed_count": 1,
+                "resumed_items": [resumed_item],
+            }
+        )
         manager.task_store = SimpleNamespace(
-            load_archive_queue=lambda: queue,
-            save_archive_queue=lambda payload: saved.append(payload) or payload,
+            resume_verification_paused_archive_tasks=resume_mock,
         )
 
         with patch.object(archive_worker_module, "append_business_log"):
             resumed = manager._resume_paused_missing_3mf_retry_tasks_for_platform("cn")
 
         self.assertEqual(resumed, 1)
-        self.assertEqual(saved[0]["queued"][0]["status"], "queued")
-        self.assertTrue(saved[0]["queued"][0]["meta"]["browser_session_recovery"])
+        self.assertEqual(resumed_item["status"], "queued")
+        self.assertTrue(resumed_item["meta"]["browser_session_recovery"])
+        self.assertEqual(resume_mock.call_args.kwargs["limit"], 1)
 
     def test_targeted_verification_retry_only_resumes_the_current_model(self):
         manager = ArchiveTaskManager(background_enabled=False)

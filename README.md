@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.14.0`
+> 当前版本：`v0.14.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -179,6 +179,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-27 · v0.14.1
+
+- `3MF` 验证恢复改为单任务探测链：每次只放行 1 个暂停任务，真实下载成功后才继续下一个，再次触发验证时立即停止。
+- 验证暂停与恢复改为 Postgres 原子更新，只标记当前探测模型；普通归档仍使用原有并发设置。
+- 过期的 CloakBrowser、账号定时检测和订阅来源结果不再覆盖新 Cookie，修复 `config.cookies` 并发冲突和误报登录状态。
+
 ### 2026-07-27 · v0.14.0
 
 - MakerWorld 页面、批量列表、评论、来源卡、账号 Web 探测和 `3MF` 下载地址 API 统一复用对应 CloakBrowser profile；后台临时页不会影响用户页面。
@@ -191,14 +197,14 @@ uvicorn app.main:app --reload
 - 普通归档可在浏览器服务短暂不可用时使用最近同步的有效会话继续；没有有效会话时显示网络异常。
 - 批量任务会自动重试 CloakBrowser HTTP `5xx`，避免偶发 `502` 直接终止模型归档。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-26 · v0.13.13
 
 - 指纹浏览器模型页导航超过 30 秒时不再提前终止；MakerHub 会继续从已渲染页面寻找下载按钮并等待授权响应。
 - 技术异常会结束“检测中”状态并保留可诊断日志，不会覆盖真实的人工验证或每日限额状态。
 - Web 进程新增或重排授权探测任务后会立即唤醒 Worker，不再受最长 10 分钟的阻塞退避影响。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-26 · v0.13.12
 

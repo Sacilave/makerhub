@@ -1364,6 +1364,7 @@ class SubscriptionManager:
         updated_ids: list[str] = []
         platform_results: list[dict[str, Any]] = []
         changed = False
+        cookie_profile_updates: dict[str, dict[str, Any]] = {}
 
         for platform in sorted(normalized_platforms):
             raw_cookie = cookie_map.get(platform) or ""
@@ -1568,28 +1569,31 @@ class SubscriptionManager:
 
                 cookie_pair = cookie_pairs.get(platform)
                 if cookie_pair is not None:
-                    profile_updates = {
+                    discovered_profile = {
                         "display_name": str(profile.get("name") or "").strip(),
                         "account_id": uid,
                         "handle": str(profile.get("handle") or "").strip(),
                         "avatar_url": str(profile.get("avatar_url") or "").strip(),
                     }
-                    for key, value in profile_updates.items():
-                        if value and str(getattr(cookie_pair, key, "") or "").strip() != value:
-                            setattr(cookie_pair, key, value)
-                            changed = True
+                    profile_updates = {
+                        key: value
+                        for key, value in discovered_profile.items()
+                        if value and str(getattr(cookie_pair, key, "") or "").strip() != value
+                    }
                     if (
-                        profile_updates["display_name"]
-                        and profile_updates["account_id"]
-                        and profile_updates["handle"]
-                        and profile_updates["avatar_url"]
+                        discovered_profile["display_name"]
+                        and discovered_profile["account_id"]
+                        and discovered_profile["handle"]
+                        and discovered_profile["avatar_url"]
                     ):
                         success_message = _account_sync_success_message(platform)
                         if str(getattr(cookie_pair, "message", "") or "").strip() != success_message:
-                            cookie_pair.message = success_message
-                            changed = True
-                    if changed:
-                        cookie_pair.updated_at = now_iso
+                            profile_updates["message"] = success_message
+                    if profile_updates:
+                        cookie_profile_updates[platform] = {
+                            "expected_cookie": raw_cookie,
+                            "fields": profile_updates,
+                        }
 
                 _patch_cookie_source_inventory_state(
                     platform,
@@ -1701,6 +1705,34 @@ class SubscriptionManager:
         if changed:
             self.store.save(config)
             self._dedupe_default_favorites_subscriptions()
+        stale_profile_platforms: list[str] = []
+        if cookie_profile_updates:
+            def apply_cookie_profile_updates(latest_config):
+                stale_profile_platforms.clear()
+                for platform, update in cookie_profile_updates.items():
+                    current = next((item for item in latest_config.cookies if item.platform == platform), None)
+                    if current is None or sanitize_cookie_header(current.cookie) != update["expected_cookie"]:
+                        stale_profile_platforms.append(platform)
+                        continue
+                    fields = update.get("fields") if isinstance(update.get("fields"), dict) else {}
+                    cookie_changed = False
+                    for key, value in fields.items():
+                        clean_value = str(value or "").strip()
+                        if not clean_value or str(getattr(current, key, "") or "").strip() == clean_value:
+                            continue
+                        setattr(current, key, clean_value)
+                        cookie_changed = True
+                    if cookie_changed:
+                        current.updated_at = now_iso
+                return latest_config
+
+            self.store.update(apply_cookie_profile_updates)
+        if stale_profile_platforms:
+            _append_subscription_log(
+                "cookie_source_profile_stale_ignored",
+                platforms=sorted(set(stale_profile_platforms)),
+                reason=reason,
+            )
 
         result = {
             "created_count": len(created_ids),

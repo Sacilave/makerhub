@@ -80,6 +80,7 @@ BATCH_CHILD_TRANSIENT_FAILURE_TOKENS = (
     "cloakbrowser 服务暂时不可用",
 )
 CLOAKBROWSER_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
+THREE_MF_RECOVERY_PROBE_BATCH_SIZE = 1
 CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE = (
     "指纹浏览器登录态已同步，但 MakerWorld 仍拒绝 3MF 下载；请在官网完成验证后再继续归档。"
 )
@@ -834,46 +835,44 @@ class ArchiveTaskManager:
         status: str,
         message: str,
     ) -> object | None:
-        try:
-            config = self.store.load()
-            current = next((item for item in config.cookies if item.platform == platform), None)
-        except Exception as exc:
-            _log_archive(
-                "cloakbrowser_auto_sync_config_read_failed",
-                "读取账号配置失败，未写入指纹浏览器登录态。",
-                level="warning",
-                platform=platform,
-                error=str(exc)[:240],
-            )
-            return None
-        if current is None:
-            return None
-
-        current_cookie = sanitize_cookie_header(current.cookie)
+        expected_cookie_value = sanitize_cookie_header(expected_cookie)
         expected_profile_id = str(profile_id or "").strip()
-        current_profile_id = str(current.browser_profile_id or "").strip()
-        if expected_profile_id and current_profile_id and current_profile_id != expected_profile_id:
-            return None
-        if not current_profile_id and current_cookie != sanitize_cookie_header(expected_cookie):
-            return None
-
-        next_cookie = sanitize_cookie_header(cookie) or current_cookie
-        changed = next_cookie != current_cookie
+        saved_pair = None
         timestamp = china_now().isoformat()
-        next_pair = current.model_copy(
-            update={
-                "cookie": next_cookie,
-                "browser_profile_id": str(profile_id or current.browser_profile_id),
-                "browser_status": str(status or "").strip(),
-                "browser_message": str(message or "").strip()[:400],
-                "browser_synced_at": timestamp,
-                "updated_at": timestamp,
-                "last_login_at": timestamp if changed else current.last_login_at,
-            }
-        )
-        config.cookies = [next_pair if item.platform == platform else item for item in config.cookies]
+
+        def _update_latest(config):
+            nonlocal saved_pair
+            saved_pair = None
+            current = next((item for item in config.cookies if item.platform == platform), None)
+            if current is None:
+                return config
+
+            current_cookie = sanitize_cookie_header(current.cookie)
+            current_profile_id = str(current.browser_profile_id or "").strip()
+            if expected_profile_id and current_profile_id and current_profile_id != expected_profile_id:
+                return config
+            if current_cookie != expected_cookie_value:
+                return config
+
+            next_cookie = sanitize_cookie_header(cookie) or current_cookie
+            changed = next_cookie != current_cookie
+            next_pair = current.model_copy(
+                update={
+                    "cookie": next_cookie,
+                    "browser_profile_id": str(profile_id or current.browser_profile_id),
+                    "browser_status": str(status or "").strip(),
+                    "browser_message": str(message or "").strip()[:400],
+                    "browser_synced_at": timestamp,
+                    "updated_at": timestamp,
+                    "last_login_at": timestamp if changed else current.last_login_at,
+                }
+            )
+            config.cookies = [next_pair if item.platform == platform else item for item in config.cookies]
+            saved_pair = next_pair
+            return config
+
         try:
-            saved = self.store.save(config)
+            saved = self.store.update(_update_latest)
         except Exception as exc:
             _log_archive(
                 "cloakbrowser_auto_sync_config_save_failed",
@@ -883,12 +882,14 @@ class ArchiveTaskManager:
                 error=str(exc)[:240],
             )
             return None
+        if saved_pair is None:
+            return None
         publish_state_event(
             "online_accounts",
             "state.changed",
-            {"platform": platform, "status": next_pair.browser_status},
+            {"platform": platform, "status": saved_pair.browser_status},
         )
-        return next((item for item in saved.cookies if item.platform == platform), next_pair)
+        return next((item for item in saved.cookies if item.platform == platform), saved_pair)
 
     def _refresh_browser_session_for_task(self, platform: str) -> tuple[object | None, str]:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
@@ -2354,42 +2355,26 @@ class ArchiveTaskManager:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
         if normalized_platform not in {"cn", "global"}:
             return 0
-        if not hasattr(self.task_store, "load_archive_queue") or not hasattr(self.task_store, "save_archive_queue"):
+        pause_tasks = getattr(self.task_store, "pause_verification_archive_tasks", None)
+        if not callable(pause_tasks):
             return 0
-
-        queue = self.task_store.load_archive_queue()
-        queued_items = list(queue.get("queued") or [])
-        paused_count = 0
         pause_message = str(message or "").strip() or describe_three_mf_failure(
             state,
             source=normalized_platform,
         )
-        now = china_now().isoformat()
 
-        for item in queued_items:
-            status = str(item.get("status") or "queued").strip().lower()
-            if status not in {"", "queued", "pending"}:
-                continue
+        def _matches(item: dict[str, Any]) -> bool:
             if not _is_three_mf_only_task(item):
-                continue
-
+                return False
             meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
             item_url = normalize_source_url(str(meta.get("model_url") or item.get("url") or ""))
             item_platform = normalize_makerworld_source(meta.get("source"), item_url)
-            if item_platform != normalized_platform:
-                continue
+            return item_platform == normalized_platform
 
-            item["status"] = "paused"
-            item["blocked_reason"] = "needs_verification"
-            item["message"] = pause_message
-            item["updated_at"] = now
-            paused_count += 1
-
+        queue = pause_tasks(selector=_matches, message=pause_message)
+        paused_count = int(queue.get("paused_count") or 0)
         if not paused_count:
             return 0
-
-        queue["queued"] = queued_items
-        self.task_store.save_archive_queue(queue)
         if hasattr(self.task_store, "mark_missing_3mf_platform_status"):
             self.task_store.mark_missing_3mf_platform_status(
                 normalized_platform,
@@ -2615,7 +2600,7 @@ class ArchiveTaskManager:
                 if _append_candidate(raw_item):
                     break
 
-        if hasattr(self.task_store, "mark_missing_3mf_retrying"):
+        if candidates and hasattr(self.task_store, "mark_missing_3mf_retrying"):
             self.task_store.mark_missing_3mf_retrying(
                 candidates,
                 status="queued",
@@ -2689,48 +2674,61 @@ class ArchiveTaskManager:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
         if normalized_platform not in {"cn", "global"}:
             return 0
-        if not hasattr(self.task_store, "load_archive_queue") or not hasattr(self.task_store, "save_archive_queue"):
+        resume_tasks = getattr(self.task_store, "resume_verification_paused_archive_tasks", None)
+        if not callable(resume_tasks):
             return 0
 
-        queue = self.task_store.load_archive_queue()
-        queued_items = list(queue.get("queued") or [])
-        resumed = 0
-        now = china_now().isoformat()
-        for item in queued_items:
-            if str(item.get("status") or "").strip().lower() != "paused":
-                continue
+        def _matches(item: dict[str, Any]) -> bool:
             if not _is_three_mf_only_task(item):
-                continue
+                return False
             meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
             item_url = normalize_source_url(str(meta.get("model_url") or item.get("url") or ""))
             item_platform = normalize_makerworld_source(meta.get("source"), item_url)
-            if item_platform != normalized_platform:
-                continue
+            return item_platform == normalized_platform
 
-            item["status"] = "queued"
-            item["message"] = "验证已完成，等待重新下载 3MF"
-            item["updated_at"] = now
-            item["meta"] = {**meta, "browser_session_recovery": True}
-            item.pop("blocked_reason", None)
-            resumed += 1
-
+        queue = resume_tasks(
+            selector=_matches,
+            limit=THREE_MF_RECOVERY_PROBE_BATCH_SIZE,
+            message="验证已完成，正在探测 3MF 下载权限",
+            meta_updates={"browser_session_recovery": True},
+        )
+        resumed = int(queue.get("resumed_count") or 0)
         if not resumed:
             return 0
-
-        queue["queued"] = queued_items
-        self.task_store.save_archive_queue(queue)
-        if hasattr(self.task_store, "mark_missing_3mf_platform_status"):
-            self.task_store.mark_missing_3mf_platform_status(
-                normalized_platform,
+        resumed_items = queue.get("resumed_items") if isinstance(queue.get("resumed_items"), list) else []
+        mark_retrying = getattr(self.task_store, "mark_missing_3mf_retrying", None)
+        if callable(mark_retrying) and resumed_items:
+            mark_retrying(
+                [
+                    {
+                        "model_id": str((item.get("meta") or {}).get("model_id") or extract_model_id(item.get("url") or "") or ""),
+                        "model_url": normalize_source_url(str((item.get("meta") or {}).get("model_url") or item.get("url") or "")),
+                        "title": str((item.get("meta") or {}).get("title") or ""),
+                        "instance_id": str((item.get("meta") or {}).get("instance_id") or ""),
+                        "source": normalized_platform,
+                    }
+                    for item in resumed_items
+                    if isinstance(item, dict)
+                ],
                 status="queued",
-                message="验证已完成，等待重新下载 3MF",
+                message="正在探测 3MF 下载权限",
             )
         append_business_log(
             "missing_3mf",
             "paused_retry_queue_resumed",
-            "验证完成后已恢复暂停的缺失 3MF 队列任务。",
+            "验证完成后已恢复下一个缺失 3MF 探测任务。",
             platform=normalized_platform,
             resumed_count=resumed,
+            remaining_paused=max(
+                sum(
+                    1
+                    for item in queue.get("queued") or []
+                    if isinstance(item, dict)
+                    and str(item.get("status") or "").strip().lower() == "paused"
+                    and _matches(item)
+                ),
+                0,
+            ),
         )
         return resumed
 
@@ -3888,7 +3886,7 @@ class ArchiveTaskManager:
             if resumed_count:
                 _log_archive(
                     "browser_3mf_authorization_verified",
-                    "指纹浏览器已取得 3MF 授权，已恢复同平台暂停任务。",
+                    "指纹浏览器已取得 3MF 授权，已放行下一个探测任务。",
                     platform=account_platform,
                     resumed_count=resumed_count,
                 )

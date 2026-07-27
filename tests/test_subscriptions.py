@@ -718,6 +718,51 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(saved_cookie.avatar_url, "https://example.test/avatar.jpg")
         self.assertEqual(saved_cookie.message, "国内账号已同步，账号信息已更新。")
 
+    def test_sync_cookie_sources_does_not_overwrite_new_browser_cookie_with_stale_profile(self):
+        config = self.store.load()
+        config.cookies = [
+            CookiePair(
+                platform="cn",
+                cookie="token=old",
+                display_name="旧账号",
+                browser_profile_id="profile-cn",
+            )
+        ]
+        config.subscriptions = []
+        self.store.save(config)
+
+        def discover_profile(*_args, **_kwargs):
+            latest = self.store.load()
+            latest.cookies = [
+                latest.cookies[0].model_copy(
+                    update={
+                        "cookie": "token=new",
+                        "display_name": "新浏览器账号",
+                        "browser_synced_at": "2026-07-27T02:20:00+08:00",
+                    }
+                )
+            ]
+            self.store.save(latest)
+            return {
+                "uid": "old-account",
+                "handle": "old-handle",
+                "name": "旧检测结果",
+                "avatar_url": "https://example.test/old.jpg",
+            }
+
+        with patch.object(subscriptions, "discover_cookie_account_profile", side_effect=discover_profile), \
+                patch.object(subscriptions, "discover_cookie_account_home_summary", return_value={}), \
+                patch.object(subscriptions, "default_favorites_subscription_source", return_value={}), \
+                patch.object(subscriptions, "discover_cookie_followed_authors_from_page", return_value={"items": [], "count": 0, "total": 0}), \
+                patch.object(subscriptions, "discover_cookie_followed_authors", return_value={"items": [], "count": 0, "total": 0}), \
+                patch.object(subscriptions, "discover_cookie_followed_collections", return_value={"items": [], "count": 0}):
+            self.manager.sync_cookie_sources({"cn"}, reason="scheduled")
+
+        current = self.store.load().cookies[0]
+        self.assertEqual(current.cookie, "token=new")
+        self.assertEqual(current.display_name, "新浏览器账号")
+        self.assertEqual(current.browser_synced_at, "2026-07-27T02:20:00+08:00")
+
     def test_sync_cookie_sources_canonicalizes_imported_author_urls(self):
         config = self.store.load()
         config.cookies = [CookiePair(platform="global", cookie="token=ok")]
