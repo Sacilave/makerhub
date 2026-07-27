@@ -1,5 +1,11 @@
 # 更新说明
 
+## 2026-07-27 · v0.15.0
+
+- Canonical Compose 改为可移植部署：配置、归档、Postgres 和 CloakBrowser 数据目录默认位于项目 `./data/`，并可通过 `.env` 覆盖为 DSM、Unraid 或其他服务器路径。
+- 新增无默认密钥的 `.env.example`，`.gitignore` 阻止提交真实 `.env` 与本地数据；Web、CloakBrowser 端口、镜像和 Docker 日志轮转均可配置。
+- 新部署 Worker 默认并发由 `2` 统一为 `4`；App / Worker 启用 init 和更合理的停止等待时间，README 收敛为快速安装、浏览器登录、迁移和更新入口。
+
 ## 2026-07-27 · v0.14.4
 
 - 修复指纹浏览器验证恢复链在 `three_mf_download` 子任务成功后停止推进的问题；成功取得并下载 3MF 后会继续原子放行下一个暂停任务。

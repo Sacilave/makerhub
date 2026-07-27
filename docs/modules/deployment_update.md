@@ -39,6 +39,7 @@
 
 - 文件:
   - `compose.yaml`
+  - `.env.example`
   - `Dockerfile`
   - `docker/entrypoint.sh`
   - `README.md`
@@ -48,10 +49,14 @@
   - 数据库索引状态由 Core/归档索引模块维护。
 - Docker:
   - `compose.yaml` 是唯一完整部署定义，不再需要额外的浏览器抓取 override。
+  - 宿主机配置、归档、Postgres 和 CloakBrowser 目录分别由 `MAKERHUB_CONFIG_PATH`、`MAKERHUB_ARCHIVE_PATH`、`MAKERHUB_POSTGRES_DATA_PATH`、`MAKERHUB_CLOAKBROWSER_DATA_PATH` 控制；默认写入 Compose 同目录的 `./data/`。
+  - `.env.example` 的必填密钥必须保持空值，真实 `.env` 和默认本地 `data/` 必须被 Git 忽略。
   - 默认 compose 不挂载 `/var/run/docker.sock`；只有用户显式 opt-in 后，设置页才可直接网页更新。
   - App / Worker 依赖 Postgres 的 `service_healthy`，App、Worker、Postgres 都必须保留 healthcheck。
   - 默认目录布局为 `/app/config/{config,logs,state}` 与 `/app/data`，compose 只映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
   - `makerhub-app` 和 `makerhub-worker` 应使用同一镜像版本。
+  - 所有服务必须限制 Docker 日志文件大小和保留数量，避免长期抓取日志占满宿主机磁盘。
+  - 新部署默认 Worker 并发为 `4`，运行时仍必须限制在 `1-4`。
   - CloakBrowser token 必填且 Manager 默认绑定 `127.0.0.1`；仅在可信 LAN 下显式设置绑定地址和公共 URL。
   - 新 App / Worker readiness 和发布组提交成功后，一键更新会 best-effort 删除精确命名为 `makerhub-flaresolverr` 的旧内置容器；共享或自定义 FlareSolverr 不处理。
   - 只有明确设置 `MAKERHUB_TRUSTED_PROXIES` 时才信任反向代理头，拒绝宽泛公网网段。

@@ -138,9 +138,13 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertGreaterEqual(compose_text.count("    healthcheck:"), 3)
         self.assertIn("/api/public/health/ready", compose_text)
         self.assertIn('"app.worker", "--healthcheck"', compose_text)
-        self.assertIn("pg_isready -U makerhub -d makerhub", compose_text)
-        self.assertIn("/volume4/docker/docker/makerhub:/app/config", compose_text)
-        self.assertIn("/app/data", compose_text)
+        self.assertIn("pg_isready", compose_text)
+        self.assertIn("${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config", compose_text)
+        self.assertIn("${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data", compose_text)
+        self.assertIn("${MAKERHUB_POSTGRES_DATA_PATH:-./data/postgres}", compose_text)
+        self.assertIn("${MAKERHUB_CLOAKBROWSER_DATA_PATH:-./data/cloakbrowser}", compose_text)
+        self.assertNotIn("/volume4/", compose_text)
+        self.assertNotIn("/volume2/", compose_text)
         self.assertNotIn("/app/logs", compose_text)
         self.assertNotIn("/app/state", compose_text)
         self.assertNotIn("/app/archive", compose_text)
@@ -154,7 +158,10 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             "${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:"
             "?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}"
         )
-        local_bind = "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
+        local_bind = (
+            "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:"
+            "${MAKERHUB_CLOAKBROWSER_PORT:-9050}:8080"
+        )
 
         compose_text = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")
         self.assertGreaterEqual(compose_text.count(required_token), 3)
@@ -394,8 +401,10 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertGreaterEqual(status["compose_example"].count("    healthcheck:"), 3)
             self.assertIn("/api/public/health/ready", status["compose_example"])
             self.assertIn('"app.worker", "--healthcheck"', status["compose_example"])
-            self.assertIn("/volume4/docker/docker/makerhub:/app/config", status["compose_example"])
-            self.assertIn("/app/data", status["compose_example"])
+            self.assertIn("${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config", status["compose_example"])
+            self.assertIn("${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data", status["compose_example"])
+            self.assertNotIn("/volume4/", status["compose_example"])
+            self.assertNotIn("/volume2/", status["compose_example"])
             self.assertNotIn("/app/logs", status["compose_example"])
             self.assertNotIn("/app/state", status["compose_example"])
             self.assertNotIn("/app/archive", status["compose_example"])

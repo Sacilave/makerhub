@@ -9,6 +9,10 @@ __pycache__/
 .bytro
 runtime/
 runtime-local/
+data/
+.env
+.env.*
+!.env.example
 .workflow/
 frontend/node_modules/
 frontend/dist/

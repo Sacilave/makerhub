@@ -94,7 +94,7 @@ Runtime diagnostics include database table summaries, state-event counts, recent
 
 ## 安全与保留
 
-- 管理员密码优先由 `MAKERHUB_ADMIN_PASSWORD` 提供；未配置时生成随机一次性密码到 owner-only bootstrap 文件，改密后删除。
+- Canonical Compose 不传递管理员明文密码，新实例会生成随机一次性密码到 owner-only bootstrap 文件，改密后删除；自定义无人值守部署仍可显式提供 `MAKERHUB_ADMIN_PASSWORD`。
 - API Token 和移动端 Token 只在创建时返回明文，运行期和 Postgres 只保留哈希；日志不得记录 token、Cookie 或密码。
 - 默认不信任代理转发头，只有 `MAKERHUB_TRUSTED_PROXIES` 显式列出受控代理地址时才开启。
 - 状态事件默认保留 14 天，业务日志默认保留 90 天；设置对应 retention 环境变量为 `0` 可关闭自动清理。

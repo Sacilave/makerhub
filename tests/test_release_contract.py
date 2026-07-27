@@ -144,7 +144,10 @@ class ReadmeCloakBrowserContractTest(unittest.TestCase):
             "${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:"
             "?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}"
         )
-        local_bind = "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
+        local_bind = (
+            "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:"
+            "${MAKERHUB_CLOAKBROWSER_PORT:-9050}:8080"
+        )
 
         self.assertGreaterEqual(compose.count(required_token), 3)
         self.assertNotIn("${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}", compose)
@@ -190,8 +193,61 @@ class DeploymentComposeContractTest(unittest.TestCase):
         self.assertEqual(app_environment["MAKERHUB_TRUSTED_PROXIES"], "${MAKERHUB_TRUSTED_PROXIES:-}")
         self.assertEqual(
             services["cloakbrowser"]["ports"],
-            ["${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"],
+            [
+                "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:"
+                "${MAKERHUB_CLOAKBROWSER_PORT:-9050}:8080"
+            ],
         )
+
+    def test_canonical_compose_is_portable_and_bounds_container_logs(self):
+        compose = yaml.safe_load((ROOT_DIR / "compose.yaml").read_text(encoding="utf-8"))
+        services = compose["services"]
+        expected_app_volumes = [
+            "${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config",
+            "${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data",
+        ]
+
+        self.assertEqual(services["makerhub-app"]["volumes"][:2], expected_app_volumes)
+        self.assertEqual(services["makerhub-worker"]["volumes"], expected_app_volumes)
+        self.assertEqual(
+            services["makerhub-postgres"]["volumes"],
+            ["${MAKERHUB_POSTGRES_DATA_PATH:-./data/postgres}:/var/lib/postgresql/data"],
+        )
+        self.assertEqual(
+            services["cloakbrowser"]["volumes"],
+            ["${MAKERHUB_CLOAKBROWSER_DATA_PATH:-./data/cloakbrowser}:/data"],
+        )
+        for service_name in ("makerhub-app", "makerhub-worker"):
+            with self.subTest(service=service_name, setting="worker_concurrency"):
+                self.assertEqual(
+                    services[service_name]["environment"]["MAKERHUB_WORKER_CONCURRENCY"],
+                    "${MAKERHUB_WORKER_CONCURRENCY:-4}",
+                )
+        for service_name, service in services.items():
+            with self.subTest(service=service_name):
+                self.assertEqual(service["logging"]["driver"], "local")
+                self.assertEqual(
+                    service["logging"]["options"],
+                    {
+                        "max-size": "${MAKERHUB_LOG_MAX_SIZE:-10m}",
+                        "max-file": "${MAKERHUB_LOG_MAX_FILES:-3}",
+                    },
+                )
+
+    def test_environment_template_requires_secrets_and_is_safe_to_copy(self):
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        gitignore = (ROOT_DIR / ".gitignore").read_text(encoding="utf-8")
+
+        self.assertIn("MAKERHUB_POSTGRES_PASSWORD=\n", env_example)
+        self.assertIn("MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=\n", env_example)
+        self.assertIn("MAKERHUB_CONFIG_PATH=./data/config", env_example)
+        self.assertIn("MAKERHUB_ARCHIVE_PATH=./data/archive", env_example)
+        self.assertIn("MAKERHUB_WORKER_CONCURRENCY=4", env_example)
+        self.assertNotIn("change-this", env_example)
+        self.assertIn(".env", gitignore.splitlines())
+        self.assertIn(".env.*", gitignore.splitlines())
+        self.assertIn("!.env.example", gitignore.splitlines())
+        self.assertIn("data/", gitignore.splitlines())
 
     def test_dockerfile_packages_the_canonical_compose_for_update_diagnostics(self):
         dockerfile = (ROOT_DIR / "Dockerfile").read_text(encoding="utf-8")

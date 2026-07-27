@@ -1,110 +1,85 @@
 <p align="center">
-  <img src="app/static/img/makerhub-logo.png" width="160" alt="MakerHub logo">
+  <img src="app/static/img/makerhub-logo.png" width="140" alt="MakerHub logo">
 </p>
 
-# MakerHub
+<h1 align="center">MakerHub</h1>
 
-> 当前版本：`v0.14.4`
+<p align="center">
+  面向 NAS 的 MakerWorld 私有归档与订阅系统
+</p>
+
+<p align="center">
+  <a href="https://github.com/s450586793/makerhub/actions/workflows/docker.yml"><img alt="Docker workflow" src="https://github.com/s450586793/makerhub/actions/workflows/docker.yml/badge.svg"></a>
+  <a href="https://github.com/s450586793/makerhub/releases/latest"><img alt="GitHub release" src="https://img.shields.io/github/v/release/s450586793/makerhub"></a>
+  <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
+</p>
+
+> 当前版本：`v0.15.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
-MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务器的 MakerWorld 本地归档系统。它不是公开模型站，而是把你关注、收藏、下载和本地积累的模型统一整理成自己的 MakerWorld 私有资料库。
+MakerHub 把 MakerWorld 模型、图片、附件、评论、打印配置和 `3MF` 保存到自己的 NAS。它支持单模型和批量归档、作者与收藏夹订阅、本地文件导入、来源刷新、缺失 `3MF` 修复，并通过 CloakBrowser 复用真实浏览器登录态。
 
-你可以归档单个模型，也可以批量归档作者页、收藏夹、合集；可以创建订阅定时同步新模型；也可以把手机、网页或本地文件夹里的 `3MF`、`STL`、`STEP`、`OBJ`、压缩包和附件导入 MakerHub。当前默认推荐 App / Worker / Postgres / CloakBrowser 四容器部署：App 负责页面和 API，Worker 负责后台抓取、整理和索引重建，Postgres 保存结构化配置、任务状态、业务日志和模型卡片索引，CloakBrowser 保存 MakerWorld 登录 profile 并承载控制面抓取。
+## 主要能力
 
-## 当前重点
-
-- 数据库化运行状态：配置、Cookie / Token、订阅、来源库 metadata、任务状态、分享记录、限流状态、系统更新状态和业务日志进入 Postgres。
-- 模型索引入库：归档模型卡片索引写入 `archive_model_index`，模型库、订阅库和来源库读取更稳定。
-- 四容器默认部署：默认 Compose 包含 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`、`makerhub-cloakbrowser`。
-- 数据库索引重建：首次连接数据库后由 Worker 自动遍历历史归档库建立模型卡片索引；设置页不再保留旧的手动补全入口。
-- CloakBrowser 单通道：MakerWorld 页面、列表、评论和下载地址 API 统一复用国内 / 国际固定 profile；后台请求使用独立临时页，不导航或关闭用户页面。
-- 静态文件直连：图片、附件和已取得签名直链的 `3MF` 仍由普通下载器保存，避免大文件占用浏览器通道；失败后会重新标记为缺失。
-- 系统更新更安全：旧 compose 缺少 Postgres 配置时会阻止网页一键更新，并提示先升级 compose。
-- 文档重整：补齐架构说明、模块边界、Compose 安装、升级说明和 V0.7.0 更新记录。
-
-## 功能介绍
-
-- 首页工作台：以快照摘要展示模型数量、缺失 `3MF`、归档任务、订阅、源端刷新、本地整理和 MW 源站状态，实时排障细节下沉到对应页面。
-- MakerWorld 归档：支持单模型、作者页、收藏夹、合集批量归档，保存模型信息、图片、附件、评论、打印配置和 `3MF`。
-- 订阅与来源库：可定时同步作者、收藏夹、合集；保存 Cookie 之后可同步关注作者、默认收藏夹和关注合集。
-- 模型库与详情页：支持搜索、筛选、收藏、已打印、软删除、源端删除标记、评论回复树、附件管理和文件下载。
-- 缺失 `3MF` 管理：识别下载失败原因，区分验证、Cookie 失效、Cloudflare、每日上限和源端缺失，并支持重试。
-- 本地导入整理：支持 Web 上传、iOS 快捷指令上传和 `/app/data/local` 文件夹监听，自动解析、去重、合并配置并生成本地模型。
-- 分享与移动端导入：支持生成分享码、接收分享模型、移动端 Token 上传和 iOS 快捷指令。
-- 在线账号与 Cookie：支持国内 / 国际 MakerWorld Cookie、Bambu 在线账号登录辅助、认证探针和代理配置。
-- 用户与安全：支持单用户登录、API Token 权限、移动端导入 Token 和公网部署下的基础访问控制。
-- 系统更新中心：查看当前版本、GitHub 最新版本、更新记录和更新状态；可信内网可选挂载 Docker socket 启用网页一键更新。
-- 日志与诊断：用户页面保留最近错误、常用模块和关键词筛选；完整日志查询 API 继续支持按文件、事件、时间和分页排障，并对敏感信息脱敏。
+- **MakerWorld 归档**：归档模型、作者页、收藏夹和合集，保存模型信息及关联资源。
+- **订阅同步**：定时发现关注来源的新模型，并进入统一归档队列。
+- **私有模型库**：分页搜索、筛选、收藏、打印标记、软删除和文件管理。
+- **本地导入**：接收 `3MF`、`STL`、`STEP`、`OBJ`、压缩包和附件，自动整理与去重。
+- **浏览器会话复用**：国内站和国际站使用独立 CloakBrowser profile，人工登录后由后台持续复用。
+- **任务与诊断**：显示归档、刷新、整理和缺失 `3MF` 状态，并保留脱敏业务日志。
+- **自托管更新**：支持 GHCR 镜像手动更新；可信内网可显式启用网页一键更新。
 
 ## 架构
 
-推荐生产部署由四个服务组成：
+默认部署包含 4 个容器：
 
-- `makerhub-app`：FastAPI API、Vue SPA、登录鉴权、轻量写操作和页面数据读取。
-- `makerhub-worker`：归档队列、订阅同步、源端刷新、本地整理、模型索引重建和封面生成。
-- `makerhub-postgres`：结构化配置、JSON 状态、业务日志、模型卡片索引和索引状态。
-- `makerhub-cloakbrowser`：保存可复用的 MakerWorld 浏览器 profile、Cookie 和本地会话数据，并处理页面与控制面 API 请求。
+| 服务 | 职责 |
+| --- | --- |
+| `makerhub-app` | FastAPI API、Vue 页面、鉴权和轻量请求 |
+| `makerhub-worker` | 归档队列、订阅、来源刷新、本地整理和索引重建 |
+| `makerhub-postgres` | 配置、任务状态、业务日志和模型卡片索引 |
+| `makerhub-cloakbrowser` | MakerWorld 浏览器 profile、Cookie 和控制面抓取 |
 
-数据边界：
+Postgres 保存结构化状态；文件系统保存模型本体、图片、附件、导入文件和历史 `meta.json`。MakerHub 页面、列表、评论及 `3MF` 授权请求统一复用 CloakBrowser profile，已经取得签名地址的静态文件仍由普通下载器保存。
 
-- Postgres 保存结构化状态、运行日志、模型卡片索引和跨进程协同状态。
-- 文件系统保存模型本体、图片、附件、导入入口、历史 `meta.json` 和本地临时文件。
-- 当前运行状态、业务日志和配置以 Postgres 为准；文件系统继续保存模型本体、图片、附件和历史 `meta.json`。
+## 快速安装
 
-更多内部说明见：
-
-- [架构说明](docs/ARCHITECTURE.md)
-- [模块索引](docs/MODULES.md)
-- [新版本数据模型与迁移按钮设计](docs/NEW_VERSION_DATA_MODEL_AND_MIGRATION.md)
-
-## Docker Compose 安装
-
-### 1. 准备目录
-
-按自己的 NAS 路径创建目录。下面以 DSM 路径为例：
+### 1. 下载部署文件
 
 ```bash
-mkdir -p /volume4/docker/docker/makerhub/{config,logs,state,postgres,cloakbrowser}
-mkdir -p "/volume2/entertainment/3D打印/makerhub/local"
+mkdir makerhub
+cd makerhub
+curl -LO https://raw.githubusercontent.com/s450586793/makerhub/main/compose.yaml
+curl -o .env https://raw.githubusercontent.com/s450586793/makerhub/main/.env.example
 ```
 
-目录含义：
+也可以克隆仓库后执行：
 
-- `/app/config/config`：运行配置目录。
-- `/app/config/state`：上传暂存、预览队列 marker、备份和少量运行临时文件。
-- `/app/config/logs`：兼容挂载目录；新业务日志写入 Postgres。
-- `/volume4/docker/docker/makerhub/cloakbrowser`：CloakBrowser profile、Cookie 和会话数据目录，映射到 CloakBrowser 容器 `/data`。
-- `/app/data`：归档模型、图片、附件、模型文件和历史 `meta.json`。旧 DSM 模型目录可以继续直接放在这里。
-- `/app/data/local`：本地导入和整理入口。
-- `/var/lib/postgresql/data`：Postgres 数据库目录。
+```bash
+cp .env.example .env
+```
 
-默认 compose 会把宿主机 `/volume4/docker/docker/makerhub` 映射到容器 `/app/config`，这样旧版平级的 `config`、`logs`、`state` 会直接对应到 `/app/config/config`、`/app/config/logs`、`/app/config/state`。
+### 2. 配置必填密钥
 
-### 2. 使用完整 `compose.yaml`
-
-先在 `compose.yaml` 同目录创建 `.env`，不要使用下面的示例值：
+打开 `.env`，至少填写下面两个空值：
 
 ```env
-MAKERHUB_POSTGRES_PASSWORD=change-this-db-password
-# 建议显式设置至少 24 位管理员密码；未设置时会生成一次性密码到 /app/config/state/admin-bootstrap-password。
-MAKERHUB_ADMIN_PASSWORD=change-this-admin-password
-# 必填：给 CloakBrowser 管理界面和 MakerHub 调用使用的访问令牌。
-MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=change-this-cloakbrowser-token
-# 远端管理才需要：显式绑定可信 LAN 地址，并配置用户浏览器可访问的 Manager 地址。
-# MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=192.168.1.20
-# MAKERHUB_CLOAKBROWSER_PUBLIC_URL=http://192.168.1.20:9050
-# 只有反向代理地址明确可控时才设置；未设置时不信任 X-Forwarded-* 请求头。
-# MAKERHUB_TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8
-# 可选：升级前验证新镜像后再覆盖默认固定 digest。
-# MAKERHUB_CLOAKBROWSER_IMAGE=cloakhq/cloakbrowser-manager:经过验证的版本
+MAKERHUB_POSTGRES_PASSWORD=
+MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=
 ```
 
-`MAKERHUB_POSTGRES_PASSWORD` 会同时用于 App、Worker 和 Postgres，建议使用纯英文数字，避免 `@`、`:`、`/`、`#` 这类需要 URL 转义的字符。
+可以分别使用 `openssl rand -hex 32` 生成。`MAKERHUB_POSTGRES_PASSWORD` 建议只使用英文和数字，避免数据库 URL 转义问题。`MAKERHUB_CLOAKBROWSER_AUTH_TOKEN` 是必填的强随机访问令牌，App、Worker 和 CloakBrowser Manager 使用同一个值。
 
-`MAKERHUB_CLOAKBROWSER_AUTH_TOKEN` 为必填项，App、Worker 和 CloakBrowser Manager 使用同一个强随机 token。端口 `9050` 默认只绑定 `127.0.0.1`，仅允许宿主机本地访问 Manager。若确需从局域网其他终端管理，显式设置 `MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=<LAN IP>` 和对应的 `MAKERHUB_CLOAKBROWSER_PUBLIC_URL`；这会扩大攻击面，应通过防火墙仅允许可信 LAN 地址访问，禁止直接暴露到公网。
+默认数据保存在 `compose.yaml` 同目录的 `./data/` 下：
 
-`compose.yaml` 是唯一完整部署定义，不要从 README 复制或另存服务片段，也不需要额外的浏览器抓取 override。
+```text
+data/
+├── archive/        # 模型、图片、附件和本地导入入口
+├── cloakbrowser/   # 浏览器 profile 与会话
+├── config/         # 兼容配置、暂存和备份
+└── postgres/       # PostgreSQL 数据
+```
 
 ### 3. 启动
 
@@ -115,48 +90,99 @@ docker compose up -d
 默认访问地址：
 
 ```text
-http://你的服务器IP:9042
+http://服务器 IP:9042
 ```
 
-默认登录账号为 `admin`。首次登录后使用安全管理员密码登录，再添加 MakerWorld 国内或国际账号。
-
-管理员密码必须安全保存：优先在 `.env` 设置至少 24 位的 `MAKERHUB_ADMIN_PASSWORD`。未设置时，MakerHub 会生成随机一次性密码并写入 `/app/config/state/admin-bootstrap-password`（权限为 owner-only）；读取后立即修改密码，文件会在改密后删除。API Token 和移动端导入 Token 只在创建响应中显示一次，数据库仅保存哈希，后续列表不会返回明文。
-
-默认不会信任反向代理转发头。只有代理地址由你控制时，才设置 `MAKERHUB_TRUSTED_PROXIES`；不要使用 `*`、`0.0.0.0/0` 或公网网段。CloakBrowser 仍默认绑定 `127.0.0.1:9050`；需要 LAN 管理时显式配置绑定地址、公共 URL 和防火墙规则。
-
-首次启动数据库版本后，Worker 会自动遍历已有归档目录，重建模型卡片数据库索引。配置、Cookie / Token、订阅、任务状态、来源库 metadata、分享记录、更新状态和业务日志都以 Postgres 中的运行数据为准。
-
-`/app/logs`、`/app/state`、`/app/archive`、`/app/local` 默认不再单独映射。新业务日志和结构化运行状态写入 Postgres；容器内 `/app/config/logs`、`/app/config/state` 仅保留给兼容挂载、上传暂存、预览队列 marker、备份和临时文件使用。
-
-MakerWorld 页面、作者 / 收藏 / 合集列表、评论和 `3MF` 下载地址 API 统一通过对应 CloakBrowser profile 请求。每次控制请求创建独立临时页并在结束后关闭，不会操作用户已打开的页面；国内和国际 profile 严格隔离，关联 profile 后不会再用 MakerHub 旧 Cookie 或 Token 覆盖浏览器登录态。CloakBrowser 短暂 `5xx`、CDP 超时或断开会按网络故障重试，不会直接提示重新登录。
-
-设置页默认通过“打开浏览器”关联或复用 `MakerHub CN` / `MakerHub Global` 固定 profile；在浏览器中完成登录后，MakerHub 自动读取当前会话，也可以点击“从浏览器同步”立即读取。未关联 profile 的旧账号仅在兼容路径中允许一次性注入现有 Cookie。需要真实交互的 `3MF` 授权仍在临时页点击一次，不做内部重复点击；已经拿到的图片、附件和 `3MF` 静态文件 URL 继续由 MakerHub 普通下载器保存。若静态直链保存失败，实例会写回 `cloudflare` / `http_error` / `missing` 状态并进入缺失 `3MF` 重试队列。
-
-## 从旧版升级
-
-如果你之前是单容器 `makerhub`，或旧的 `makerhub-api` / `makerhub-web` 双容器，先停掉旧容器释放端口，再按上面的默认 compose 启动：
+默认账号为 `admin`。新实例会生成一次性随机密码，可以通过下面的命令读取：
 
 ```bash
-docker rm -f makerhub || true
-docker rm -f makerhub-api makerhub-web || true
-docker compose pull makerhub-app makerhub-worker makerhub-postgres cloakbrowser
+docker compose exec makerhub-app cat /app/config/state/admin-bootstrap-password
+```
+
+首次登录后立即修改密码。改密成功后，一次性密码文件会自动删除。Canonical Compose 不通过环境变量传递管理员明文密码。
+
+### 4. 登录 MakerWorld
+
+在 MakerHub 的“设置 → 线上账号”中打开国内站或国际站浏览器，在 CloakBrowser 内完成登录。关联成功后，MakerHub 直接复用该 profile，不再维护一份与浏览器竞争的旧 Cookie。
+
+CloakBrowser Manager 默认只绑定 `127.0.0.1:9050`。如果 MakerHub 位于远端 NAS，需要从其他设备访问 Manager，请在 `.env` 中显式设置可信 LAN 地址：
+
+```env
+MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=192.168.1.20
+MAKERHUB_CLOAKBROWSER_PUBLIC_URL=http://192.168.1.20:9050
+```
+
+也可以把 `MAKERHUB_CLOAKBROWSER_PUBLIC_URL` 设置为受控反向代理地址。开放 Manager 会扩大攻击面，必须限制防火墙来源，禁止直接暴露到公网。配置项的通用写法是 `MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=<LAN IP>`。
+
+## DSM 路径示例
+
+现有 DSM 实例不需要移动数据，只需在 `.env` 中覆盖宿主机路径：
+
+```env
+MAKERHUB_CONFIG_PATH=/volume4/docker/docker/makerhub
+MAKERHUB_ARCHIVE_PATH=/volume2/entertainment/3D打印/makerhub
+MAKERHUB_POSTGRES_DATA_PATH=/volume4/docker/docker/makerhub/postgres
+MAKERHUB_CLOAKBROWSER_DATA_PATH=/volume4/docker/docker/makerhub/cloakbrowser
+```
+
+App 和 Worker 始终共享 `MAKERHUB_CONFIG_PATH` 与 `MAKERHUB_ARCHIVE_PATH`。不要让两个容器指向不同目录。
+
+## 常用配置
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `MAKERHUB_HTTP_BIND_ADDRESS` | `0.0.0.0` | Web 服务监听地址 |
+| `MAKERHUB_HTTP_PORT` | `9042` | Web 服务宿主机端口 |
+| `MAKERHUB_WORKER_CONCURRENCY` | `4` | 归档 Worker 并发，范围 `1-4` |
+| `MAKERHUB_CLOAKBROWSER_BIND_ADDRESS` | `127.0.0.1` | Manager 宿主机监听地址 |
+| `MAKERHUB_CLOAKBROWSER_PORT` | `9050` | Manager 宿主机端口 |
+| `MAKERHUB_CLOAKBROWSER_PUBLIC_URL` | 空 | 用户浏览器能够访问的 Manager 地址 |
+| `MAKERHUB_TRUSTED_PROXIES` | 空 | 允许提供转发头的受控代理地址 |
+| `MAKERHUB_LOG_MAX_SIZE` | `10m` | 单个容器日志文件上限 |
+| `MAKERHUB_LOG_MAX_FILES` | `3` | 每个容器保留的日志文件数 |
+| `MAKERHUB_IMAGE` | `ghcr.io/s450586793/makerhub:latest` | App 与 Worker 共用镜像 |
+
+不要把 `MAKERHUB_TRUSTED_PROXIES` 设置为 `*`、`0.0.0.0/0` 或公网网段。默认不信任 `X-Forwarded-*` 请求头。
+
+## 更新
+
+### 手动更新
+
+```bash
+docker compose pull
 docker compose up -d --remove-orphans
 ```
 
-如果设置页提示“需改 compose”，说明当前容器缺少 `MAKERHUB_DATABASE_URL`、`makerhub-postgres`，或仍使用旧 `/app/archive`、`/app/local` 分散挂载。请先升级 compose，再使用网页一键更新。
-
-首次网页更新不能代替这次 compose 迁移：旧镜像没有内置 canonical `compose.yaml`，先替换为本版本的 `compose.yaml` 并用命令行启动 App / Worker / Postgres / CloakBrowser；之后才可在可信内网、显式挂载 Docker socket 的前提下使用设置页更新。网页更新会拉取同一发布组的镜像，依次校验 App HTTP 就绪和 Worker 心跳；任一候选失败会执行整组回滚，保留旧容器。成功提交后只会 best-effort 清理旧版内置浏览器抓取容器，不会处理共享或自定义容器。
-
-旧部署如果原来把模型直接放在宿主机 `/volume2/entertainment/3D打印/makerhub` 根目录下，不需要移动历史模型目录。继续把这个目录映射到容器 `/app/data` 即可；本地导入入口保留在宿主机 `/volume2/entertainment/3D打印/makerhub/local/`，容器内就是 `/app/data/local`。
-
-手动更新命令：
+App 和 Worker 使用同一个 `MAKERHUB_IMAGE`，应始终作为同一发布组更新。更新后可以检查：
 
 ```bash
-docker compose pull makerhub-app makerhub-worker makerhub-postgres cloakbrowser
+docker compose ps
+curl -fsS http://127.0.0.1:9042/api/public/health/ready
+```
+
+### 网页一键更新
+
+默认 Compose 不挂载 Docker socket，因此 MakerHub 默认不能控制宿主机 Docker。只有在可信内网明确需要网页更新时，才取消 `makerhub-app` 下这行注释：
+
+```yaml
+# - /var/run/docker.sock:/var/run/docker.sock
+```
+
+网页更新会把 App 和 Worker 作为同一发布组处理，完成 HTTP readiness 与 Worker 心跳校验后再提交；失败时整组回滚。Docker socket 等同于宿主机高权限，不应在不可信环境中开放。
+
+## 从旧版迁移
+
+旧单容器或旧 App / Web 双容器需要先停止，释放 `9042` 端口：
+
+```bash
+docker rm -f makerhub
+docker rm -f makerhub-api makerhub-web
 docker compose up -d --remove-orphans
 ```
 
-默认 compose 不再挂载 Docker socket，因此设置页不会默认拥有宿主机 Docker 控制权限。只有明确需要网页一键更新时，才取消 `compose.yaml` 中 `/var/run/docker.sock:/var/run/docker.sock` 那一行注释，并仅在可信内网环境使用；不挂载时请用上面的手动更新命令。
+如果设置页提示“需改 Compose”，说明当前部署缺少 Postgres、数据库连接或仍使用旧的分散挂载。首次迁移必须手动替换 `compose.yaml`；旧镜像不能依靠网页更新自动补齐新服务。
+
+历史模型目录可以直接配置为 `MAKERHUB_ARCHIVE_PATH`，无需移动。首次接入 Postgres 后，Worker 会在后台建立模型卡片索引。
 
 ## 本地开发
 
@@ -169,999 +195,55 @@ npm --prefix frontend run build
 uvicorn app.main:app --reload
 ```
 
-本地开发默认写入仓库下的 `runtime/` 目录。需要完整模拟 Compose/Postgres 时可以直接使用仓库内的 `compose.yaml`，并把其中的宿主机挂载路径改成本机路径。
+后端测试：
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+前端测试与构建：
+
+```bash
+npm --prefix frontend test
+npm --prefix frontend run build
+```
 
 ## iOS 快捷指令
 
-- [下载「推送到 MakerHub」快捷指令](https://raw.githubusercontent.com/s450586793/makerhub/main/docs/%E6%8E%A8%E9%80%81%E5%88%B0%20MakerHub.shortcut)
-- 使用前修改快捷指令顶部两个文本动作：`MakerHubToken` 和 `MakerHubBaseUrl`。
-- 详细配置见 [MakerHub iOS 快捷指令文档](docs/ios-makerhub-shortcut.md)。
+- [下载“推送到 MakerHub”快捷指令](https://raw.githubusercontent.com/s450586793/makerhub/main/docs/%E6%8E%A8%E9%80%81%E5%88%B0%20MakerHub.shortcut)
+- 使用前配置 `MakerHubToken` 和 `MakerHubBaseUrl`。
+- 详细说明见 [iOS 快捷指令文档](docs/ios-makerhub-shortcut.md)。
+
+## 文档
+
+- [架构说明](docs/ARCHITECTURE.md)
+- [模块索引](docs/MODULES.md)
+- [部署与更新](docs/modules/deployment_update.md)
+- [任务与 Worker](docs/modules/tasks_worker.md)
+- [账号、配置与安全](docs/modules/core.md)
+- [完整更新记录](CHANGELOG.md)
 
 ## 更新记录
 
+### 2026-07-27 · v0.15.0
+
+- Compose 改为可移植路径，默认数据写入项目 `./data/`，DSM、Unraid 和其他 NAS 通过 `.env` 覆盖宿主机目录。
+- 新增安全的 `.env.example`、Docker 日志轮转、可配置端口和镜像，并将新部署 Worker 默认并发统一为 `4`。
+- 精简 GitHub README，安装、浏览器登录、DSM 迁移和更新流程改为单一入口。
+
 ### 2026-07-27 · v0.14.4
 
-- 指纹浏览器验证恢复期间，3MF 下载子任务成功后会继续放行下一个暂停任务，避免账号和验证状态已正常但归档队列停住。
-- 恢复链仍保持单任务探测：只有真实下载成功才继续推进，再次遇到验证时会停止，避免批量消耗下载次数。
+- 指纹浏览器验证恢复期间，`3MF` 下载子任务成功后会继续放行下一个暂停任务。
+- 恢复链保持单任务探测，再次遇到验证或下载失败时停止，避免批量消耗下载次数。
 
 ### 2026-07-27 · v0.14.3
 
-- CloakBrowser profile 重启后，如果 Bambu 账号仍有效，MakerHub 会自动点击官方“继续”确认并恢复 MakerWorld session，不再要求重复输入账号或验证码。
-- 登录恢复必须检测到非空 MakerWorld token 才算成功；控制面请求按目标域名选择有效 token，避免空 Cookie 覆盖仍可用的 Bambu 登录态。
-
-### 2026-07-27 · v0.14.2
-
-- 打开或同步 CloakBrowser profile 时，优先使用浏览器内部登录态直接换取 Bambu ticket 并完成 MakerWorld 回跳，不再反复停在“继续”确认页。
-- ticket 直连只访问当前平台的 Bambu / MakerWorld 官方端点；失败时保留原登录页供人工处理，不会自动跳过 CAPTCHA、短信或其他验证。
+- CloakBrowser profile 重启后，如果 Bambu 账号仍有效，MakerHub 会自动完成官方“继续”确认并恢复 MakerWorld session。
+- 登录恢复必须检测到非空 MakerWorld token 才算成功，避免空 Cookie 覆盖有效登录态。
 
 <details>
-<summary>历史更新记录</summary>
+<summary>历史版本</summary>
 
-### 2026-07-27 · v0.14.1
-
-- `3MF` 验证恢复改为单任务探测链：每次只放行 1 个暂停任务，真实下载成功后才继续下一个，再次触发验证时立即停止。
-- 验证暂停与恢复改为 Postgres 原子更新，只标记当前探测模型；普通归档仍使用原有并发设置。
-- 过期的 CloakBrowser、账号定时检测和订阅来源结果不再覆盖新 Cookie，修复 `config.cookies` 并发冲突和误报登录状态。
-
-### 2026-07-27 · v0.14.0
-
-- MakerWorld 页面、批量列表、评论、来源卡、账号 Web 探测和 `3MF` 下载地址 API 统一复用对应 CloakBrowser profile；后台临时页不会影响用户页面。
-- 默认部署收敛为 App、Worker、Postgres、CloakBrowser 四个容器，删除旧浏览器抓取客户端、服务、环境变量和外部 override；网页更新仅在 readiness 成功后清理旧内置容器。
-- 已关联 profile 不再被 MakerHub 旧 Cookie / Token 覆盖；浏览器瞬时故障归为网络错误，图片、附件和已授权 `3MF` 直链继续并行直连下载。
-
-### 2026-07-26 · v0.13.14
-
-- CloakBrowser 临时 HTTP `5xx` 不再被误判为登录失效，也不会关闭平台级 `3MF` gate。
-- 普通归档可在浏览器服务短暂不可用时使用最近同步的有效会话继续；没有有效会话时显示网络异常。
-- 批量任务会自动重试 CloakBrowser HTTP `5xx`，避免偶发 `502` 直接终止模型归档。
-
-### 2026-07-26 · v0.13.13
-
-- 指纹浏览器模型页导航超过 30 秒时不再提前终止；MakerHub 会继续从已渲染页面寻找下载按钮并等待授权响应。
-- 技术异常会结束“检测中”状态并保留可诊断日志，不会覆盖真实的人工验证或每日限额状态。
-- Web 进程新增或重排授权探测任务后会立即唤醒 Worker，不再受最长 10 分钟的阻塞退避影响。
-
-### 2026-07-26 · v0.13.12
-
-- 指纹浏览器技术超时不再误报为人工验证，也不会暂停同平台其他归档任务；此类缺失 `3MF` 会自动重试。
-- 同一浏览器 profile 在 App / Worker 子进程间串行操作，授权响应可独立等待 90 秒，避免并发页面操作和过早超时。
-- 当前模型遇到技术错误后不再继续点击其余实例，减少无效授权请求和下载次数浪费。
-
-### 2026-07-25 · v0.13.11
-
-- 指纹浏览器 profile 现在是关联 MakerWorld 账号的唯一登录态来源：浏览器切换账号会直接采用新会话，不再出现“浏览器账号不一致”后同时保留两套 Cookie 的竞争状态。
-- 归档任务开始前会刷新关联 profile；浏览器未登录或服务不可达时会明确暂停，不会用历史 MakerHub Cookie 继续访问。
-- 设置页默认通过指纹浏览器添加账号；手工验证码登录降级为未关联 profile 时的兼容入口。
-
-### 2026-07-25 · v0.13.10
-
-- 修复指纹浏览器真实点击 `3MF` 授权时无法识别 MakerWorld 下载按钮的问题：页面实际将该操作渲染为 `.primaryButton`，现在会正确点击并监听授权响应。
-
-### 2026-07-25 · v0.13.9
-
-- 修复国区账号的 `3MF` 授权验证：MakerHub 现在会在关联的指纹浏览器中为目标模型打开临时页面并真实点击“下载 3MF”，监听该浏览器实例返回的授权响应后自动关闭临时页。
-- 不再用浏览器后台 `fetch` 模拟下载，避免 Cookie 虽有效但服务端仍把请求识别为非网页下载交互；验证仍只针对一个受阻模型，避免批量请求和无谓消耗下载次数。
-
-### 2026-07-21 · v0.13.8
-
-- 修复账号 3MF 检测完成后首页仍停留在“检测中”的状态事件遗漏；现在会自动刷新为可归档、需要浏览器确认或需要重新登录等真实结果。
-
-### 2026-07-21 · v0.13.7
-
-- 修复“已验证”在缺少当前模型时不会真正发起浏览器授权重试的问题；现在只挑选同平台一个受阻 `3MF`，优先验证阻塞项完成真实下载，避免批量探测和无谓请求。
-
-### 2026-07-20 · v0.13.6
-
-- `3MF` 授权优先由关联的指纹浏览器 profile 发起，成功后仍使用现有下载器保存大文件，避免浏览器验证通过后再被普通 HTTP 授权拒绝。
-- “已验证”改为先显示检测中；只有实际取得 `3MF` 授权后才恢复可归档状态和同平台暂停任务，失败时保持浏览器验证提示。
-- 并发失败结果不会再把“需要浏览器确认”错误覆盖为“需要重新登录”。
-
-### 2026-07-19 · v0.13.4
-
-- 批量归档完成后，独立 `3MF` 补下载不再让父任务卡在“等待子任务”；重启后遗留的批量父任务会自动恢复状态跟踪并正常结束。
-
-### 2026-07-19 · v0.13.3
-
-- “已验证”只恢复当前受验证阻塞的 `3MF` 模型，不再批量恢复同平台历史暂停任务，避免无谓的下载请求消耗。
-
-### 2026-07-19 · v0.13.2
-
-- 修复账号资料探针误恢复整个平台暂停 `3MF` 队列的问题；只有真实 `3MF` 下载成功才恢复平台下载权限。
-- 指纹浏览器同步新登录态后，只恢复当前受阻模型的一次验证重试；同一浏览器会话仍被拒绝时显示“需要浏览器确认”，不再误报重新登录。
-
-### 2026-07-19 · v0.13.1
-
-- 作者订阅在近期全量校验后先探测来源前沿；模型总数和前沿未变化时跳过历史分页，发现新增、手动同步或超过一天后自动回退全量校验。
-- 来源卡 metadata 和预览 metadata 在一次刷新中合并为单次 Postgres 状态写入，减少多来源同步时的重复读写和状态事件。
-
-### 2026-07-19 · v0.13.0
-
-- 网页更新只发现已发布的 GitHub Release，并固定拉取对应 `v版本号` 镜像；镜像、Release 和 `latest` 推广按顺序发布，避免版本号与镜像不一致导致更新回滚。
-- 性能日志改为有界后台批量写入，日志实时追踪跳过重复的筛选聚合；Worker 空闲时退避轮询，任务状态和 SSE 只处理相关 scope。
-- 模型库、订阅库和来源库的深分页刷新只读取当前页；页面缓存、性能埋点和模型卡片布局工作均设定上限，减少长会话卡顿。
-
-### 2026-07-18 · v0.12.1
-
-- 修复缓存工作页激活失败时的异步异常处理；任务轻量接口失败会显示提示，不再产生未处理 Promise rejection。
-
-### 2026-07-18 · v0.12.0
-
-- 模型库、订阅库、本地库、源端刷新和归档任务会保留已加载内容；返回页面时立即可用，并在后台静默刷新轻量数据。
-- 离开上述工作页会中止未完成的列表请求、断开状态订阅和自动加载观察器，避免隐藏页面继续请求和重绘。
-
-### 2026-07-17 · v0.11.21
-
-- Worker 恢复旧的暂停 `3MF` 队列时，会对历史 `cookie_invalid` gate 自动读取一次关联的指纹浏览器登录态。
-- 浏览器会话未变化且下载仍受拒时，状态立即收敛为“需要浏览器确认”；已是该状态的队列不会重复读取浏览器。
-
-### 2026-07-17 · v0.11.20
-
-- 国区 / 国际区 `3MF` 授权失败时，Worker 会自动读取一次关联的指纹浏览器登录态；同平台 10 分钟内不会重复读取。
-- 浏览器 Cookie 实际变化且认证 token 一致时，自动写回并只重试当前受阻的 `3MF`；浏览器会话未变化仍被拒绝时，明确提示到官网完成验证，不再误导为重新登录。
-
-### 2026-07-17 · v0.11.19
-
-- 修复空白指纹浏览器 profile 无法读取 MakerWorld 登录态的问题；同步时会进入对应站点首页读取 Cookie 和本地会话。
-- 同步不会打断正在进行的浏览器登录；未发现认证 token 时明确提示“指纹浏览器尚未登录”，并保留 MakerHub 已有登录态。
-
-### 2026-07-16 · v0.11.18
-
-- 修复模型库分页查询：普通列表不再展开订阅状态，避免大归档库查询超时和反向代理 `504`。
-- `3MF` 下载授权遇到验证、Cookie 失效、Cloudflare 或日限额时立即暂停同一模型后续请求，避免无效授权调用。
-- 仅在真实新增 `3MF` 全部落盘后记录下载完成；仍有缺失文件会明确记录为未完成。
-
-### 2026-07-16 · v0.11.17
-
-- Worker 独立 heartbeat 线程会在初始化和归档任务运行期间持续刷新存活状态，不再因启动耗时被误判为不可用。
-
-### 2026-07-16 · v0.11.16
-
-- Worker 在恢复归档队列、订阅和索引前立即写入 heartbeat，避免耗时启动期间被健康检查误判为不可用。
-
-### 2026-07-16 · v0.11.15
-
-- Worker 健康检查改为直接读取既有 heartbeat，不再触发数据库 schema 初始化，避免慢模型查询时堆积 `ALTER TABLE` 并阻塞网页访问。
-
-### 2026-07-16 · v0.11.14
-
-- 修复发布自动验证：首页验证完成重试动作与版本更新记录的测试契约已同步，GitHub 发布流程可继续执行。
-
-### 2026-07-16 · v0.11.13
-
-- 首页在“需要浏览器确认”时提供“已验证”操作；完成官网验证后可立即恢复同平台受验证阻塞的 `3MF` 归档任务。
-
-### 2026-07-16 · v0.11.12
-
-- 网页更新失败后，未启动完成的 `makerhub-self-update-*` helper 容器也会自动回收，不再长期残留为 `Created` 状态。
-
-### 2026-07-16 · v0.11.11
-
-- 重新登录、指纹浏览器回写或手动保存新 Cookie 后，旧的 `3MF` 阻断状态会立即变为“检测中”，并保证最终 Cookie 继续接受后台检测，不再沿用旧的“需要重新登录”。
-
-### 2026-07-15 · v0.11.10
-
-- `3MF` 下载同时遇到登录态失效和网页验证时，优先提示“需要浏览器确认”，不再一律误导为重新登录；完成网站验证后可继续归档。
-
-### 2026-07-15 · v0.11.9
-
-- 修复新启动的 App / Worker 在系统 monotonic 时钟不足 10 分钟时，错误跳过首次归档队列维护的问题；验证暂停任务、重复任务修复和运行中任务心跳都会正常执行。
-
-### 2026-07-15 · v0.11.8
-
-- 修复历史 `meta.json` 中的 NUL 字符导致 PostgreSQL 索引写入失败、Worker 每次重启都重复全库索引重建的问题。
-- Worker 改为轻量轮询大归档队列，并对被账号 gate 阻塞的队列退避，避免反复拉起空任务线程占满 CPU 和内存。
-- 停用源端刷新后不再恢复旧批次；Worker 健康检查不再加载完整归档模块，心跳状态更稳定。
-
-### 2026-07-15 · v0.11.7
-
-- 修复重新登录与指纹浏览器 Cookie 回写并发时，最新账号补测被去重丢弃、旧“需要重新登录”状态长期残留的问题。
-
-### 2026-07-15 · v0.11.6
-
-- 网页更新会等待候选 Worker 写入匹配的启动 heartbeat，不再因初始化期间短暂读到旧 token 而错误回滚。
-
-### 2026-07-14 · v0.11.5
-
-- 线上账号和首页统一按 `3MF` 归档可用性显示状态；Cookie 失效明确提示重新登录，验证拦截提示浏览器确认，不再被来源同步成功覆盖。
-- 可归档账号不再显示“浏览器未关联”，浏览器恢复入口只在需要验证或浏览器会话处理中出现。
-
-### 2026-07-13 · v0.11.4
-
-- GHCR 版本 tag 预检查无法确定结果时不再中止发布；仅确认 tag 已存在才拒绝，随后由正式镜像推送完成鉴权和发布。
-
-### 2026-07-13 · v0.11.3
-
-- 修复 GHCR 版本 manifest 预检查认证链路，发布工作流改用已登录 Docker 凭据检查不可变版本 tag，恢复新镜像与 `latest` 推广。
-
-### 2026-07-13 · v0.11.2
-
-- 重新发布线上账号探针修复镜像，使用新的不可变版本 tag 推广 GHCR `latest`，避免已有镜像 tag 无法覆盖时网页更新继续拉取旧镜像。
-
-### 2026-07-13 · v0.11.1
-
-- 线上账号认证探针改为直接使用对应站点代理，并保留真实 HTTP 状态；登录跳转不会再被误判为 Cookie 可用。
-- Cookie 后台维护保留 CloakBrowser profile 与同步状态，避免账号检测覆盖浏览器关联信息。
-
-### 2026-07-13 · v0.11.0
-
-- 部署定义收敛为唯一的 `compose.yaml`；外部 FlareSolverr 通过最小 override 合并，镜像内置 canonical compose 供旧部署迁移诊断展示。
-- Compose 默认启用 App / Worker / Postgres readiness 检查，CloakBrowser token 与本地绑定保持强制安全边界；反向代理仅在显式可信地址列表下启用。
-- 网页更新改为同一发布组验证与整组回滚，Token 仅保留哈希，运行核心保持冻结，数据库事件默认保留 14 天、业务日志默认保留 90 天。
-
-### 2026-07-12 · v0.10.3
-
-- 修复归档 Worker 遗忘存活线程后重复扩容，以及任务先租约、后等待资源的问题；归档与源端刷新通过 FIFO 公平共享 MakerWorld 资源槽，避免并发超配和任务长期停在低进度。
-- 任务轻量接口改为仅读取有限队列摘要，并对归档进度写入、SSE 通知和任务页刷新降载，降低大队列下的数据库与 API 压力。
-- 验证暂停任务仅在对应 `3MF` gate 已恢复时重新入队，避免仍受 Cookie 或人工验证限制的队列被错误唤醒。
-
-### 2026-07-11 · v0.10.2
-
-- 网页一键更新仍优先使用 Docker `AutoRemove` 删除临时 helper；新 App 启动后会延迟清理 DSM 遗留的已停止 `makerhub-self-update-*` 容器。
-- 兜底清理同时校验 helper 标签、标准名称和停止状态，并跳过仍在运行的更新容器。
-
-### 2026-07-11 · v0.10.1
-
-- 修复指纹浏览器回收 Cookie 后等待 FlareSolverr 账号探针，导致设置页长期停在“浏览器同步中”的问题。
-- 浏览器与 MakerHub 的认证 token 一致时会直接保存 profile 和最终 Cookie，账号健康检测仍由后台任务继续执行。
-
-### 2026-07-11 · v0.10.0
-
-- 设置页账号验证码登录成功后会自动创建或复用国内 / 国际固定 CloakBrowser profile，通过 CDP 注入 Cookie、完成 MakerWorld ticket 跳转并回收浏览器最终登录态，不再要求重复登录。
-- 自动同步失败时可从账号卡直接打开指纹浏览器；完成登录后后台会自动回写 Cookie，也支持手动“从浏览器同步”，并继续触发账号测试、来源同步和缺失 `3MF` 重试。
-- 增加旧 Cookie 结果保护和账号 ID 一致性校验，避免并发同步或误登其他账号覆盖当前 MakerHub 账号；Manager token 和 Cookie 不进入前端 URL 或业务日志。
-- 默认 Compose 增加 CloakBrowser 公开访问地址与超时配置，并把 early-alpha Manager 镜像固定到已验证的多架构 manifest digest。
-
-### 2026-07-08 · v0.9.85
-
-- 修复归档任务运行期间更新 Cookie 后，旧任务仍可把新的国内站 `3MF` gate 覆盖回 `Cookie 异常` 的问题。
-- 旧 Cookie 任务返回验证 / 登录态失败时，如果当前配置已换成新 Cookie，Worker 会跳过账号 gate 写回和同平台重试队列暂停。
-- 补充归档 Worker 回归测试，覆盖旧 Cookie 失败不能污染新登录态的场景。
-
-### 2026-07-07 · v0.9.84
-
-- 默认 `compose.yaml` 和外部 FlareSolverr 版 compose 都新增 `makerhub-cloakbrowser` 服务，随 MakerHub 一起部署浏览器 profile 管理容器。
-- App / Worker 增加 `MAKERHUB_CLOAKBROWSER_URL` 和 `MAKERHUB_CLOAKBROWSER_AUTH_TOKEN` 配置，供浏览器登录态采集与后续 `3MF` 探针确认调用。
-- 安装文档补充 CloakBrowser 持久化目录、`.env` 令牌、升级命令和流量边界说明，明确图片、附件和 `3MF` 静态文件仍不走 CloakBrowser。
-
-### 2026-07-04 · v0.9.83
-
-- 修复归档 Worker 在 `3MF` gate 曾关闭时把已恢复的批量父任务重新租用，导致 4 个 worker 全部停在 `waiting_children`、后续单模型队列不再消费的问题。
-- 已进入“等待子任务”的批量父任务只作为进度跟踪，不再被当成普通可执行任务领取。
-- 补充归档 Worker 回归测试，覆盖批量父任务排在 gate 阻断的 `3MF` 任务前时不会再次占住 worker。
-
-### 2026-07-04 · v0.9.82
-
-- 首页源站状态卡同步收窄线上账号探针状态：账号资料或来源同步可读取时，旧探针 `http_error` 不再把源站卡降成“网络异常”。
-- 线上账号测试仍会记录探针失败结果，但不会覆盖已确认可读的账号健康快照。
-- 保留真正的验证、Cookie 失效和每日上限状态，避免影响归档阻断判断。
-
-### 2026-07-03 · v0.9.81
-
-- 设置页线上账号主状态进一步收窄：已保存 Cookie 且账号资料 / 来源同步可读取时，不再把旧认证探针失败显示成“读取受限”。
-- 账号卡片主状态改回中性的“已保存”，来源同步结果继续放在账号来源统计和同步提示里展示。
-- 真实的 `Cookie 失效`、`需要验证` 仍然保持阻断状态提示。
-
-### 2026-07-03 · v0.9.80
-
-- 设置页线上账号状态展示会结合已保存账号资料和来源同步记录判断。
-- 已保存 Cookie 且账号资料 / 来源同步可读取时，旧认证探针的 `http_error` 不再显示为红色“连接异常”，改为黄色“读取受限”。
-- 保留 `Cookie 失效`、`需要验证` 等真实阻断状态的红色提示，避免掩盖需要重新登录的场景。
-
-### 2026-07-03 · v0.9.79
-
-- 线上账号重新登录的快速路径继续收窄：拿到 `signuporlogin` 返回的 Cookie 后不再同步换 MakerWorld ticket，也不再同步探测账号 profile。
-- 修复正确验证码场景下仍可能被后续 ticket/profile 网络请求拖到反向代理 `504` 的问题。
-- 后续账号可用性、来源同步和资料补全继续由后台检测流程处理。
-
-### 2026-07-03 · v0.9.78
-
-- 线上账号登录拿到 Cookie 后立即保存，不再同步等待 FlareSolverr 认证探针，避免反向代理超时返回 `504` HTML 页面。
-- 线上账号“测试”改为后台检测，前台接口快速返回“检测中”，检测完成后自动更新账号状态。
-- 前端遇到 API 返回 HTML 页面时会显示具体接口路径和 HTTP 状态码，便于区分代理超时、登录页和上游风控页面。
-
-### 2026-07-03 · v0.9.77
-
-- 手机号 / 邮箱验证码登录会短期复用发送验证码时的 Bambu 设备 Cookie，避免验证码提交阶段换成新会话后被上游判定为不存在或已过期。
-- `consentBody` 协议字段对齐 Bambu 当前网页登录 bundle，补齐 `tou / privacy` 的 `key` 字段。
-- 登录接口已返回可保存 Cookie 时，即使后续认证探针暂时失败也会先保存账号，避免验证码已被消费后再次提交变成“验证码不存在或已过期”。
-- 验证码登录失败提示补充“请用 MakerHub 当前弹窗重新发送验证码后尽快提交”，便于区分旧验证码和自动接口异常。
-
-### 2026-07-03 · v0.9.76
-
-- 缺失 `3MF` 重试过程中如果源端明确返回 `not_found / 404`，对应打印配置会从缺失列表清除，不再继续进入自动重试。
-- 同一模型里其他仍是验证、Cookie 或每日上限的打印配置会继续保留，避免因为单个终态 404 误清整模型。
-- 补充归档 Worker 回归测试，覆盖 `not_found` 配置清理与其他缺失配置保留的混合场景。
-
-### 2026-07-03 · v0.9.75
-
-- 首页源站状态卡不再显示“手动过 CF / 已验证 / 已更新 Cookie”等手动恢复操作，只保留状态展示和打开官网入口。
-- 源站卡继续展示待验证、Cookie 异常和每日上限状态，避免旧 `3MF` gate 状态在首页引导手动确认。
-- 补充后端源站卡和前端状态卡回归测试，锁定验证 / Cookie 状态不会再自动生成恢复按钮。
-
-### 2026-07-02 · v0.9.74
-
-- 修复 `3MF` 下载地址多路尝试同时出现登录态失效和验证页结果时，最终误优先显示“需要验证 / 手动过 CF”的问题。
-- `Please log in to download models.` 和 Cookie / token 失效类错误现在会稳定归类为 `auth_required` / `Cookie 异常`，避免误引导去手动过 CF。
-- 补充 `3MF` 失败合并和状态归一化回归测试，覆盖登录态错误被旧验证状态覆盖的场景。
-
-### 2026-07-02 · v0.9.73
-
-- Worker 轮询会自动恢复旧的 `paused / needs_verification` 普通归档队列，FlareSolverr 验证通过后不再需要手动改数据库。
-- 只恢复明确由 MakerWorld 验证暂停的归档项，保留手动暂停或其他阻塞状态，避免误放行不可执行任务。
-- 补充队列状态和归档 Worker 回归测试，覆盖旧验证暂停任务恢复后重新进入 `queued`。
-
-### 2026-07-02 · v0.9.72
-
-- `3MF` 静态直链下载失败时会写回 `cloudflare` / `http_error` / `missing` 状态，并进入缺失 `3MF` 重试队列。
-- 缺失 `3MF` 判断改为归档整理后的真实磁盘状态，避免仅因已经解析出 `downloadUrl` 就误判为已归档。
-- 保持图片、头像、附件和 `3MF` 静态文件直连下载，不把大文件流量压到 FlareSolverr。
-
-### 2026-07-02 · v0.9.71
-
-- MakerWorld 页面、来源列表、评论和 `3MF` 下载地址 API 改为 FlareSolverr 单通道，失败时直接提示 FlareSolverr / 配置问题，不再回退旧 requests / curl 链路。
-- 图片、头像、附件和已解析出的 `3MF` 静态文件继续由普通下载器直接保存，避免把大文件流量压到 FlareSolverr；`3MF` 直链保存失败会写回缺失状态，避免仅因有 URL 就误判为已归档。
-- 默认 `compose.yaml` 新增 `makerhub-flaresolverr` 服务，并提供 `compose.external-flaresolverr.yaml` 复用已有 FlareSolverr。
-
-### 2026-07-02 · v0.9.70
-
-- 任务页轻量接口不再加载配置里的历史缺失 `3MF` fallback，避免旧迁移数据把 `/api/tasks/light` 拖到超时。
-- 新增数据库 JSON 状态数组摘要读取，缺失 `3MF` 只取前几条展示项和总数，不再为任务页首屏全量读取和规范化列表。
-- 补充回归测试，覆盖轻量任务接口不读旧配置、缺失 `3MF` 紧凑读取和数据库摘要查询。
-
-### 2026-07-01 · v0.9.69
-
-- 缺失 `3MF` 重试因 MakerWorld 验证被平台 gate 暂停时，会同步把缺失列表状态改为“需要验证”，不再继续显示“已入队”。
-- 手动确认验证后恢复同平台暂停队列时，会同步把缺失列表状态改回排队等待，任务页能直接反映真实阻塞原因。
-- 补充回归测试，覆盖平台 gate 暂停和验证恢复时的缺失 `3MF` 状态同步。
-
-### 2026-07-01 · v0.9.68
-
-- 删除历史补全维护后台链路：移除旧补全服务文件、任务提交入口、专用轻量补全执行分支和模型详情页手动补全按钮。
-- 数据库索引重建拆成独立 `archive_model_index_rebuild_status` 状态和后台 worker，不再复用历史补全状态。
-- 更新当前模块文档和回归测试，确保源码不再引用旧历史补全接口、状态 key 或补全任务。
-
-### 2026-07-01 · v0.9.67
-
-- 设置页移除“数据库索引与历史信息补全”维护面板，不再展示旧的手动重建索引 / 历史补全入口。
-- 系统页状态刷新只监听系统更新事件，不再轮询历史补全状态接口。
-- README 和数据模型说明同步改为自动索引重建语义，避免继续提示设置页手动入口。
-
-### 2026-06-30 · v0.9.66
-
-- 手动确认 MakerWorld 验证后，会恢复同平台已暂停的缺失 `3MF` 队列任务，不再只扫描缺失列表。
-- 旧队列里 `paused + missing_3mf_retry` 的任务会重新进入 `queued`，让 Worker 继续跑到新版 `404` 终态清理逻辑。
-- 补充回归测试，覆盖国区恢复时不会误恢复国际站暂停任务。
-
-### 2026-06-30 · v0.9.65
-
-- 缺失 `3MF` 重试遇到 MakerWorld `404`、下架、私有或草稿页时，会作为终态处理，不再进入自动重试或最近失败队列。
-- Worker 会清除对应缺失 `3MF` 项和历史失败记录，并记录“源端已不可用，已停止缺失 3MF 重试”的业务日志。
-- 普通单模型归档仍保留 `404` 失败记录，避免误吞真实归档失败；补充两条 Worker 回归测试覆盖这两种路径。
-
-### 2026-06-30 · v0.9.64
-
-- 归档抓取会识别 MakerWorld 模型页 `404`、下架、私有或转为草稿的页面，不再误提示为 Cloudflare 验证拦截。
-- 缺失 `3MF` 的 HTML `404` 响应会归类为 `not_found`，最近失败和缺失列表会提示源端不可用，而不是引导更新 Cookie。
-- 补充归档页面分类和缺失 `3MF` 状态归一化回归测试。
-
-### 2026-06-30 · v0.9.63
-
-- 删除旧 JSON 状态和历史日志文件导入 Postgres 的过渡迁移层，数据库索引重建不再调用旧文件迁移。
-- 运行期配置不再从旧 `config.json` 回填 Cookie，Postgres 中的 `app_config` 是唯一运行期配置来源。
-- 设置页和 Worker 状态统一改为“数据库索引重建”语义，只展示模型索引和历史缺失信息补全进度。
-
-### 2026-06-29 · v0.9.62
-
-- 通用 API Token 和移动端导入 Token 不再接受 URL query 传递，只接受 `Authorization: Bearer` 或兼容 token header。
-- 分享接收增加 SSRF 防护，拒绝内网/localhost 分享端、跨 origin 重定向和 manifest 中的绝对文件下载 URL。
-- 默认 Compose 不再挂载 Docker socket，数据库密码改由 `.env` 中的 `MAKERHUB_POSTGRES_PASSWORD` 提供。
-- 缺失 `3MF` 重试遇到 MakerWorld 验证 / Cookie / Cloudflare 拦截后，会暂停同平台排队中的缺失 `3MF` 重试，避免归档 Worker 长时间被不可执行任务占住。
-
-### 2026-06-29 · v0.9.61
-
-- 修复任务页在 runtime 快照为空时误切到“批次任务”视图的问题，右上角有运行 / 排队数量时会继续显示真实归档队列。
-- 空的 runtime `runs` / `batches` / `failures` 不再覆盖旧归档队列 payload，避免列表显示 0 个运行 / 0 个批次。
-- 补充前端回归测试，覆盖空 runtime 快照下归档队列仍可见。
-
-### 2026-06-29 · v0.9.60
-
-- Worker 轮询会自动 finalize `running + 100% + 归档完成` 的残留归档任务，不再需要手动点“修复队列”释放 active 槽。
-- 当队列已经没有 active 任务但仍有 queued 时，会丢弃本进程里可能卡住的旧归档线程记录并重新补起消费者，避免 queued 长时间无人领取。
-- 补充队列状态和归档 Worker 回归测试，覆盖完成态残留和 stale worker 线程恢复。
-
-### 2026-06-29 · v0.9.59
-
-- 首页源站需要手动验证时，按钮恢复为“已验证”，点击后直接确认当前平台已完成验证，而不是只做账号 Cookie 重新检测。
-- “已验证”接口会先立即打开对应平台 `3MF` gate 并返回账号健康快照，再把同平台验证类缺失 `3MF` 重试放到后台执行，避免按钮长时间停在 `提交中`。
-- 补充首页源站卡片和验证确认接口回归测试，锁定手动验证完成后的快速恢复流程。
-
-### 2026-06-29 · v0.9.58
-
-- 任务页“修复队列”现在会在释放过期 lease / finalize 残留 running 任务后，立即刷新批量父任务汇总，避免子任务已完成但父任务继续停在 `waiting_children`。
-- 修复队列接口返回刷新后的归档队列状态，前端点击后能直接看到 running 数和父任务状态收敛，不再需要等待 Worker 下一轮轮询。
-- 补充后端回归测试，覆盖修复队列后的批量父任务刷新，以及子任务已归档但父任务仍等待时的完成收尾。
-
-### 2026-06-28 · v0.9.57
-
-- Worker 新增线上账号 Cookie 定时检测，默认每 12 小时检查国内 / 国际账号 Cookie 可用性，并把结果写入账号健康状态。
-- 检测到 Cloudflare / 验证 / Cookie 异常时会自动关闭对应平台 `3MF` gate，首页源站卡片显示“手动过 CF”和“重新检测”，避免任务继续盲跑。
-- 账号测试接口会同步恢复或关闭对应平台 gate，用户手动通过 Cloudflare 后可直接在首页点“重新检测”恢复状态。
-
-### 2026-06-28 · v0.9.56
-
-- 归档任务在抓取模型页面阶段直接遇到 Cloudflare / 验证 / Cookie 异常时，会同步关闭对应平台 `3MF` gate，不再把“已验证”手动确认后的状态长期保留为正常。
-- 平台 gate 关闭后，Worker 会跳过同平台缺失 `3MF` 重试和新增 `3MF` 下载任务，避免继续消耗队列但待补数量不下降。
-- 补充归档 Worker 回归测试，覆盖页面抓取阶段被 Cloudflare 拦截时必须写回账号健康和 `3MF` gate。
-
-### 2026-06-28 · v0.9.55
-
-- 首页源站 `Cookie 异常` / `auth_required` 卡片恢复手动处理入口，更新 Cookie 后可点击“已更新 Cookie”重新打开同平台 `3MF` gate 并重排对应缺失 `3MF`。
-- 真正的 `verification_required` / `cloudflare` 卡片继续显示“已验证”，Cookie 异常不再复用这个按钮文案，避免把 Cookie 失效误判成普通验证。
-- 补充前端回归测试，覆盖结构化 Cookie 状态和只有 Cookie 文案的源站卡片都能显示恢复动作。
-
-### 2026-06-27 · v0.9.54
-
-- 首页源站状态即使只返回 `Cookie 异常` 文案、缺少结构化 `state`，也不会再因为 `cf_clearance` 关键词误显示“已验证”按钮。
-- 任务页访问缺失 `3MF` 源页面后，会按 `验证` / `Cloudflare` / `Cookie` 状态给出不同提示，避免把 Cookie 失效误引导成普通验证。
-- 补充前端回归测试，覆盖缺少 `state` 的 Cookie 异常卡片和缺失 `3MF` 操作提示。
-
-### 2026-06-27 · v0.9.53
-
-- 首页源站卡片不再把 `Cookie 异常` / `auth_required` 当作“已验证”流程处理，避免 Cookie 或 token 失效时反复点击验证按钮。
-- `Cookie 异常` 卡片只保留打开官网入口，明确提示需要更新对应站点 Cookie / token；真正的 `verification_required` / `cloudflare` 才显示“已验证”重试动作。
-- 任务页缺失 `3MF` 列表把 Cloudflare 风控单独显示为 `Cloudflare 校验`，和普通“需要验证”区分开。
-
-### 2026-06-27 · v0.9.52
-
-- 点击首页源站卡片的“已验证”后，会先立即打开对应平台的 `3MF` gate 并写入账号健康状态，再提交同平台验证类缺失 `3MF` 重试，避免重试队列较慢时页面长时间仍显示“需要验证”。
-- 运行核心和旧队列路径统一使用同一条确认文案，按钮返回结果会携带已恢复的 `account_health` 快照。
-- 补充回归测试，锁定“已验证”接口必须先恢复账号状态，再执行缺失 `3MF` 重试。
-
-### 2026-06-26 · v0.9.51
-
-- Worker 常规轮询会自动续租最近仍有进度的 active 归档任务，避免旧脏状态缺少 `lease_expires_at` 时必须人工点击队列修复。
-- 新增只续租、不重排的轻量 active 修复路径，保留“不要把可能仍在运行的任务重复排队”的保护。
-- 补充回归测试，覆盖缺租约 running active 自动恢复租约且不会进入 queued。
-
-### 2026-06-26 · v0.9.50
-
-- 归档活动任务每次进度更新都会刷新 `heartbeat_at`、`last_progress_at` 和 `lease_expires_at`，避免长时间下载图片或整理资源时被误判为 stale。
-- 队列修复遇到租约缺失或过期、但最近仍有进度更新的任务时，会续租并保留 active，不再把仍在运行的归档任务重复排队。
-- 补充回归测试，覆盖国际区 `3MF` gate 关闭不阻挡国区 `3MF` 下载，以及活动任务租约刷新和旧队列修复续租。
-
-### 2026-06-26 · v0.9.49
-
-- 合并依赖安全修复分支，确认 FastAPI / Starlette、Vite / Vue / ws 等后端与前端依赖升级已进入主线。
-- 路由兼容测试继续使用统一 route context 遍历，兼容新版 FastAPI / Starlette 的路由结构。
-- 保持当前归档队列、`3MF` gate 和完成态清理修复不回退，并补齐本次 release 元数据。
-
-### 2026-06-26 · v0.9.48
-
-- 队列修复和服务启动恢复会识别 `100% / 归档完成` 等完成态 running 快照，直接移出 active，避免已完成任务继续占用归档槽位。
-- 归档 Worker 完成单模型、批量归档或 `3MF` 子任务时，会在同一次队列更新中写入最终进度并完成任务，减少完成态残留窗口。
-- 补充队列恢复和修复回归测试，覆盖完成态 running 快照不会被重新排队。
-
-### 2026-06-26 · v0.9.47
-
-- 待验证、Cookie 异常等平台级 `3MF` gate 关闭时，归档 Worker 会在调度层跳过同平台缺失 `3MF` 重试 / 新增 `3MF` 下载任务，避免它们占住 active 槽位。
-- 普通归档、批量 / 订阅归档父任务仍可继续执行，保持“只暂停 `3MF` 下载，不阻塞图片、评论、描述等其他资源”的预期。
-- 补充队列选择回归测试，覆盖 gate 关闭时普通归档越过 `3MF-only` 任务，以及队列只剩被 gate 阻塞的 `3MF-only` 任务时不再领取。
-
-### 2026-06-26 · v0.9.46
-
-- 归档子进程上报 `100% / 归档完成` 后如果没有返回最终结果，会在短超时内自动终止并释放归档 Worker 槽位，避免 `3MF` 子任务长时间占住 active。
-- 新增后台任务尾段卡住回归测试，覆盖“最终进度后无结果”和“最终进度后正常返回结果”两种路径。
-
-### 2026-06-26 · v0.9.45
-
-- 缺失 `3MF` 批量重试改为按模型合并队列项，同一模型的多个打印配置会汇总到一个重试任务，避免线上重复生成大量缺失 `3MF` 任务。
-- 已存在队列中的缺失 `3MF` 重试会保持缺失列表为“已排队 / 已合并”状态，不再误回落为缺失或反复重新入队。
-- 任务轻量接口只整理首屏可见归档项，同时保留真实队列总数，降低 2000+ 归档任务场景下首页 / 任务页刷新负载。
-
-### 2026-06-25 · v0.9.44
-
-- 归档队列写入新增业务 identity 去重，批量作者页 / 收藏夹父任务在重试、订阅同步或服务重启恢复时不会重复进入 queued。
-- 归档失败记录按 `model_id + instance_id` 去重，同一打印配置的 Cloudflare / 验证失败只保留最新一条，同时保留同模型不同打印配置。
-- 归档队列修复会清理已有 queued / recent failures 重复项，线上已有重复队列可通过修复流程自动压平。
-
-### 2026-06-24 · v0.9.43
-
-- `3MF` 下载子任务和缺失 `3MF` 重试默认改为轻量执行，只获取必要的模型 / 实例信息和 `3MF` 下载地址，不再同步图片、附件、评论资源或评论分页数据。
-- 兼容线上已经排队的旧 `three_mf_download` / `missing_3mf_retry` 任务，Worker 重启后即使旧任务没有新元数据，也会按轻量逻辑继续处理。
-- 补充归档 Worker 和进程包装回归测试，锁定 `collect_comments_data=false`、资源下载关闭和实例 ID 定向下载参数传递。
-
-### 2026-06-23 · v0.9.42
-
-- 首页国内站 / 国际站卡片新增平台级 `3MF` gate：验证、Cookie 异常或每日上限只暂停该平台 `3MF` 下载，不再阻塞图片、评论、描述等普通归档。
-- 归档 Worker 会在平台 `3MF` gate 关闭时跳过 `3MF` 拉取并保留缺失记录，普通归档和拆分后的资源子任务继续完成。
-- 点击“已验证”会重新打开对应平台的 `3MF` gate，并重新入队同平台验证 / Cookie 类缺失 `3MF`，不需要刷新全部任务。
-
-### 2026-06-23 · v0.9.41
-
-- 修复 Worker 重启后批量归档父任务按不同任务 ID 恢复，导致同一作者页或合集页重复出现在 active / queued 队列的问题。
-- 缺失 `3MF` 重试任务会按实例 ID 定向下载，图片资源下载继承基础会话 Cookie，模型库完整刷新失败时回退轻量响应，避免刷新期间空白或卡住。
-- 升级 FastAPI / Starlette、Vite / Vue / ws 等依赖，并补充批量归档、`3MF` 子任务、资源下载、模型页刷新和路由兼容回归测试。
-
-### 2026-06-19 · v0.9.39
-
-- 归档队列支持按 Worker 并发数同时消费多个单模型任务，最高 4 并发，并通过原子 lease 避免重复领取同一任务。
-- 普通归档会先完成元数据、图片、评论和落盘，`3MF` 下载拆成独立子任务并继续受 `3MF` 下载限流保护，避免大文件拖住整批模型归档。
-- 摘要图、设计图和评论资源下载改为受限并发，批量父任务刷新增加并发保护，现有排队任务可继续兼容执行。
-
-### 2026-06-19 · v0.9.38
-
-- 归档队列新增阶段化子任务状态，单模型任务会展示元数据、图片资源、附件、评论、`3MF` 和落盘索引阶段。
-- Worker 归档进度会写入当前阶段和阶段内进度，旧队列仍能按总进度和消息自动补齐阶段状态。
-- 任务页新增紧凑阶段进度展示，便于区分 `3MF`、图片、评论或附件正在处理还是等待后续拆分。
-
-### 2026-06-19 · v0.9.37
-
-- 抽出页面 light/full hydration 的共享响应前决策，统一判断 light 数据是否可以先渲染、是否需要立即请求完整数据。
-- 模型库接入共享 hydration 决策：没有可保留的稳定视觉数据时，不再先渲染轻量卡片，避免刷新期间和完整响应后出现两套卡片状态。
-- 订阅库的轻量卡片延迟逻辑改为复用共享 helper，并补充模型库/订阅库的刷新形态测试。
-
-### 2026-06-18 · v0.9.36
-
-- 修复订阅库首次进入、浏览器刷新或缓存失效时仍先展示轻量占位卡片的问题。
-- 订阅库需要完整 hydration 且没有完整卡片可保留时，会继续显示加载态并立即请求完整数据，避免刷新期间和刷新完成后出现两套页面样式。
-- 完整订阅库加载失败时会进入订阅库加载失败态，避免一直停在加载中。
-
-### 2026-06-17 · v0.9.35
-
-- 修复订阅库刷新期间先显示轻量卡片、刷新完成后再切换完整卡片造成的页面跳变。
-- 订阅库已有完整卡片时，轻量刷新只更新统计和运行状态，继续保留预览图、快照、模型数量、摘要和可分享模型列表。
-- 新增订阅库轻量刷新合并测试，覆盖保留完整卡片视觉和新增来源仍能显示的场景。
-
-### 2026-06-17 · v0.9.34
-
-- 设置页容器更新新增阶段式升级进度条，点击网页更新后会展示拉取镜像、更新 Web / Worker、替换 App 和等待服务恢复等阶段。
-- 新增系统更新进度状态映射测试，覆盖执行中、完成、失败、重启等待和未知阶段，避免显示虚假的 Docker layer 下载百分比。
-- 优化系统更新进度条的深色/浅色样式和失败态展示，保留现有网页一键更新后端流程不变。
-
-### 2026-06-16 · v0.9.33
-
-- 精简运行镜像，移除未使用的 `xvfb`、Scrapling 浏览器预下载和额外字体包，保留本地 3D 预览仍需使用的 Chromium / Node 链路。
-- 删除 `scrapling` Python 依赖及其 Playwright、Camoufox、rebrowser 传递依赖，抓取兼容层改为轻量 `requests` 静态请求。
-- 设置页移除旧的抓取模式和隐身浏览器开关；前端生产依赖裁剪为 `puppeteer-core` 与 `three`，Vue / Vite 仅保留在构建阶段。
-
-### 2026-06-16 · v0.9.32
-
-- 修复数据库索引重建或强制迁移会用旧 `config.json` 覆盖 Postgres 当前配置的问题，避免订阅库数量被旧配置打回。
-- 强制迁移会保护账号来源库存和同步状态，不再把 `cookie_source_inventory` 覆盖为空导致账号来源保护清单丢失。
-- 旧错误 `@user_数字` 作者订阅清理会跳过当前账号库存确认过的来源，避免合法 MakerWorld 作者被误删。
-
-### 2026-06-15 · v0.9.31
-
-- 设置页线上账号卡片新增来源口径总览，拆分显示订阅库总数、账号来源已同步、其他来源和待解析数量。
-- 明确区分“平台账号同步出来的关注来源”和“订阅库全量来源”，避免账号卡合计数与订阅库总数看起来互相矛盾。
-- 补充前端回归测试，覆盖 `75` 个订阅源中 `48` 个账号来源已同步、`27` 个其他来源、`1` 个待解析的口径拆分。
-
-### 2026-06-15 · v0.9.30
-
-- 修复线上账号重新登录时，MakerWorld 返回资料缺少头像会清空已保存头像的问题；现有账号名、ID、handle 和头像会在新返回为空时保留。
-- 设置页线上账号卡片增加账号同步状态兜底，Cookie 资料或 inventory 为空时仍可从 `cookie_source_sync_state` 显示头像和账号信息。
-- 线上账号来源统计在 inventory 过期或为空时从当前订阅库兜底，避免关注作者、默认收藏夹显示成全 0；默认收藏夹只识别 `@账号/collections/models`，不会误算普通合集。
-
-### 2026-06-15 · v0.9.29
-
-- 设置页线上账号统计改为每个数字都显示已同步数量，例如 `关注作者 36（25 已同步）`、`关注收藏夹 1（0 已同步）`、`默认收藏夹 1（1 已同步）`。
-- 已同步数量优先从当前订阅库和账号关注清单交叉匹配，不再被旧同步状态里的 `imported_* = 0` 误导。
-- 增加前端回归测试，覆盖关注作者、关注收藏夹和默认收藏夹的已同步计数。
-
-### 2026-06-15 · v0.9.28
-
-- 修复在线账号关注来源同步的数量状态：当账号汇总显示存在关注收藏夹但接口没有解析出具体收藏夹地址时，会标记为 warning 并在设置页展示原因，不再静默显示同步成功。
-- 配置保存增加订阅并发保护，避免设置页或其他旧配置快照保存时，把 Worker 刚导入的关注作者、默认收藏夹或关注合集订阅覆盖掉。
-- 补充回归测试，覆盖关注收藏夹缺失、旧错误 `@user_数字` 订阅不复活，以及无关配置保存不丢后台导入订阅。
-
-### 2026-06-15 · v0.9.27
-
-- 任务页归档队列新增来源级展示快照，同一订阅来源、作者、合集或收藏夹下的模型子任务会聚合为一个总体任务。
-- 任务页主列表优先读取聚合后的 `archive_queue_display`，后台真实归档队列仍保留每个模型子任务，不影响 worker 调度、重试和失败记录。
-- 聚合任务展示发现模型数量和子任务预览，单独手动归档模型继续按单模型任务展示。
-
-### 2026-06-14 · v0.9.26
-
-- 首页、模型库、订阅库和本地库首屏改为先读取轻量快照，再延迟执行完整刷新，减少页面切换时被大列表和重统计阻塞。
-- 模型库轻量快照直接读取数据库索引，不再首屏逐个校验归档目录里的 `meta.json`，降低大量模型库场景下的打开延迟。
-- 订阅库轻量快照读取订阅摘要状态，不再为了首屏卡片展开完整来源列表和追踪列表，自动加载与后续完整刷新保持原流程。
-
-### 2026-06-13 · v0.9.25
-
-- 新增轻量化运行核心，统一归档、缺失 `3MF` 重试、源端刷新和订阅同步的运行契约、状态存储、迁移预览、调度骨架和执行循环。
-- 归档任务、缺失 `3MF`、源端刷新和订阅同步已接入运行核心适配器，保留旧接口兼容，同时把运行态收口到 run / batch / failure / snapshot。
-- 任务页、首页、源端刷新页和订阅库开始读取运行核心快照，运行中的批次、同步和刷新状态优先使用统一快照展示。
-- 新增 `scripts/check_runtime_engine_flows.sh`，用于登录后快速检查 dashboard、tasks、runtime、source-refresh 和 subscriptions 关键 API 是否返回合法 JSON。
-
-### 2026-06-13 · v0.9.24
-
-- 首页国内站 / 国际站点击“已验证”后，后端会保留原有同平台缺失 `3MF` 重试逻辑，并立即把对应源站账号健康快照标记为正常，避免旧 `Cookie 异常` / 验证残留继续污染首页。
-- `已验证` 接口返回本次账号健康快照，方便前端刷新后立刻展示当前确认状态；后续如果归档下载再次失败，归档流程仍会重新写回需要验证、Cookie 异常或每日上限等真实状态。
-- 补充回归测试，覆盖没有验证类缺失 `3MF` 候选时，用户确认已验证仍会清理对应平台首页状态。
-
-### 2026-06-12 · v0.9.23
-
-- 首页国内站 / 国际站在需要 MakerWorld 验证时，官网入口旁新增“已验证”按钮，用户在官网完成验证后可直接触发同平台验证类缺失 `3MF` 重新入队。
-- 新增 `/api/tasks/missing-3mf/verification-verified` 登录态接口，复用现有验证类缺失 `3MF` 重试逻辑，并记录本次重试统计。
-- 前端状态卡兼容标准状态、中文“需要验证”和 `cf_clearance` 提示，避免 `Cookie 异常` 但实际为验证页时漏出重试入口。
-
-### 2026-06-12 · v0.9.22
-
-- 源端刷新改为小批次执行，默认每轮最多处理 200 个模型，并在仍有剩余模型时 60 秒后续跑，避免一次处理数千模型导致长期卡在运行中且没有完成记录。
-- 旧 `remote_refresh_state` 未完成批次恢复时同步投影到 `source_refresh_runs`，源端刷新页可以看到恢复中和完成后的运行记录。
-- 恢复旧批次时同样套用批次上限，线上已有的大批次不会再一次性恢复全部剩余模型；补充新批次、旧批次恢复和运行记录投影回归测试。
-
-### 2026-06-12 · v0.9.21
-
-- 新增当前账号健康快照状态，首页国内站 / 国际站只读取当前快照，不再被历史缺失 `3MF`、源端刷新旧失败、归档旧失败或日志残留污染。
-- 归档下载和缺失 `3MF` 重试成功后会恢复对应源站为正常；遇到验证、Cookie 异常或每日上限等分类失败时，只写当前账号健康状态，且状态同步失败不会阻断归档结果。
-- 运行诊断新增 `account_health`，与归档队列和历史失败分离；补充边界回归测试和复盘治理文档，锁定首页状态、任务状态、失败明细和诊断事件的职责边界。
-
-### 2026-06-11 · v0.9.20
-
-- 首页国内站 / 国际站状态不再读取历史缺失 `3MF` 的验证残留，避免旧 `missing_3mf` 项把当前账号状态误显示为“需要验证”。
-- 缺失 `3MF` 的验证、Cookie、Cloudflare 等失败明细继续保留在任务页处理，首页只保留当前源站入口状态和官网访问入口。
-- 补充源站状态回归测试，覆盖国区、国际站和缺少模型 URL 的历史验证残留都不会影响首页状态。
-
-### 2026-06-11 · v0.9.19
-
-- 源端刷新公共入口和兼容入口共用同一份 payload 组装，`/api/source-refresh/run` 与旧 `/api/remote-refresh/run` 共用内部触发函数，避免新旧接口 shape 漂移。
-- 首页源端刷新卡片的运行统计、状态标签和阻塞文案抽到共享前端 helper，优先读取 `source_refresh` 运行态，再回退旧 `remote_refresh_state`。
-- 源端刷新核心批次引擎支持预选候选输入，`SourceRefreshTaskManager` 不再通过临时替换 `_pick_candidates()` 注入候选，降低批次运行态和候选选择的耦合。
-- 架构文档、模块索引和运行状态契约同步补齐 `source_refresh_queue` / `source_refresh_runs`，明确 `remote_refresh_state` 仍是核心批次和恢复状态。
-
-### 2026-06-11 · v0.9.18
-
-- 源端刷新页前端入口改为 `/api/source-refresh`，首页同步监听独立 `source_refresh` 队列和运行状态，减少旧 `remote_refresh` 命名对用户流程的干扰。
-- 首页工作台进一步收口为快照摘要，移除未使用的最近模型 payload，实时排障细节继续下沉到任务、源端刷新和日志页面。
-- 日志页降级为用户常用筛选界面，隐藏文件、事件和每页条数等高级控件；完整日志 API 仍保留给排障查询。
-- 文档明确 MakerHub 只外跳 MakerWorld 手动验证，不内嵌验证窗口、不自动点击验证码，也不绕过站点验证。
-
-### 2026-06-11 · v0.9.17
-
-- 升级 FastAPI / Starlette 依赖，修复 Starlette Host header URL 重构校验漏洞（`CVE-2026-48710` / `GHSA-86qp-5c8j-p5mr`）。
-- 依赖审计覆盖 `requirements.txt` 与前端 npm 依赖，确认已无已知漏洞。
-- 补跑路由、认证、首页源站状态和手动验证回退相关测试，确认框架升级后核心 API 行为保持兼容。
-
-### 2026-06-11 · v0.9.16
-
-- 首页国内站 / 国际站状态简化为“正常”或“需要验证”，不再展示 Cookie、账号 API、网页探针或每日上限明细。
-- “需要验证”只由当前归档缺失 `3MF` 的验证类状态触发；用户重试后进入排队 / 运行中或下载成功清除缺失项，首页会恢复正常。
-- 补充源站健康回归测试，覆盖国内 / 国际验证、探针不影响首页、重试中恢复正常和旧数据来源字段兼容。
-
-### 2026-06-10 · v0.9.15
-
-- 首页源站状态在账号 API 正常时不再展示网页入口探针的 Cookie 失效/需要验证明细，避免账号已重新登录后仍看到误导提示。
-- 网页入口探针仍会在账号探针异常时作为排障依据参与状态判断，账号正常时首页只显示正常状态和普通官网入口。
-- 补充回归测试，覆盖账号正常时网页探针验证、认证拒绝和缓存快照异常都不下发到首页检查项。
-
-### 2026-06-10 · v0.9.14
-
-- 修复首页国际站账号 API 正常时，网页入口探针返回拒绝仍把平台卡片误判为“网页 Cookie 失效”的问题。
-- 首页源站状态现在以账号 API 状态作为主判断，网页入口失败保留为检查项提示，不再覆盖账号正常状态。
-- 增加源站健康回归测试，覆盖网页探针需要验证、网页探针返回认证拒绝和缓存快照场景。
-
-### 2026-06-10 · v0.9.13
-
-- 源端刷新拆出独立运行状态和队列状态，首页与源端刷新页优先读取 `source_refresh` 快照，避免源端刷新继续被归档队列运行态误判卡住。
-- 源端刷新模型处理改为轻量入口，跳过 3MF 下载、缺失 3MF 日志和归档重建，只刷新源端元数据与评论信息。
-- 缺失 3MF 重试会保留来源站点；保存国内 / 国际 Cookie 后会自动重试同平台验证类待补 3MF，避免历史项默认拼到国区或验证后无人重新入队。
-
-### 2026-06-08 · v0.9.12
-
-- 修复在线账号国区验证码发送和验证码登录在启用代理时仍被强制直连的问题，Mac / Docker 环境无法直连 `makerworld.com.cn` 或 `api.bambulab.cn` 时会按设置页代理访问认证接口。
-- 在线账号登录后的 Cookie 探针同步支持这条认证代理策略，避免验证码已通过但保存账号时卡在连接异常。
-- 保留归档、订阅和普通 Cookie 测试的国内站默认直连策略，避免影响已有抓取路径。
-
-### 2026-06-07 · v0.9.11
-
-- 首页国内站 / 国际站状态新增 MakerWorld 网页入口验证探针，账号 API 正常但官网需要验证时会显示“网页需要验证”并引导访问主页。
-- 首页源站状态继续使用缓存快照和后台刷新，不让网页验证探针阻塞首屏加载。
-- 归档队列读取时会清理已完成但仍残留在 active 快照里的任务，避免首页短暂显示“运行中 0 / 完成态卡住”的误导状态。
-
-### 2026-06-07 · v0.9.10
-
-- 新增稀疏性能观测，慢 API、失败 API 和慢页面会写入结构化性能事件，便于线上排查访问时间和响应时间。
-- 模型库和订阅库深页恢复改为单次请求返回已加载范围，避免从第 1 页串行拉到当前页。
-- 设置页先加载轻量配置，系统诊断和运行状态改为后台刷新，减少首屏等待。
-
-### 2026-06-07 · v0.9.9
-
-- 登录成功后改为先写入前端会话态并用 SPA 路由跳转，不再等待完整 bootstrap 和整页重载，减少登录按钮停留在“登录中”的时间。
-- 全局 bootstrap 改为只返回会话快照和当前版本，不再在所有页面打开前等待数据库状态或 GitHub 最新版本检查；侧边栏最新版本改为页面显示后后台刷新。
-- 登录 session 鉴权增加 15 秒进程内短缓存，并在退出登录、清空会话和跨 AuthManager 实例删除时同步失效，减少页面 API 的重复数据库读取。
-- 首页源站状态优先使用缓存快照，缺少新鲜缓存时后台刷新并通过状态事件通知页面更新，避免首页首屏被 MakerWorld 探针阻塞。
-- 首页数据构建复用已加载的归档快照，减少进入首页时重复读取模型索引和状态 marker。
-
-### 2026-06-07 · v0.9.8
-
-- 源端刷新新增可恢复批次清单和 NDJSON 运行日志，Worker 重启或任务中断后可以继续未完成的来源。
-- 源端刷新状态改为区分运行、延后、阻塞和中断，旧的 stale 运行态不会长期挡住新的刷新任务。
-- 首页和源端刷新页展示批次恢复状态，并提供继续源端刷新、修复队列状态等入口。
-- 数据库 JSON 状态迁移增加运行态保护，避免旧状态文件覆盖 Postgres 中更新的批次运行状态。
-
-### 2026-06-05 · v0.9.7
-
-- 修复国际站 `@user_数字/upload` 作者订阅同步失败的问题，这类关注作者现在会直接用数字 uid 走作者 API。
-- 日志中心默认使用近 6 小时时间窗，快捷筛选改为当前排障视图，并保留“历史错误”入口。
-- 增加作者订阅和日志筛选回归测试，覆盖 `@user_数字` 作者 URL 和排障默认时间范围。
-
-### 2026-06-05 · v0.9.6
-
-- 重做日志中心为排障工作台，改为高密度表格、快捷筛选和右侧详情抽屉。
-- `/api/logs` 新增级别、模块、事件、时间范围和 cursor 分页筛选，筛选下沉到数据库查询。
-- 日志页支持触底自动加载更多、按 URL 共享筛选条件，并保留实时追踪刷新。
-
-### 2026-06-04 · v0.9.5
-
-- 统一日志、任务、源端刷新、本地整理和设置页的前端刷新调度，减少页面级定时器重复逻辑。
-- 新增共享页面刷新调度器和回归测试，覆盖隐藏页延迟刷新、重复事件合并、请求中刷新续跑和运行态节流。
-- 保留现有页面可见行为和 API 契约，只收敛刷新实现。
-
-### 2026-06-04 · v0.9.4
-
-- 修复订阅库来源卡片触底后没有自动加载下一页的问题，兼容 Vue 在 `v-for` 中产生的数组 ref。
-- 抽出模型库和订阅库共用的自动加载观察器，统一触底检测、IntersectionObserver 和可见锚点补触发逻辑。
-- 增加自动加载观察器回归测试，覆盖单锚点、数组锚点和已进入视口时立即加载。
-
-### 2026-06-04 · v0.9.3
-
-- 首页国内站/国际站状态只按当前 Cookie、当前 MakerWorld 验证和当前每日上限判断异常，历史缺失 `3MF` 失败不再影响首页账号状态。
-- 首页状态卡移除历史 `3MF` 失败触发的“重试 3MF”动作，历史缺失项继续在任务页处理。
-- 订阅库来源卡片改为每批 8 个并下拉到底自动加载下一页，保留无自动加载环境下的“加载更多”兜底按钮。
-
-### 2026-06-04 · v0.9.2
-
-- 订阅库来源卡片改为分页加载，每页显示 24 个作者、合集或收藏夹来源，避免订阅较多时一次性渲染完整列表。
-- 订阅库新增“加载更多”，刷新和状态事件会保留当前已加载页数；新增订阅后回到第一页重新读取。
-- “全选当前”改为“全选当前已加载”，并在刷新/加载更多后清理不在已加载卡片里的旧选择。
-
-### 2026-06-04 · v0.9.1
-
-- 首页国内站/国际站状态卡在检测到验证、Cookie 或历史 `3MF` 下载异常时，同时提供“访问主页”和“重试 3MF”操作。
-- 首页源站状态卡不再重复展示已由状态 chip 表达的详情说明，顶部状态区更紧凑。
-- 补充首页状态动作单测，覆盖多动作生成和重复详情隐藏规则。
-
-### 2026-06-04 · v0.9.0
-
-- 新增归档队列运行态语义，区分 `running`、`waiting_children`、`blocked`、`paused` 等状态，避免批量父任务被误看成真正执行中的子任务。
-- 归档任务启动时记录 lease、heartbeat、开始时间和尝试次数；新增队列修复接口和任务页“修复队列”操作，可重排心跳过期任务并汇总修复结果。
-- 系统诊断增加归档队列计数、等待子任务数量和 stale lease 候选项；任务页状态文案改为中文业务语义，并保留需要验证时的外跳官网动作。
-
-### 2026-06-03 · v0.8.21
-
-- 降低运行期 Postgres 压力：数据库 schema 初始化改为进程内只执行一次，避免日志和状态写入反复触发建表/建索引检查。
-- 归档队列状态写入增加等价内容跳过，减少批量归档和单模型进度更新带来的数据库写入与前端事件风暴。
-- 批量归档恢复后优先推进可执行的单模型子任务，避免批量父任务长期占据运行视图导致误判卡死。
-
-### 2026-06-03 · v0.8.20
-
-- 后端状态事件增加按 scope 合并，减少归档、源端刷新和本地整理运行中写入 `makerhub_state_events` 的频率。
-- 低价值高频 info 日志降噪，保留 warning/error 和关键业务摘要，降低 Postgres 与容器 stdout 压力。
-- 停止写入遗留 `missing_3mf.log` 文件，缺失 `3MF` 摘要改走数据库业务日志；新增系统诊断接口汇总 DB 表大小、事件量、日志量和 JSON state 更新时间。
-
-### 2026-06-03 · v0.8.19
-
-- 梳理 API、任务状态和运行状态模块边界，把日志、订阅、源端刷新、任务、分享、来源库、模型库等路由拆分到独立模块，并补充状态契约文档。
-- 减少批量归档和源端刷新运行中的状态写入与前端刷新抖动，批次结果改为更集中地汇总写入和刷新。
-- 设置页新增运行角色诊断数据，便于区分 App / Web / Worker 容器状态；前端设置 payload 和后端消息摘要 helper 也拆分并补充测试。
-
-### 2026-06-02 · v0.8.18
-
-- 修复首页国际站处于历史缺失 `3MF` 待重试状态时，动作仍显示“进入任务页”的问题。
-- 国内站和国际站的历史 `3MF` 验证/Cookie 异常现在都会从首页源站状态卡外跳对应 MakerWorld 主页，保持与手动验证回退流程一致。
-
-### 2026-06-01 · v0.8.17
-
-- 回退 MakerWorld 内置浏览器验证流程：首页和任务页改为外跳官网/模型页，由用户在 MakerWorld 手动完成验证后回到 MakerHub 重试。
-- 删除未使用的 CloakBrowser 验证运行时、接口、弹窗页面和镜像预安装步骤，保留本地预览与 Scrapling 抓取仍需使用的 Chromium/Scrapling 组件。
-
-### 2026-06-01 · v0.8.16
-
-- 账号关注作者同步会在关注接口缺少 handle 时，用作者名称搜索并按 uid 精确匹配结果，再生成标准 `@作者/upload` 订阅地址。
-- 经 uid 校验得到的 `@user_数字/upload` 作者页不再被误判为无效订阅，国区这类真实作者页也会正常导入。
-- 历史 `@user_数字` 清理收窄为只移除已报错的旧订阅，避免下次同步把有效作者订阅再次删除。
-
-### 2026-05-31 · v0.8.15
-
-- 浏览器验证弹窗改用 Pointer Events 和指针捕获，提升 MakerWorld 滑块验证码的按下、拖动、松开稳定性。
-- 验证截图坐标映射抽成独立输入层，并按后端裁剪 viewport 动态调整窗口比例，减少点击偏移。
-- 拖拽输入会按顺序发送，松手后等待释放命令完成再刷新截图，避免滑块释放结果被过早刷新遮住。
-
-### 2026-05-31 · v0.8.14
-
-- 浏览器验证继续基于 CloakBrowser，但增强 Cloudflare Turnstile、MakerWorld 验证框和验证文本区域的截图裁剪，减少弹窗里的多余页面内容。
-- 增加浏览器验证关键节点诊断日志，区分浏览器启动、API 权限页回退、下载触发、验证区域检测、proof 捕获、重试提交和完成/超时。
-- 浏览器验证日志会统一脱敏 Cookie、Token、`cf_clearance` 和验证 proof，避免敏感信息进入业务日志。
-
-### 2026-05-31 · v0.8.13
-
-- 源端刷新批次运行中改为把单模型结果写入临时 NDJSON 文件，避免每个模型完成都写数据库日志和状态事件。
-- 源端刷新前端状态改为批次开始和批次结束两个边界刷新，完成后统一写入成功、失败、跳过、慢模型和最近结果。
-- 批次中断时会短期保留临时结果文件用于排查，并自动清理旧的源端刷新临时缓冲文件。
-
-### 2026-05-31 · v0.8.12
-
-- 浏览器验证优先使用缺失 3MF 当初触发验证的原始路径，避免过早改写到不一致的接口。
-- 遇到上游返回 JSON 403 权限错误时，验证浏览器会自动回到对应 MakerWorld 模型页。
-- 进入模型页后会尝试自动点击下载 3MF，让验证码更快出现在纯验证弹窗中。
-
-### 2026-05-31 · v0.8.11
-
-- 浏览器验证弹窗改为纯验证画面，正常状态下只显示远程验证码区域，不再显示返回、刷新、取消等操作控件。
-- 验证页只在加载失败、超时或完成时显示必要提示，避免模型、任务和状态信息干扰手动验证。
-- 缩小验证弹窗尺寸，并增加纯验证页面形态的前端回归测试。
-
-### 2026-05-30 · v0.8.10
-
-- 修复浏览器验证旧 `/f3mf` 入口可能打开 `makerworld.com/api/...` 后直接返回 403 JSON 的问题；现在会优先改用对应区域的 `api.bambulab.*` 3MF 下载接口。
-- 验证浏览器会同时注入 MakerWorld 站点域和 Bambu API 域 Cookie，并补齐 token 请求头，减少直连 API 验证时的权限失败。
-- 验证页移除模型标题、平台、状态、截图数、模型 ID 等元信息，只保留远程验证画面和必要操作按钮。
-
-### 2026-05-29 · v0.8.9
-
-- 浏览器验证弹窗改为紧凑窗口，验证页只展示主要验证画面，不再铺满整张 MakerWorld 页面。
-- 后端截图会优先裁剪 MakerWorld 验证/验证码浮层，并把点击坐标映射回真实浏览器页面，保证裁剪后仍可操作。
-- 增加验证截图裁剪、坐标偏移和紧凑弹窗尺寸回归测试。
-
-### 2026-05-29 · v0.8.8
-
-- 修复浏览器验证 fallback 打开 MakerWorld 模型页后仍停在普通详情页的问题；缺失记录带配置 ID 时会直接合成 `/f3mf` 下载接口进入验证流程。
-- 保留完全缺少配置 ID 的模型页 fallback，避免历史异常数据无法打开验证浏览器。
-- 增加配置 ID 合成 3MF 下载接口的回归测试。
-
-### 2026-05-29 · v0.8.7
-
-- 修复历史缺失 3MF 记录没有 `/f3mf` 接口时浏览器验证直接失败的问题；现在会回退打开 MakerWorld 模型页，引导点击下载 3MF 后完成验证。
-- 保留已有 `/f3mf` 接口的轻量直达验证路径，避免影响新缺失项的快速验证流程。
-- 增加无接口 fallback 打开模型页的回归测试。
-
-### 2026-05-29 · v0.8.6
-
-- 修复浏览器验证轻量弹窗直达 `/browser-verification/:sessionId` 时后端返回 404 JSON 的问题。
-- 后端 Web 路由现在会把验证弹窗地址交给前端 SPA，并对该路径禁用缓存，避免旧页面残留。
-- 增加登录态直达验证弹窗的回归测试。
-
-### 2026-05-29 · v0.8.5
-
-- 3MF 浏览器验证页改为独立轻量窗口，不再嵌在主工作台侧边栏布局里。
-- 首页和归档任务入口会优先打开验证专用弹窗；弹窗被拦截时才回退到当前页跳转。
-- Worker 打开验证时优先进入缺失项的 `/f3mf` 下载接口，不再加载完整模型详情页；缺少接口地址时会直接报错，不启动浏览器。
-- 降低验证浏览器 viewport 和截图刷新频率，并增加轻量 Chromium 启动参数，减少验证任务占用。
-
-### 2026-05-29 · v0.8.4
-
-- 修复浏览器验证会话复用同一 Chromium profile 时可能互相阻塞的问题，同平台已有验证窗口时会复用当前会话。
-- 修复数据库索引重建进入历史迁移阶段时设置页长期显示 `索引中 0/0` 的问题，索引任务会先写入可见进度。
-- 清理订阅库里历史遗留的 `@user_数字` 作者订阅错误项，避免这些源站 404 链接反复同步失败。
-- 增加浏览器验证 profile 复用、索引进度写入和历史订阅清理回归测试。
-
-### 2026-05-29 · v0.8.3
-
-- 修复 Worker 在数据库索引/历史信息补全长任务中同步阻塞主循环，导致新建浏览器验证会话一直停在“等待 worker 打开验证浏览器”的问题。
-- 浏览器验证输入现在只在远程画面已运行时接收，避免排队态鼠标事件持续写入会话状态。
-- 新增 worker 接收浏览器验证会话的业务日志，后续线上排查可以直接区分“会话已创建”和“worker 已接管”。
-- 增加浏览器验证 worker 轮询、排队态输入保护和 profile backfill 异步执行回归测试。
-
-### 2026-05-29 · v0.8.2
-
-- 修复线上账号关注作者自动导入订阅时保留 MakerWorld `/en/` 作者页链接的问题，统一保存为 `/zh/@作者/upload`。
-- 修复从 MakerWorld 分享入口导入的作者订阅保留 `appSharePlatform=copy` 等分享参数的问题，订阅库显示和访问使用干净短链接。
-- 已保存的旧作者订阅链接会在订阅列表/状态初始化时自动写回规范化地址，不需要手动删除重建。
-- 增加 URL 规范化、关注作者自动导入和旧订阅自修回归测试。
-
-### 2026-05-28 · v0.8.1
-
-- 修复订阅同步后每个订阅都会全量重建来源卡快照的问题，降低 Worker CPU 占用并减少订阅库预览长期灰块。
-- 来源卡快照刷新支持按当前订阅限域执行，占位快照不再作为真实预览图返回。
-- 首页源站状态卡主体不再整卡打开 MakerWorld；历史缺失 `3MF` 失败会引导进入任务页，官网入口只保留在明确的动作文字上。
-- 修复 App 配置多个 Web worker 时，一键更新重启状态和旧镜像清理可能被多个 worker 重复写入的问题。
-- 增加自更新、订阅来源卡、来源健康卡和首页状态卡回归测试。
-
-### 2026-05-28 · v0.8.0
-
-- 新增内置浏览器验证流程，下载 `3MF` 遇到 MakerWorld 验证时可从首页或任务页进入验证页面，完成后由 Worker 继续原下载流程。
-- 验证证明只在内存中以一次性 proof id 传递，不写入数据库、状态文件、API 响应或前端页面。
-- Worker 镜像默认安装浏览器运行依赖，现有 App / Worker / Postgres 架构内即可完成验证，不需要新增容器。
-- 模型卡片和详情链接补充短链接展示与复制能力，归档索引增加对应字段和回归测试。
-
-### 2026-05-27 · v0.7.11
-
-- 修复批量归档父任务在缺失 3MF 重试队列中反复恢复、导致页面显示 0 个运行中 / 多个排队中的问题。
-- 批量任务刷新时优先识别仍在运行或排队的子任务，再判断模型是否已归档，避免已归档模型的补 `3MF` 任务被误判为完成。
-- 增加回归测试，覆盖已归档模型仍有缺失 `3MF` 子任务排队的场景。
-
-### 2026-05-27 · v0.7.10
-
-- 修复手动重试缺失 `3MF` 时只清除暂停标记、没有重置 MakerHub 当日自动下载计数，导致已达自动下载上限后重试看起来无反应的问题。
-- 首页源站状态不再把账号正常时的历史缺失 `3MF` 验证失败误报为当前国际区账号需要验证，改为提示历史失败待重试。
-- 任务页和设置页文案区分 MakerHub 自动下载保护额度与 MakerWorld 账号手动下载限制，并给“全部重试”增加提交中状态。
-
-### 2026-05-27 · v0.7.9
-
-- 修复源端刷新页收到每条状态事件都立即请求 `/api/remote-refresh`，导致 Web App 和 Postgres 在源端刷新期间 CPU 升高的问题。
-- 源端刷新页改为合并状态事件并按运行态节流刷新，运行中最多约 5 秒刷新一次，结束/空闲状态约 1.2 秒内刷新。
-- 修复网页一键更新复用旧容器配置时可能把 Worker 的 Docker 命令保留为 `app` 的问题，替换容器会按角色固定启动命令与运行环境。
-
-### 2026-05-27 · v0.7.8
-
-- 修复 Docker 发布流水线在 GitHub codeload 短暂失败时卡在 `docker/setup-qemu-action`，导致 GHCR 没有产出新版本镜像的问题。
-- 发布流程移除当前未使用的 QEMU 初始化步骤，保留 Buildx 构建和 GHCR 推送，降低网页更新拉不到新镜像的概率。
-- 重新触发镜像发布，让归档索引后台重建修复可以通过网页更新获取。
-
-### 2026-05-26 · v0.7.7
-
-- 修复归档模型数据库索引过期时，Web 容器会在请求路径回退扫描全量 `meta.json` 导致 CPU 升高的问题。
-- Web 发现索引与归档文件不一致时，现在只提交 worker 后台重建信号，并继续使用现有数据库快照返回页面数据。
-- Worker 新增“只重建数据库索引”模式，索引修复不会顺带触发历史信息补全扫描。
-
-### 2026-05-26 · v0.7.6
-
-- 修复网页一键更新在群晖 Container Manager 中把 App / Worker 显示为 `*-replacement-*` 容器名的问题。
-- 更新流程改为先把旧容器改为备份名，再用正式容器名直接创建新容器，避免群晖记录临时创建名。
-- 新容器启动后会复核 Docker 容器名称，名称异常时会触发失败回滚，避免更新状态误报成功。
-
-### 2026-05-26 · v0.7.5
-
-- 修复关注作者同步会把 MakerWorld 内部 `uid` 拼成 `@user_数字/upload` 作者订阅的问题，避免生成无法打开的订阅链接。
-- 关注来源同步现在只导入解析到真实公开 handle 的作者页；仅有内部 uid 的关注项会跳过，不再误加入订阅库。
-- 下次账号关注同步会自动清理此前由账号同步导入的无效 `@user_数字` 作者订阅，手工创建的订阅不会被误删。
-- 订阅同步状态会记录跳过数量和清理数量，方便排查关注数与实际订阅数不一致。
-
-### 2026-05-26 · v0.7.4
-
-- 前端运行状态刷新改为后端状态事件驱动，归档、订阅扫描、来源刷新、本地整理和更新状态完成后主动通知页面刷新。
-- 移除首页、任务页、订阅页、来源库、整理页和设置系统页里的固定时间轮询，系统更新与信息补全改为打开系统设置页和收到状态事件时查询。
-- 新增 `/api/events/state` 统一状态事件流，并保留归档完成事件兼容旧入口。
-- 修复模型库分组路由参数为空时仍请求 `/api/source-library/sources//` 的无效接口问题。
-
-### 2026-05-26 · v0.7.3
-
-- 默认 Compose 将宿主机 MakerHub 配置父目录映射到 `/app/config`，App 和 Worker 共享旧版 `config`、`logs`、`state` 平级目录，方便老用户直接升级。
-- 数据库迁移会在数据库仍为空默认状态时，从旧 `/app/state` 补回模型删除标记、订阅状态等运行数据，恢复本地删除和源端删除列表。
-- 设置页抓取模式文案改为自动模式、兼容模式、增强模式，避免暴露内部抓取优先级。
-- 网页一键更新提示中的 Compose 示例同步为父目录挂载。
-
-### 2026-05-25 · v0.7.2
-
-- 归档模型根目录统一为 `/app/data`，旧 DSM 模型目录不需要再手动移动到 `archive/` 子目录。
-- 兼容旧镜像继承的 `MAKERHUB_ARCHIVE_DIR=/app/data/archive` 环境变量，启动时会自动按 `/app/data` 识别模型库。
-- 默认本地整理入口 `/app/data/local` 可位于模型库根目录内，避免默认配置被误判为无效。
-
-### 2026-05-25 · v0.7.1
-
-- 修复老用户按新 compose 映射 `/app/data` 后，历史模型仍在 `/app/data` 根目录导致模型库、订阅库和本地库为空的问题。
-- 如果旧镜像仍按 `/app/data/archive` 读取，但历史模型仍在 `/app/data` 根目录，会自动兼容旧归档根并恢复历史模型显示。
-
-### 2026-05-25 · v0.7.0
-
-- 版本号升级到 `v0.7.0`，发布为数据库化架构版本。
-- 默认部署升级为 App / Worker / Postgres 三容器，Compose 增加 `makerhub-postgres` 和 `MAKERHUB_DATABASE_URL`；`depends_on` / `healthcheck` 作为高级可选注释保留。
-- 配置、Cookie / Token、订阅、来源库 metadata、任务状态、分享记录、系统更新状态、业务日志和模型卡片索引迁移到 Postgres。
-- 当时设置页曾新增数据库索引与历史信息补全状态；该手动入口已在 v0.9.67 移除。
-- 首页 MW 状态拆分为 `账号` 与 `3MF 下载` 检查项，下载验证、每日上限、接口受限和 Cookie 问题会分别显示。
-- 在线账号、Cookie 认证探针和 MakerWorld/Bambu API 请求链路优化，减少普通 HTML/登录页被误判为“需要验证”。
-- 系统更新加入 compose 升级保护，旧部署缺少数据库配置时会提示先改 compose，避免网页更新后容器不可用。
-- 容器目录收敛为 `/app/config/{config,logs,state}` 与 `/app/data`，默认 compose 将宿主机 MakerHub 配置父目录映射到 `/app/config`，同时映射 `/app/data` 和 Postgres 数据目录。
-- 重写 README、补充功能介绍、Compose 安装方式和 V0.7.0 更新说明。
-
-### 2026-05-22 · v0.6.128
-
-- 网页一键更新新增 compose 升级保护：检测到旧部署缺少 `MAKERHUB_DATABASE_URL` 时，会阻止继续更新。
-- 设置页会在旧 compose 下显示“需改 compose”，并给出 App / Worker / Postgres 三容器示例。
-
-### 2026-05-22 · v0.6.127
-
-- 国际区默认收藏夹地址统一为 `makerworld.com/zh/@账号/collections/models`，旧 `/en/` 订阅会自动合并到同一个来源。
-- 来源库和订阅库来源卡新增 payload 缓存，缓存过期时先返回旧卡片并后台刷新。
-- MakerWorld API / Scrapling 候选路径收敛到当前可用的 Bambu API 地址，减少无效候选造成的 warning。
-
-### 2026-05-22 · v0.6.126
-
-- 默认收藏夹来源卡头像改为使用 Cookie 账号头像。
-- 收藏夹卡片头像位置不再用模型封面兜底，模型图只保留在下方预览区。
-- `@账号/collections/models` 默认收藏夹来源统一归类为收藏夹，避免 metadata key 跑到合集分组。
+更早版本的完整说明见 [CHANGELOG.md](CHANGELOG.md)。
 
 </details>
-
-更多细节见 [CHANGELOG.md](CHANGELOG.md)。
