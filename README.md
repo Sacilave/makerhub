@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.3`
+> 当前版本：`v0.15.4`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-28 · v0.15.4
+
+- 设置页会在指纹浏览器启动或同步失败后复核对应平台的最新状态；自动恢复并完成同步后，旧的 `Network.enable timed out` 操作错误会自动消失。
+- 只有同一平台返回明确的同步成功状态时才清除旧错误，仍处于超时、不可用或未登录状态的真实故障会继续显示。
+
 ### 2026-07-28 · v0.15.3
 
 - CloakBrowser 的 CDP 超时或连接中断会自动重启对应 profile 并只重试 1 次，fetch、登录同步和 `3MF` 点击统一恢复。
@@ -357,11 +362,6 @@ npm --prefix frontend run build
 
 - GitHub 首页 README 直接展开显示完整四容器 `compose.yaml`，无需跳转文件页面才能查看部署内容。
 - 新增发布契约测试，确保 README 中展示的 Compose 与仓库根目录实际文件逐字一致。
-
-### 2026-07-28 · v0.15.1
-
-- 镜像、端口、时区、并发、超时和日志轮转等稳定默认值直接写入公开的 `compose.yaml`。
-- `.env.example` 只保留必填密钥和少量实例覆盖项，默认四容器部署无需重复填写常规参数。
 
 <details>
 <summary>历史版本</summary>

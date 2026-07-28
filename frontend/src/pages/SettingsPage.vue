@@ -904,6 +904,7 @@ import { accountOperationalView } from "../lib/accountStatus";
 import { apiRequest } from "../lib/api";
 import {
   browserSessionBusy,
+  hasRecoveredBrowserSession,
   browserSessionMessage,
   browserSessionStatusClass,
   browserSessionStatusLabel,
@@ -958,6 +959,7 @@ const systemUpdateSubmitting = ref(false);
 const runtimeResourcesSaving = ref(false);
 const proxySaving = ref(false);
 const accountDialogOpen = ref(false);
+const browserErrorPlatform = ref("");
 let accountCodeTimer = null;
 let settingsRefreshController = null;
 
@@ -1579,6 +1581,19 @@ async function refreshSettingsPanelFromEvent() {
   if (activeTab.value === "accounts") {
     const payload = await refreshLightConfig();
     applyConfigToForms(payload);
+    clearRecoveredBrowserError(payload);
+  }
+}
+
+function clearRecoveredBrowserError(payload) {
+  const platform = browserErrorPlatform.value;
+  if (!hasRecoveredBrowserSession(payload, platform)) {
+    return;
+  }
+  browserErrorPlatform.value = "";
+  statuses.accounts = "";
+  if (accountDialog.mode === "browser" && accountDialog.platform === platform) {
+    accountDialog.error = "";
   }
 }
 
@@ -1890,6 +1905,7 @@ async function syncSavedAccount(platform) {
 async function openBrowserAccount(platform, { closeDialog = false } = {}) {
   const cleanPlatform = platform === "global" ? "global" : "cn";
   const key = `browser_open_${cleanPlatform}`;
+  browserErrorPlatform.value = "";
   testing[key] = true;
   if (closeDialog) {
     accountDialog.saving = true;
@@ -1906,6 +1922,7 @@ async function openBrowserAccount(platform, { closeDialog = false } = {}) {
     });
     applyConfigPayload(payload);
     applyConfigToForms(payload);
+    browserErrorPlatform.value = "";
     const publicUrl = resolveCloakBrowserPublicUrl(payload?.browser_session?.public_url, window.location);
     if (popup) {
       popup.location.replace(publicUrl);
@@ -1922,11 +1939,13 @@ async function openBrowserAccount(platform, { closeDialog = false } = {}) {
       popup.close();
     }
     const message = error instanceof Error ? error.message : "指纹浏览器启动失败。";
+    browserErrorPlatform.value = cleanPlatform;
     if (closeDialog) {
       accountDialog.error = message;
     } else {
       statuses.accounts = message;
     }
+    settingsRefreshController?.schedule("browser-open-failed");
   } finally {
     testing[key] = false;
     if (closeDialog) {
@@ -1942,6 +1961,7 @@ async function openSavedAccountBrowser(item) {
 async function syncSavedAccountBrowser(item) {
   const platform = item?.platform === "global" ? "global" : "cn";
   const key = `browser_sync_${platform}`;
+  browserErrorPlatform.value = "";
   testing[key] = true;
   statuses.accounts = "";
   try {
@@ -1950,9 +1970,12 @@ async function syncSavedAccountBrowser(item) {
     });
     applyConfigPayload(payload);
     applyConfigToForms(payload);
+    browserErrorPlatform.value = "";
     statuses.accounts = payload?.browser_session?.message || "指纹浏览器登录态已同步。";
   } catch (error) {
+    browserErrorPlatform.value = platform;
     statuses.accounts = error instanceof Error ? error.message : "浏览器登录态同步失败。";
+    settingsRefreshController?.schedule("browser-sync-failed");
   } finally {
     testing[key] = false;
   }

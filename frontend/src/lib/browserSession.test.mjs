@@ -3,12 +3,42 @@ import { test } from "node:test";
 
 import {
   browserSessionBusy,
+  hasRecoveredBrowserSession,
   browserSessionMessage,
   browserSessionStatusClass,
   browserSessionStatusLabel,
   resolveCloakBrowserPublicUrl,
   shouldShowBrowserSession,
 } from "./browserSession.js";
+
+test("recovered browser session is matched to the failed platform", () => {
+  const payload = {
+    cookies: [
+      { platform: "cn", browser_status: "waiting" },
+      { platform: "global", browser_status: "synced", browser_message: "指纹浏览器登录态已同步。" },
+    ],
+  };
+
+  assert.equal(hasRecoveredBrowserSession(payload, "cn"), false);
+  assert.equal(hasRecoveredBrowserSession(payload, "global"), true);
+});
+
+test("missing platform or browser session is not treated as recovered", () => {
+  assert.equal(hasRecoveredBrowserSession({ cookies: [] }, "cn"), false);
+  assert.equal(hasRecoveredBrowserSession({ cookies: [{ platform: "cn", browser_status: "synced" }] }, ""), false);
+});
+
+test("a preserved synced status with a current browser error is not recovered", () => {
+  const payload = {
+    cookies: [{
+      platform: "cn",
+      browser_status: "synced",
+      browser_message: "指纹浏览器服务暂时不可用：Network.enable timed out.",
+    }],
+  };
+
+  assert.equal(hasRecoveredBrowserSession(payload, "cn"), false);
+});
 
 test("browser session status maps operational states", () => {
   assert.equal(browserSessionStatusLabel({ browser_status: "synced" }), "浏览器已同步");

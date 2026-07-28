@@ -9,6 +9,17 @@ const STATUS_LABELS = {
   not_configured: "浏览器未配置",
 };
 
+const BROWSER_ERROR_MESSAGE = /(?:暂时不可用|未登录|失败|超时|timed out|timeout)/i;
+
+export function hasRecoveredBrowserSession(payload = {}, platform = "") {
+  const cleanPlatform = String(platform || "").trim();
+  if (!cleanPlatform) return false;
+  const cookies = Array.isArray(payload?.cookies) ? payload.cookies : [];
+  const session = cookies.find((item) => String(item?.platform || "").trim() === cleanPlatform);
+  if (String(session?.browser_status || "").trim() !== "synced") return false;
+  return !BROWSER_ERROR_MESSAGE.test(String(session?.browser_message || "").trim());
+}
+
 export function browserSessionStatusLabel(item = {}) {
   const status = String(item?.browser_status || "").trim();
   return STATUS_LABELS[status] || "浏览器未关联";

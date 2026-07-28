@@ -153,6 +153,14 @@ test("SettingsPage uses shared page refresh controller for system update state",
   assert.match(settingsPageSource, /accountCodeTimer/);
 });
 
+test("SettingsPage clears a browser operation error only after that platform recovers", () => {
+  assert.match(settingsPageSource, /const browserErrorPlatform = ref\(""\)/);
+  assert.match(settingsPageSource, /const platform = browserErrorPlatform\.value/);
+  assert.match(settingsPageSource, /hasRecoveredBrowserSession\(payload, platform\)/);
+  assert.match(settingsPageSource, /browserErrorPlatform\.value = cleanPlatform/);
+  assert.match(settingsPageSource, /browserErrorPlatform\.value = ""/);
+});
+
 test("SettingsPage derives synced online account source counts from current subscriptions", () => {
   assert.match(settingsPageSource, /accountSyncedSourceCounts/);
   assert.match(settingsPageSource, /accountSourceOverview/);
