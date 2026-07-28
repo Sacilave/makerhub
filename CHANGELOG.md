@@ -1,5 +1,12 @@
 # 更新说明
 
+## 2026-07-28 · v0.15.6
+
+- 修复 CloakBrowser 的 hidden target 类型为 `other`、导致 Puppeteer `target.page()` 返回 `null` 的兼容性问题。
+- 普通控制面抓取改为在隐藏 target 上直接启用 `Page`、`Network` 和 `Fetch` CDP 域，完成请求拦截、受限域名校验、响应状态与正文读取，全程不生成可见 API 标签页。
+- `3MF` 授权点击继续使用 Puppeteer page，但改为后台 target；创建后立即记录 `targetId`，页面初始化失败、导航失败或授权结束都会由 browser-level CDP 强制回收。
+- DSM 真实 CloakBrowser profile 验证通过：国内站消息 API 返回 HTTP `200` 与 JSON，操作结束后 API target 数量为 `0`。
+
 ## 2026-07-28 · v0.15.5
 
 - CloakBrowser 控制面抓取和 `3MF` 授权点击不再通过 `context.newPage()` 创建可见标签，统一改为 CDP `Target.createTarget` 创建 `hidden + background` 临时 target。

@@ -215,24 +215,23 @@ async function cleanupStaleAutomationTargets(browser, context, platform) {
   }
 }
 
-async function withTemporaryPage(browser, context, callback) {
+async function withTemporaryTarget(browser, context, { hidden }, callback) {
   const client = await browser.target().createCDPSession();
   const markerUrl = `about:blank#makerhub-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let targetId = "";
   try {
-    ({ targetId } = await client.send("Target.createTarget", {
+    const targetOptions = {
       url: markerUrl,
       browserContextId: context.id || undefined,
       background: true,
-      hidden: true,
-    }));
+    };
+    if (hidden) targetOptions.hidden = true;
+    ({ targetId } = await client.send("Target.createTarget", targetOptions));
     const target = await browser.waitForTarget(
       (candidate) => candidate.url() === markerUrl && candidate.browserContext() === context,
       { timeout: 15000 },
     );
-    const page = await target.page();
-    if (!page) throw new Error(`temporary browser target did not expose a page (${targetId})`);
-    return await callback(page);
+    return await callback(target);
   } finally {
     if (targetId) {
       await client.send("Target.closeTarget", { targetId }).catch(() => undefined);
@@ -241,44 +240,158 @@ async function withTemporaryPage(browser, context, callback) {
   }
 }
 
+async function withTemporaryCdpSession(browser, context, callback) {
+  return await withTemporaryTarget(browser, context, { hidden: true }, async (target) => {
+    const session = await target.createCDPSession();
+    try {
+      return await callback(session);
+    } finally {
+      await session.detach().catch(() => undefined);
+    }
+  });
+}
+
+async function withTemporaryPage(browser, context, callback) {
+  return await withTemporaryTarget(browser, context, { hidden: false }, async (target) => {
+    const page = await target.page();
+    if (!page) throw new Error("temporary browser target did not expose a page");
+    return await callback(page);
+  });
+}
+
+function createCdpEventRecorder(session, eventName, predicate) {
+  const events = [];
+  const handler = (event) => {
+    if (predicate(event)) events.push(event);
+  };
+  session.on(eventName, handler);
+  return {
+    async wait(timeoutMs, timeoutMessage) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (events.length) return events.shift();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(timeoutMessage);
+    },
+    stop() {
+      session.off(eventName, handler);
+    },
+  };
+}
+
+async function waitForCdpCondition(predicate, timeoutMs, timeoutMessage) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(timeoutMessage);
+}
+
+function cdpHeaderEntries(headers) {
+  return Object.entries(headers).map(([name, value]) => ({
+    name: String(name),
+    value: String(value),
+  }));
+}
+
+function cdpHeaderValue(headers, targetName) {
+  const cleanTarget = String(targetName || "").toLowerCase();
+  const entry = Object.entries(headers || {}).find(([name]) => name.toLowerCase() === cleanTarget);
+  return entry ? String(entry[1]) : "";
+}
+
 async function fetchBrowserResponse(browser, context, platform, targetUrl, headers, cookies, timeoutMs) {
   if (!isAllowedBrowserFetchUrl(targetUrl, platform)) throw new Error("invalid browser fetch URL");
   const cleanCookies = (Array.isArray(cookies) ? cookies : []).map(cleanCookie).filter(Boolean);
   if (cleanCookies.length) await context.setCookie(...cleanCookies);
-  return await withTemporaryPage(browser, context, async (page) => {
+  return await withTemporaryCdpSession(browser, context, async (session) => {
     const profileCookies = (await context.cookies()).filter((item) => (
       hostnameMatchesDomains(String(item?.domain || ""), platformDomains(platform))
     ));
     const cleanHeaders = headersWithBrowserAuth(cleanFetchHeaders(headers), profileCookies, targetUrl);
-    await page.setRequestInterception(true);
-    page.on("request", (request) => {
-      if (!isAllowedBrowserFetchUrl(request.url(), platform)) {
-        void request.abort("blockedbyclient").catch(() => undefined);
-        return;
-      }
-      void request.continue({
-        headers: { ...request.headers(), ...cleanHeaders },
-      }).catch(() => undefined);
-    });
-    const response = await page.goto(targetUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: Math.max(Number(timeoutMs || 30000), 15000),
-    });
-    if (!response) throw new Error("browser fetch did not return a response");
-    const finalUrl = page.url();
-    if (!isAllowedBrowserFetchUrl(finalUrl, platform)) throw new Error("browser fetch redirected outside allowed domains");
-    const responseHeaders = response.headers();
-    const safeHeaders = {};
-    for (const name of ["content-type", "retry-after", "location"]) {
-      if (responseHeaders[name]) safeHeaders[name] = String(responseHeaders[name]);
-    }
-    return {
-      status_code: Number(response.status() || 0),
-      url: finalUrl,
-      content_type: String(responseHeaders["content-type"] || ""),
-      headers: safeHeaders,
-      text: await response.text(),
+    const navigationTimeout = Math.max(Number(timeoutMs || 30000), 15000);
+    const finishedRequests = new Set();
+    const failedRequests = new Map();
+    const interceptionTasks = new Set();
+    const responseRecorder = createCdpEventRecorder(
+      session,
+      "Network.responseReceived",
+      (event) => event.type === "Document",
+    );
+    const onLoadingFinished = (event) => finishedRequests.add(event.requestId);
+    const onLoadingFailed = (event) => failedRequests.set(event.requestId, event.errorText || "request failed");
+    const onRequestPaused = (event) => {
+      const task = (async () => {
+        if (!isAllowedBrowserFetchUrl(event.request.url, platform)) {
+          await session.send("Fetch.failRequest", {
+            requestId: event.requestId,
+            errorReason: "BlockedByClient",
+          });
+          return;
+        }
+        await session.send("Fetch.continueRequest", {
+          requestId: event.requestId,
+          headers: cdpHeaderEntries({ ...event.request.headers, ...cleanHeaders }),
+        });
+      })();
+      interceptionTasks.add(task);
+      void task.catch(() => undefined).finally(() => interceptionTasks.delete(task));
     };
+    session.on("Network.loadingFinished", onLoadingFinished);
+    session.on("Network.loadingFailed", onLoadingFailed);
+    session.on("Fetch.requestPaused", onRequestPaused);
+    try {
+      await session.send("Page.enable");
+      await session.send("Network.enable");
+      await session.send("Fetch.enable", {
+        patterns: [{ urlPattern: "*", requestStage: "Request" }],
+      });
+      const navigation = await session.send("Page.navigate", { url: targetUrl });
+      if (navigation.errorText) throw new Error(`browser fetch navigation failed: ${navigation.errorText}`);
+      const responseEvent = await responseRecorder.wait(
+        navigationTimeout,
+        "browser fetch did not return a response",
+      );
+      const requestId = responseEvent.requestId;
+      const finalUrl = String(responseEvent.response?.url || targetUrl);
+      if (!isAllowedBrowserFetchUrl(finalUrl, platform)) {
+        throw new Error("browser fetch redirected outside allowed domains");
+      }
+      await waitForCdpCondition(
+        () => finishedRequests.has(requestId) || failedRequests.has(requestId),
+        navigationTimeout,
+        "browser fetch response body timed out",
+      );
+      if (failedRequests.has(requestId)) {
+        throw new Error(`browser fetch request failed: ${failedRequests.get(requestId)}`);
+      }
+      const body = await session.send("Network.getResponseBody", { requestId });
+      const responseHeaders = responseEvent.response?.headers || {};
+      const safeHeaders = {};
+      for (const name of ["content-type", "retry-after", "location"]) {
+        const value = cdpHeaderValue(responseHeaders, name);
+        if (value) safeHeaders[name] = value;
+      }
+      return {
+        status_code: Number(responseEvent.response?.status || 0),
+        url: finalUrl,
+        content_type: cdpHeaderValue(responseHeaders, "content-type")
+          || String(responseEvent.response?.mimeType || ""),
+        headers: safeHeaders,
+        text: body.base64Encoded
+          ? Buffer.from(String(body.body || ""), "base64").toString("utf8")
+          : String(body.body || ""),
+      };
+    } finally {
+      responseRecorder.stop();
+      session.off("Network.loadingFinished", onLoadingFinished);
+      session.off("Network.loadingFailed", onLoadingFailed);
+      session.off("Fetch.requestPaused", onRequestPaused);
+      await Promise.allSettled([...interceptionTasks]);
+      await session.send("Fetch.disable").catch(() => undefined);
+    }
   });
 }
 

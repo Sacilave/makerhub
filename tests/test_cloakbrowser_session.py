@@ -290,26 +290,34 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     profile_id="profile-cn",
                 )
 
-    def test_bridge_fetch_and_click_use_hidden_targets_and_always_close_by_id(self):
+    def test_bridge_uses_hidden_cdp_fetch_and_closes_every_temporary_target_by_id(self):
         source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn('if (input.action === "fetch")', source)
         self.assertIn("async function fetchBrowserResponse", source)
-        helper_start = source.index("async function withTemporaryPage")
+        helper_start = source.index("async function withTemporaryTarget")
         helper_end = source.index("async function fetchBrowserResponse")
         helper_source = source[helper_start:helper_end]
         self.assertIn('client.send("Target.createTarget"', helper_source)
         self.assertIn("background: true", helper_source)
-        self.assertIn("hidden: true", helper_source)
         self.assertIn('client.send("Target.closeTarget", { targetId })', helper_source)
+        self.assertIn("withTemporaryTarget(browser, context, { hidden: true }", helper_source)
+        self.assertIn("const session = await target.createCDPSession()", helper_source)
+        self.assertNotIn("await target.page()", helper_source[
+            helper_source.index("async function withTemporaryCdpSession"):
+            helper_source.index("async function withTemporaryPage")
+        ])
+        self.assertIn("withTemporaryTarget(browser, context, { hidden: false }", helper_source)
         fetch_start = source.index("async function fetchBrowserResponse")
         fetch_end = source.index("function isThreeMfAuthorizationUrl")
         fetch_source = source[fetch_start:fetch_end]
-        self.assertIn("withTemporaryPage(browser, context, async (page) =>", fetch_source)
+        self.assertIn("withTemporaryCdpSession(browser, context, async (session) =>", fetch_source)
+        self.assertIn('session.send("Fetch.enable"', fetch_source)
+        self.assertIn('session.send("Page.navigate"', fetch_source)
+        self.assertIn('session.send("Network.getResponseBody"', fetch_source)
+        self.assertNotIn("withTemporaryPage", fetch_source)
         self.assertNotIn("context.newPage()", fetch_source)
         self.assertIn("const profileCookies = (await context.cookies()).filter", fetch_source)
-        self.assertIn("await page.setRequestInterception(true)", fetch_source)
-        self.assertIn('request.abort("blockedbyclient")', fetch_source)
         self.assertNotIn("page.setExtraHTTPHeaders", fetch_source)
         click_start = source.index("async function clickAuthorization")
         click_end = source.index("async function main")
@@ -321,7 +329,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
 
         cleanup_start = source.index("async function cleanupStaleAutomationTargets")
-        cleanup_end = source.index("async function withTemporaryPage")
+        cleanup_end = source.index("async function withTemporaryTarget")
         cleanup_source = source[cleanup_start:cleanup_end]
         self.assertIn('client.send("Target.getTargets")', cleanup_source)
         self.assertIn('targetInfo.type !== "page"', cleanup_source)

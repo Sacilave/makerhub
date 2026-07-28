@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.5`
+> 当前版本：`v0.15.6`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-28 · v0.15.6
+
+- 兼容 CloakBrowser 将隐藏 target 暴露为 `other` 类型的行为：API 抓取直接通过原始 CDP 完成，不再要求 Puppeteer 将隐藏 target 转换为 `Page`。
+- `3MF` 真实点击使用后台 page target，并继续按 `targetId` 强制回收；DSM 实测国内站 API 返回 `200`，请求结束后没有残留 API target。
+
 ### 2026-07-28 · v0.15.5
 
 - MakerHub 的浏览器抓取和 `3MF` 点击改用 CloakBrowser 隐藏临时 target；即使 Puppeteer 初始化页面时发生 `Network.enable timed out`，也会按 `targetId` 强制回收，不再持续堆积 API 标签页。
@@ -357,11 +362,6 @@ npm --prefix frontend run build
 
 - 设置页会在指纹浏览器启动或同步失败后复核对应平台的最新状态；自动恢复并完成同步后，旧的 `Network.enable timed out` 操作错误会自动消失。
 - 只有同一平台返回明确的同步成功状态时才清除旧错误，仍处于超时、不可用或未登录状态的真实故障会继续显示。
-
-### 2026-07-28 · v0.15.3
-
-- CloakBrowser 的 CDP 超时或连接中断会自动重启对应 profile 并只重试 1 次，fetch、登录同步和 `3MF` 点击统一恢复。
-- 连续失败后进入 60 秒快速冷却，不再反复连接卡死浏览器；账号卡和 Worker 会保留最近已同步状态，不再误报需要重新登录。
 
 <details>
 <summary>历史版本</summary>
