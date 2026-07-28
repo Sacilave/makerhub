@@ -375,11 +375,19 @@ def operational_status_payload(platform: Any, snapshot: dict[str, Any] | None = 
     }
 
 
-def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+def snapshot_to_source_card(
+    platform: Any,
+    snapshot: dict[str, Any] | None = None,
+    *,
+    browser_url: str = "",
+) -> dict[str, Any]:
     normalized_platform = normalize_account_platform(platform)
     current = _normalize_snapshot(normalized_platform, snapshot or get_account_health(normalized_platform))
     operational = operational_status_payload(normalized_platform, current)
     platform_url = PLATFORM_URLS.get(normalized_platform, "")
+    clean_browser_url = str(browser_url or "").strip().rstrip("/")
+    action_url = clean_browser_url or platform_url
+    action_label = "打开指纹浏览器" if clean_browser_url else "打开官网"
     card = {
         "key": normalized_platform,
         "title": PLATFORM_TITLES.get(normalized_platform, normalized_platform),
@@ -391,8 +399,8 @@ def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = Non
         "three_mf_gate": current["three_mf_gate"],
         "three_mf_reason": current["three_mf_reason"],
         "checks": [],
-        "url": platform_url,
-        "action_label": "打开官网",
+        "url": action_url,
+        "action_label": action_label,
         "updated_at": current["updated_at"],
         "reason": current["reason"],
         "source": current["source"],
@@ -401,8 +409,8 @@ def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = Non
         card["actions"] = [
             {
                 "kind": "external",
-                "label": "打开官网",
-                "href": platform_url,
+                "label": action_label,
+                "href": action_url,
             },
             {
                 "kind": "api",

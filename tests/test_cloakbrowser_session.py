@@ -151,7 +151,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertIn('if (input.action === "click")', source)
         self.assertIn("await button.click({ delay: 20 })", source)
         self.assertIn("authorizationResponseMatches(response, instanceId)", source)
-        self.assertIn("await page.close().catch(() => undefined)", source)
+        self.assertIn('client.send("Target.closeTarget", { targetId })', source)
         self.assertNotIn("async function fetchAuthorization", source)
 
     def test_bridge_click_supports_makerworld_primary_download_span(self):
@@ -290,20 +290,44 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     profile_id="profile-cn",
                 )
 
-    def test_bridge_fetch_uses_a_new_page_and_always_closes_it(self):
+    def test_bridge_fetch_and_click_use_hidden_targets_and_always_close_by_id(self):
         source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn('if (input.action === "fetch")', source)
         self.assertIn("async function fetchBrowserResponse", source)
+        helper_start = source.index("async function withTemporaryPage")
+        helper_end = source.index("async function fetchBrowserResponse")
+        helper_source = source[helper_start:helper_end]
+        self.assertIn('client.send("Target.createTarget"', helper_source)
+        self.assertIn("background: true", helper_source)
+        self.assertIn("hidden: true", helper_source)
+        self.assertIn('client.send("Target.closeTarget", { targetId })', helper_source)
         fetch_start = source.index("async function fetchBrowserResponse")
-        fetch_end = source.index("async function main")
+        fetch_end = source.index("function isThreeMfAuthorizationUrl")
         fetch_source = source[fetch_start:fetch_end]
-        self.assertIn("const page = await context.newPage()", fetch_source)
+        self.assertIn("withTemporaryPage(browser, context, async (page) =>", fetch_source)
+        self.assertNotIn("context.newPage()", fetch_source)
         self.assertIn("const profileCookies = (await context.cookies()).filter", fetch_source)
         self.assertIn("await page.setRequestInterception(true)", fetch_source)
         self.assertIn('request.abort("blockedbyclient")', fetch_source)
         self.assertNotIn("page.setExtraHTTPHeaders", fetch_source)
-        self.assertIn("await page.close().catch(() => undefined)", fetch_source)
+        click_start = source.index("async function clickAuthorization")
+        click_end = source.index("async function main")
+        click_source = source[click_start:click_end]
+        self.assertIn("withTemporaryPage(browser, context, async (page) =>", click_source)
+        self.assertNotIn("context.newPage()", click_source)
+
+    def test_bridge_closes_stale_makerhub_api_targets_before_automation(self):
+        source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
+
+        cleanup_start = source.index("async function cleanupStaleAutomationTargets")
+        cleanup_end = source.index("async function withTemporaryPage")
+        cleanup_source = source[cleanup_start:cleanup_end]
+        self.assertIn('client.send("Target.getTargets")', cleanup_source)
+        self.assertIn('targetInfo.type !== "page"', cleanup_source)
+        self.assertIn("isMakerHubApiTargetUrl(targetInfo.url, platform)", cleanup_source)
+        self.assertIn('client.send("Target.closeTarget", { targetId: targetInfo.targetId })', cleanup_source)
+        self.assertIn("await cleanupStaleAutomationTargets(browser, context, input.platform)", source)
 
     def test_ensure_profile_reuses_saved_profile_id(self):
         with patch.object(

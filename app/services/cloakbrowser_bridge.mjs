@@ -184,12 +184,68 @@ function headersWithBrowserAuth(headers, cookies, targetUrl) {
   return result;
 }
 
-async function fetchBrowserResponse(context, platform, targetUrl, headers, cookies, timeoutMs) {
+function isMakerHubApiTargetUrl(value, platform) {
+  try {
+    const parsed = new URL(String(value || ""));
+    const apiHost = platform === "global" ? "api.bambulab.com" : "api.bambulab.cn";
+    return parsed.protocol === "https:"
+      && parsed.hostname.toLowerCase() === apiHost
+      && (parsed.pathname.startsWith("/api/") || parsed.pathname.startsWith("/v1/"));
+  } catch {
+    return false;
+  }
+}
+
+async function cleanupStaleAutomationTargets(browser, context, platform) {
+  const client = await browser.target().createCDPSession();
+  try {
+    const { targetInfos = [] } = await client.send("Target.getTargets");
+    for (const targetInfo of targetInfos) {
+      if (
+        targetInfo.type !== "page"
+        || String(targetInfo.browserContextId || "") !== String(context.id || "")
+        || !isMakerHubApiTargetUrl(targetInfo.url, platform)
+      ) continue;
+      await client.send("Target.closeTarget", { targetId: targetInfo.targetId }).catch(() => undefined);
+    }
+  } catch {
+    // 历史标签清理失败不应阻断新的浏览器操作。
+  } finally {
+    await client.detach().catch(() => undefined);
+  }
+}
+
+async function withTemporaryPage(browser, context, callback) {
+  const client = await browser.target().createCDPSession();
+  const markerUrl = `about:blank#makerhub-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let targetId = "";
+  try {
+    ({ targetId } = await client.send("Target.createTarget", {
+      url: markerUrl,
+      browserContextId: context.id || undefined,
+      background: true,
+      hidden: true,
+    }));
+    const target = await browser.waitForTarget(
+      (candidate) => candidate.url() === markerUrl && candidate.browserContext() === context,
+      { timeout: 15000 },
+    );
+    const page = await target.page();
+    if (!page) throw new Error(`temporary browser target did not expose a page (${targetId})`);
+    return await callback(page);
+  } finally {
+    if (targetId) {
+      await client.send("Target.closeTarget", { targetId }).catch(() => undefined);
+    }
+    await client.detach().catch(() => undefined);
+  }
+}
+
+async function fetchBrowserResponse(browser, context, platform, targetUrl, headers, cookies, timeoutMs) {
   if (!isAllowedBrowserFetchUrl(targetUrl, platform)) throw new Error("invalid browser fetch URL");
   const cleanCookies = (Array.isArray(cookies) ? cookies : []).map(cleanCookie).filter(Boolean);
   if (cleanCookies.length) await context.setCookie(...cleanCookies);
-  const page = await context.newPage();
-  try {
+  return await withTemporaryPage(browser, context, async (page) => {
     const profileCookies = (await context.cookies()).filter((item) => (
       hostnameMatchesDomains(String(item?.domain || ""), platformDomains(platform))
     ));
@@ -223,9 +279,7 @@ async function fetchBrowserResponse(context, platform, targetUrl, headers, cooki
       headers: safeHeaders,
       text: await response.text(),
     };
-  } finally {
-    await page.close().catch(() => undefined);
-  }
+  });
 }
 
 function isThreeMfAuthorizationUrl(value) {
@@ -295,6 +349,7 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
 }
 
 async function clickAuthorization(
+  browser,
   context,
   platform,
   targetUrl,
@@ -307,8 +362,7 @@ async function clickAuthorization(
   if (!isMakerWorldModelUrl(modelUrl, platform)) throw new Error("invalid MakerWorld model page URL");
   const navigationTimeout = Math.max(Number(navigationTimeoutMs || 30000), 15000);
   const authorizationTimeout = Math.max(Number(authorizationTimeoutMs || 90000), navigationTimeout);
-  const page = await context.newPage();
-  try {
+  return await withTemporaryPage(browser, context, async (page) => {
     let navigationTimedOut = false;
     try {
       await page.goto(modelUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
@@ -337,9 +391,7 @@ async function clickAuthorization(
       text: payload ? "" : text.slice(0, 1024),
       navigation_timed_out: navigationTimedOut,
     };
-  } finally {
-    await page.close().catch(() => undefined);
-  }
+  });
 }
 
 async function main() {
@@ -361,8 +413,10 @@ async function main() {
   try {
     const contexts = browser.browserContexts();
     const context = contexts[0] || browser.defaultBrowserContext();
+    await cleanupStaleAutomationTargets(browser, context, input.platform);
     if (input.action === "fetch") {
       const fetched = await fetchBrowserResponse(
+        browser,
         context,
         String(input.platform || "cn"),
         String(input.target_url || ""),
@@ -375,6 +429,7 @@ async function main() {
     }
     if (input.action === "click") {
       const authorization = await clickAuthorization(
+        browser,
         context,
         String(input.platform || "cn"),
         String(input.target_url || ""),

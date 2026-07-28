@@ -14,6 +14,7 @@ from app.core.database_json_state import load_database_json_state, save_database
 from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.account_health import load_account_health, snapshot_to_source_card
+from app.services.cloakbrowser_session import cloakbrowser_public_url
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.makerworld_browser_client import makerworld_browser_get
 from app.services.proxy_policy import effective_proxy_cache_state, proxy_mapping
@@ -943,9 +944,19 @@ def build_source_health_cards(
 ) -> list[dict[str, Any]]:
     platforms = ("cn", "global")
     snapshots = load_account_health()
+    browser_url = cloakbrowser_public_url()
+    browser_managed_platforms = {
+        str(getattr(item, "platform", "") or "").strip().lower()
+        for item in (getattr(config, "cookies", None) or [])
+        if str(getattr(item, "browser_profile_id", "") or "").strip()
+    }
 
     def build_card(platform: str) -> dict[str, Any]:
-        return snapshot_to_source_card(platform, snapshots.get(platform))
+        return snapshot_to_source_card(
+            platform,
+            snapshots.get(platform),
+            browser_url=browser_url if platform in browser_managed_platforms else "",
+        )
 
     with ThreadPoolExecutor(max_workers=len(platforms)) as executor:
         results = list(executor.map(build_card, platforms))

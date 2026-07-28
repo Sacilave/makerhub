@@ -1,3 +1,4 @@
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -98,6 +99,41 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["global"]["state"], "unknown")
         self.assertEqual(card_map["global"]["status"], "状态待确认")
         self.assertEqual(card_map["cn"]["checks"], [])
+
+    def test_browser_managed_source_card_opens_cloakbrowser(self):
+        self._set_account_health(
+            cn={
+                "status": "verification_required",
+                "source": "probe",
+                "updated_at": "2026-07-28T10:00:00+08:00",
+            }
+        )
+
+        class Config:
+            cookies = [
+                SimpleNamespace(platform="cn", browser_profile_id="profile-cn"),
+                SimpleNamespace(platform="global", browser_profile_id=""),
+            ]
+            proxy = None
+
+        with patch.dict(
+            os.environ,
+            {"MAKERHUB_CLOAKBROWSER_PUBLIC_URL": "https://llq.ace-station.top:1111/"},
+            clear=False,
+        ):
+            cards = source_health.build_source_health_cards(Config(), [])
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["action_label"], "打开指纹浏览器")
+        self.assertEqual(card_map["cn"]["url"], "https://llq.ace-station.top:1111")
+        self.assertEqual(card_map["cn"]["actions"][0], {
+            "kind": "external",
+            "label": "打开指纹浏览器",
+            "href": "https://llq.ace-station.top:1111",
+        })
+        self.assertEqual(card_map["cn"]["actions"][1]["label"], "已验证")
+        self.assertEqual(card_map["global"]["action_label"], "打开官网")
+        self.assertEqual(card_map["global"]["url"], "https://makerworld.com")
 
     def test_missing_3mf_verification_does_not_override_account_health_ok_snapshot(self):
         self._set_account_health(

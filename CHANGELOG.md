@@ -1,5 +1,13 @@
 # 更新说明
 
+## 2026-07-28 · v0.15.5
+
+- CloakBrowser 控制面抓取和 `3MF` 授权点击不再通过 `context.newPage()` 创建可见标签，统一改为 CDP `Target.createTarget` 创建 `hidden + background` 临时 target。
+- 临时 target 从创建开始即记录 `targetId`；Puppeteer 页面初始化、导航或回调任一步骤失败，都会直接调用 `Target.closeTarget`，并通过 CDP session 断开提供第二层回收保障。
+- 每次 Bridge 操作前会按当前 browser context 和平台清理遗留的 Bambu API 页面，只处理 MakerHub 自动化使用的 `api.bambulab.cn/.com` 路径，不影响普通 MakerWorld 页面。
+- 已关联 CloakBrowser profile 且配置 `MAKERHUB_CLOAKBROWSER_PUBLIC_URL` 时，首页账号卡的外部动作改为“打开指纹浏览器”；未关联或未配置公网地址时仍安全回退对应 MakerWorld 官网。
+- 新增回归测试，覆盖隐藏 target 创建与强制回收、遗留 API target 清理、国内站浏览器入口及国际站官网回退。
+
 ## 2026-07-28 · v0.15.4
 
 - 设置页现在会记录发生指纹浏览器启动或同步错误的平台，并在错误后主动读取一次轻量配置；后台自动恢复并同步成功后，会清除已经失效的操作错误和登录弹窗错误。
