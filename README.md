@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.1`
+> 当前版本：`v0.15.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -45,7 +45,129 @@ Postgres 保存结构化状态；文件系统保存模型本体、图片、附�
 
 ## 快速安装
 
-### 1. 下载部署文件
+### 1. 完整 Compose
+
+GitHub 首页直接展示当前完整的 `compose.yaml`，包含 App、Worker、PostgreSQL 和 CloakBrowser 四个服务：
+
+<!-- compose:start -->
+```yaml
+x-logging: &default-logging
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  makerhub-app:
+    image: ghcr.io/s450586793/makerhub:latest
+    container_name: makerhub-app
+    init: true
+    ports:
+      - "9042:8000"
+    environment:
+      TZ: Asia/Shanghai
+      MAKERHUB_ENTRYPOINT: app
+      MAKERHUB_PROCESS_ROLE: app
+      MAKERHUB_BACKGROUND_TASKS: "false"
+      MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
+      MAKERHUB_WEB_WORKERS: "1"
+      MAKERHUB_WORKER_CONCURRENCY: "4"
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
+      MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
+      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
+      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
+      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
+      MAKERHUB_TRUSTED_PROXIES: ${MAKERHUB_TRUSTED_PROXIES:-}
+    volumes:
+      - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
+      - ${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data
+      # 高风险可选：只有明确需要网页一键更新时再挂载 Docker socket。
+      # - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
+      cloakbrowser:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/api/public/health/ready', timeout=3); raise SystemExit(0 if response.status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    stop_grace_period: 30s
+    logging: *default-logging
+    restart: unless-stopped
+
+  makerhub-worker:
+    image: ghcr.io/s450586793/makerhub:latest
+    container_name: makerhub-worker
+    init: true
+    environment:
+      TZ: Asia/Shanghai
+      MAKERHUB_ENTRYPOINT: worker
+      MAKERHUB_PROCESS_ROLE: worker
+      MAKERHUB_BACKGROUND_TASKS: "true"
+      MAKERHUB_WORKER_CONCURRENCY: "4"
+      MAKERHUB_HEAVY_JOB_NICE: "10"
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
+      MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
+      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
+      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
+      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
+    volumes:
+      - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
+      - ${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
+      cloakbrowser:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    stop_grace_period: 2m
+    logging: *default-logging
+    restart: unless-stopped
+
+  makerhub-postgres:
+    image: postgres:16-alpine
+    container_name: makerhub-postgres
+    environment:
+      TZ: Asia/Shanghai
+      POSTGRES_DB: makerhub
+      POSTGRES_USER: makerhub
+      POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
+    volumes:
+      - ${MAKERHUB_POSTGRES_DATA_PATH:-./data/postgres}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    stop_grace_period: 30s
+    logging: *default-logging
+    restart: unless-stopped
+
+  cloakbrowser:
+    image: cloakhq/cloakbrowser-manager@sha256:44836e982192e8fedb28617f2d39192bdef91f8dd62cf36c522c96d7d8e15914
+    container_name: makerhub-cloakbrowser
+    ports:
+      - "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
+    environment:
+      TZ: Asia/Shanghai
+      AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
+    volumes:
+      - ${MAKERHUB_CLOAKBROWSER_DATA_PATH:-./data/cloakbrowser}:/data
+    stop_grace_period: 30s
+    logging: *default-logging
+    restart: unless-stopped
+```
+<!-- compose:end -->
+
+可以直接下载同一份部署文件和环境变量模板：
 
 ```bash
 mkdir makerhub
@@ -226,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-28 · v0.15.2
+
+- GitHub 首页 README 直接展开显示完整四容器 `compose.yaml`，无需跳转文件页面才能查看部署内容。
+- 新增发布契约测试，确保 README 中展示的 Compose 与仓库根目录实际文件逐字一致。
+
 ### 2026-07-28 · v0.15.1
 
 - 镜像、端口、时区、并发、超时和日志轮转等稳定默认值直接写入公开的 `compose.yaml`。
@@ -236,11 +363,6 @@ npm --prefix frontend run build
 - Compose 改为可移植路径，默认数据写入项目 `./data/`，DSM、Unraid 和其他 NAS 通过 `.env` 覆盖宿主机目录。
 - 新增安全的 `.env.example`、Docker 日志轮转、可配置端口和镜像，并将新部署 Worker 默认并发统一为 `4`。
 - 精简 GitHub README，安装、浏览器登录、DSM 迁移和更新流程改为单一入口。
-
-### 2026-07-27 · v0.14.4
-
-- 指纹浏览器验证恢复期间，`3MF` 下载子任务成功后会继续放行下一个暂停任务。
-- 恢复链保持单任务探测，再次遇到验证或下载失败时停止，避免批量消耗下载次数。
 
 <details>
 <summary>历史版本</summary>

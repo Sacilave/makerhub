@@ -234,6 +234,16 @@ class DeploymentComposeContractTest(unittest.TestCase):
                     },
                 )
 
+    def test_readme_displays_the_complete_canonical_compose(self):
+        compose = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8").strip()
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        embedded = readme.split("<!-- compose:start -->", 1)[1]
+        embedded = embedded.split("<!-- compose:end -->", 1)[0].strip()
+
+        self.assertTrue(embedded.startswith("```yaml\n"))
+        self.assertTrue(embedded.endswith("\n```"))
+        self.assertEqual(embedded.removeprefix("```yaml\n").removesuffix("\n```"), compose)
+
     def test_environment_template_requires_secrets_and_is_safe_to_copy(self):
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         gitignore = (ROOT_DIR / ".gitignore").read_text(encoding="utf-8")
