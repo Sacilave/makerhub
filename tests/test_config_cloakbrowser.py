@@ -10,7 +10,11 @@ from unittest.mock import patch
 from app.api import config as config_api
 from app.core.store import JsonStore
 from app.schemas.models import CookiePair, OnlineAccountLoginRequest
-from app.services.cloakbrowser_session import CloakBrowserSessionResult, CloakBrowserUnavailable
+from app.services.cloakbrowser_session import (
+    CloakBrowserBridgeError,
+    CloakBrowserSessionResult,
+    CloakBrowserUnavailable,
+)
 
 
 def _request():
@@ -390,6 +394,39 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api, "publish_state_event"):
                 with self.assertRaises(config_api.HTTPException) as raised:
                     await config_api.sync_config_online_account_browser("cn", _request())
+
+            self.assertEqual(raised.exception.status_code, 502)
+            saved = store.load().cookies[0]
+            self.assertEqual(saved.browser_status, "synced")
+            self.assertEqual(saved.browser_synced_at, "2026-07-26T03:00:00+08:00")
+            self.assertIn("暂时不可用", saved.browser_message)
+
+    async def test_open_browser_preserves_synced_status_during_bridge_protocol_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [
+                CookiePair(
+                    platform="cn",
+                    cookie="token=synced",
+                    browser_profile_id="profile-cn",
+                    browser_status="synced",
+                    browser_message="指纹浏览器登录态已同步。",
+                    browser_synced_at="2026-07-26T03:00:00+08:00",
+                )
+            ]
+            store.save(config)
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "cloakbrowser_configured", return_value=True), \
+                    patch.object(
+                        config_api,
+                        "prepare_browser_login",
+                        side_effect=CloakBrowserBridgeError("Network.enable timed out."),
+                    ), \
+                    patch.object(config_api, "publish_state_event"):
+                with self.assertRaises(config_api.HTTPException) as raised:
+                    await config_api.open_config_online_account_browser("cn", _request())
 
             self.assertEqual(raised.exception.status_code, 502)
             saved = store.load().cookies[0]

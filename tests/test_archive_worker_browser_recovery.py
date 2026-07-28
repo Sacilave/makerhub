@@ -11,7 +11,11 @@ import app.services.archive_worker as archive_worker_module
 from app.core.store import JsonStore
 from app.schemas.models import CookiePair
 from app.services.archive_worker import ArchiveTaskManager
-from app.services.cloakbrowser_session import CloakBrowserSessionResult, CloakBrowserUnavailable
+from app.services.cloakbrowser_session import (
+    CloakBrowserBridgeError,
+    CloakBrowserSessionResult,
+    CloakBrowserUnavailable,
+)
 
 
 class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
@@ -207,6 +211,29 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
                     archive_worker_module,
                     "collect_browser_session",
                     side_effect=CloakBrowserUnavailable("指纹浏览器返回 HTTP 502"),
+                ), \
+                patch.object(archive_worker_module, "_log_archive") as log_mock:
+            refreshed, error = manager._refresh_browser_session_for_task("cn")
+
+        self.assertEqual(error, "")
+        self.assertIsNotNone(refreshed)
+        saved = store.load().cookies[0]
+        self.assertEqual(saved.cookie, "token=synced; refreshToken=fresh")
+        self.assertEqual(saved.browser_status, "synced")
+        log_mock.assert_called_once()
+
+    def test_task_session_refresh_uses_last_browser_cookie_during_bridge_protocol_timeout(self):
+        manager, store = self._manager_with_cookie("token=synced; refreshToken=fresh")
+        current = store.load().cookies[0]
+        config = store.load()
+        config.cookies = [current.model_copy(update={"browser_status": "synced"})]
+        store.save(config)
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(
+                    archive_worker_module,
+                    "collect_browser_session",
+                    side_effect=CloakBrowserBridgeError("Network.enable timed out."),
                 ), \
                 patch.object(archive_worker_module, "_log_archive") as log_mock:
             refreshed, error = manager._refresh_browser_session_for_task("cn")

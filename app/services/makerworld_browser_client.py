@@ -86,27 +86,27 @@ def _headers_for_profile(
 
 def _is_retryable_browser_error(exc: CloakBrowserError) -> bool:
     detail = str(exc or "").lower()
-    if isinstance(exc, CloakBrowserUnavailable):
-        return bool(
-            re.search(r"http\s+5\d\d", detail)
-            or "连接指纹浏览器失败" in detail
-            or "connection" in detail
-            or "timeout" in detail
-            or "timed out" in detail
+    if isinstance(exc, CloakBrowserBridgeError):
+        return any(
+            marker in detail
+            for marker in (
+                "超时",
+                "timeout",
+                "timed out",
+                "disconnected",
+                "connection closed",
+                "target closed",
+                "websocket",
+            )
         )
-    if not isinstance(exc, CloakBrowserBridgeError):
+    if not isinstance(exc, CloakBrowserUnavailable):
         return False
-    return any(
-        marker in detail
-        for marker in (
-            "超时",
-            "timeout",
-            "timed out",
-            "disconnected",
-            "connection closed",
-            "target closed",
-            "websocket",
-        )
+    return bool(
+        re.search(r"http\s+5\d\d", detail)
+        or "连接指纹浏览器失败" in detail
+        or "connection" in detail
+        or "timeout" in detail
+        or "timed out" in detail
     )
 
 

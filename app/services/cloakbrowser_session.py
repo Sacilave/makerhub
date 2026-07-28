@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import os
+from pathlib import Path
 import subprocess
+import time
 from typing import Any
 from urllib.parse import quote, urlparse
 
 import requests
 
-from app.core.settings import ROOT_DIR
+from app.core.settings import ROOT_DIR, STATE_DIR
 from app.schemas.models import ProxyConfig
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.online_accounts import (
@@ -26,6 +29,19 @@ BRIDGE_SCRIPT = ROOT_DIR / "app" / "services" / "cloakbrowser_bridge.mjs"
 DEFAULT_TIMEOUT_SECONDS = 30
 AUTHORIZATION_TIMEOUT_SECONDS = 90
 AUTHORIZATION_BRIDGE_TIMEOUT_SECONDS = 150
+PROFILE_RECOVERY_COOLDOWN_SECONDS = 60
+TRANSIENT_BRIDGE_ERROR_MARKERS = (
+    "超时",
+    "timeout",
+    "timed out",
+    "network.enable",
+    "disconnected",
+    "connection closed",
+    "target closed",
+    "websocket",
+    "socket hang up",
+    "econnreset",
+)
 PROFILE_NAMES = {
     "cn": "MakerHub CN",
     "global": "MakerHub Global",
@@ -68,7 +84,7 @@ class CloakBrowserUnavailable(CloakBrowserError):
     pass
 
 
-class CloakBrowserBridgeError(CloakBrowserError):
+class CloakBrowserBridgeError(CloakBrowserUnavailable):
     pass
 
 
@@ -350,6 +366,86 @@ def _run_bridge(payload: dict[str, Any], *, timeout_seconds: int | None = None) 
     return output
 
 
+def _is_transient_bridge_error(exc: CloakBrowserBridgeError) -> bool:
+    detail = str(exc or "").strip().lower()
+    return any(marker in detail for marker in TRANSIENT_BRIDGE_ERROR_MARKERS)
+
+
+def _profile_recovery_marker_path(profile_id: str) -> Path:
+    digest = hashlib.sha256(str(profile_id or "").encode("utf-8")).hexdigest()[:24]
+    return STATE_DIR / "cloakbrowser_recovery" / f"{digest}.marker"
+
+
+def _profile_recovery_cooldown_active(profile_id: str) -> bool:
+    marker_path = _profile_recovery_marker_path(profile_id)
+    try:
+        if marker_path.stat().st_mtime + PROFILE_RECOVERY_COOLDOWN_SECONDS > time.time():
+            return True
+        marker_path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return False
+
+
+def _mark_profile_recovery_attempt(profile_id: str) -> None:
+    marker_path = _profile_recovery_marker_path(profile_id)
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.touch()
+    except OSError:
+        pass
+
+
+def _clear_profile_recovery_attempt(profile_id: str) -> None:
+    try:
+        _profile_recovery_marker_path(profile_id).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _run_bridge_with_profile_recovery(
+    platform: str,
+    running: CloakBrowserProfile,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: int | None = None,
+) -> tuple[CloakBrowserProfile, bool, dict[str, Any]]:
+    if _profile_recovery_cooldown_active(running.id):
+        raise CloakBrowserUnavailable(
+            "指纹浏览器连接仍未恢复，profile 刚刚自动重启过，请稍后重试。"
+        )
+    try:
+        return running, False, _run_bridge(payload, timeout_seconds=timeout_seconds)
+    except CloakBrowserBridgeError as exc:
+        if not _is_transient_bridge_error(exc):
+            raise
+
+    _mark_profile_recovery_attempt(running.id)
+    try:
+        stop_profile(running.id)
+        recovered_profile = ensure_profile(platform, running.id)
+        recovered_running, _launched = launch_profile(recovered_profile)
+        retry_payload = dict(payload)
+        retry_payload["cdp_url"] = (
+            f"{_configured_url()}/api/profiles/{recovered_running.id}/cdp"
+        )
+        result = _run_bridge(retry_payload, timeout_seconds=timeout_seconds)
+    except CloakBrowserBridgeError as retry_exc:
+        if not _is_transient_bridge_error(retry_exc):
+            _clear_profile_recovery_attempt(running.id)
+            raise
+        raise CloakBrowserUnavailable(
+            "指纹浏览器连接异常，自动重启 profile 后仍未恢复，请稍后重试。"
+        ) from retry_exc
+    except CloakBrowserError as recovery_exc:
+        raise CloakBrowserUnavailable(
+            "指纹浏览器连接异常，自动重启 profile 失败，请稍后重试。"
+        ) from recovery_exc
+
+    _clear_profile_recovery_attempt(running.id)
+    return recovered_running, True, result
+
+
 def _cookie_items_from_header(raw_cookie: str, platform: str) -> list[dict[str, Any]]:
     clean_platform = normalize_platform(platform)
     values = parse_cookie_values(raw_cookie)
@@ -573,7 +669,9 @@ def browser_fetch(
         )
         payload["headers"] = _safe_browser_fetch_headers(headers)
         payload["navigation_timeout_ms"] = operation_timeout * 1000
-        result = _run_bridge(
+        running, _restarted, result = _run_bridge_with_profile_recovery(
+            clean_platform,
+            running,
             payload,
             timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
         )
@@ -660,7 +758,9 @@ def browser_authorize_3mf_download(
     with resource_slot(_profile_resource_name(clean_platform, clean_profile_id), detail="click"):
         profile = ensure_profile(clean_platform, clean_profile_id)
         running, _launched_here = launch_profile(profile)
-        result = _run_bridge(
+        running, _restarted, result = _run_bridge_with_profile_recovery(
+            clean_platform,
+            running,
             _bridge_payload(
                 running.id,
                 action="click",
@@ -700,7 +800,9 @@ def synchronize_browser_session(
         ticket_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config)
         target_url = ticket_url or PLATFORM_ORIGINS[clean_platform]
         try:
-            snapshot = _run_bridge(
+            running, restarted, snapshot = _run_bridge_with_profile_recovery(
+                clean_platform,
+                running,
                 _bridge_payload(
                     running.id,
                     action="seed",
@@ -709,6 +811,7 @@ def synchronize_browser_session(
                     platform=clean_platform,
                 )
             )
+            launched_here = launched_here or restarted
             current_url = str(snapshot.get("current_url") or "")
             current_host = (urlparse(current_url).hostname or "").lower()
             makerworld_domain = PLATFORM_DOMAINS[clean_platform][0]
@@ -743,7 +846,9 @@ def prepare_browser_login(
         running, launched_here = launch_profile(profile)
         target_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config) or browser_login_url(clean_platform)
         action = "seed" if raw_cookie and target_url != browser_login_url(clean_platform) else "login"
-        snapshot = _run_bridge(
+        running, restarted, snapshot = _run_bridge_with_profile_recovery(
+            clean_platform,
+            running,
             _bridge_payload(
                 running.id,
                 action=action,
@@ -752,6 +857,7 @@ def prepare_browser_login(
                 platform=clean_platform,
             )
         )
+        launched_here = launched_here or restarted
         return CloakBrowserSessionResult(
             profile_id=running.id,
             cookie=_cookie_header_from_snapshot(snapshot, clean_platform),
@@ -767,7 +873,9 @@ def collect_browser_session(platform: str, profile_id: str) -> CloakBrowserSessi
     with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="collect"):
         profile = ensure_profile(clean_platform, profile_id)
         running, launched_here = launch_profile(profile)
-        snapshot = _run_bridge(
+        running, restarted, snapshot = _run_bridge_with_profile_recovery(
+            clean_platform,
+            running,
             _bridge_payload(
                 running.id,
                 action="sync",
@@ -775,6 +883,7 @@ def collect_browser_session(platform: str, profile_id: str) -> CloakBrowserSessi
                 platform=clean_platform,
             )
         )
+        launched_here = launched_here or restarted
         return CloakBrowserSessionResult(
             profile_id=running.id,
             cookie=_cookie_header_from_snapshot(snapshot, clean_platform),

@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from app.services import makerworld_browser_client as client
 from app.services.cloakbrowser_session import (
+    CloakBrowserBridgeError,
     CloakBrowserFetchResult,
     CloakBrowserUnavailable,
 )
@@ -118,6 +119,23 @@ class MakerWorldBrowserClientTest(unittest.TestCase):
             "browser_fetch",
             side_effect=[
                 CloakBrowserUnavailable("指纹浏览器返回 HTTP 502：upstream unavailable"),
+                _fetch_result(),
+            ],
+        ) as fetch_mock:
+            response = client.makerworld_browser_get(
+                "https://makerworld.com.cn/zh/models/1"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(fetch_mock.call_count, 2)
+
+    def test_get_retries_direct_bridge_timeout_once(self):
+        config = SimpleNamespace(cookies=[])
+        with patch.object(client.JsonStore, "load", return_value=config), patch.object(
+            client,
+            "browser_fetch",
+            side_effect=[
+                CloakBrowserBridgeError("指纹浏览器 CDP 操作超时。"),
                 _fetch_result(),
             ],
         ) as fetch_mock:

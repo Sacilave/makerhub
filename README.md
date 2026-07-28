@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.2`
+> 当前版本：`v0.15.3`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-28 · v0.15.3
+
+- CloakBrowser 的 CDP 超时或连接中断会自动重启对应 profile 并只重试 1 次，fetch、登录同步和 `3MF` 点击统一恢复。
+- 连续失败后进入 60 秒快速冷却，不再反复连接卡死浏览器；账号卡和 Worker 会保留最近已同步状态，不再误报需要重新登录。
+
 ### 2026-07-28 · v0.15.2
 
 - GitHub 首页 README 直接展开显示完整四容器 `compose.yaml`，无需跳转文件页面才能查看部署内容。
@@ -357,12 +362,6 @@ npm --prefix frontend run build
 
 - 镜像、端口、时区、并发、超时和日志轮转等稳定默认值直接写入公开的 `compose.yaml`。
 - `.env.example` 只保留必填密钥和少量实例覆盖项，默认四容器部署无需重复填写常规参数。
-
-### 2026-07-27 · v0.15.0
-
-- Compose 改为可移植路径，默认数据写入项目 `./data/`，DSM、Unraid 和其他 NAS 通过 `.env` 覆盖宿主机目录。
-- 新增安全的 `.env.example`、Docker 日志轮转、可配置端口和镜像，并将新部署 Worker 默认并发统一为 `4`。
-- 精简 GitHub README，安装、浏览器登录、DSM 迁移和更新流程改为单一入口。
 
 <details>
 <summary>历史版本</summary>
