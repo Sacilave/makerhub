@@ -1450,6 +1450,15 @@ def _account_collections_models_page_url(platform: str, profile: dict[str, str])
     return f"{origin}/{lang}/@{quote(handle, safe='@._-')}/collections/models"
 
 
+def _followed_collections_page_url(platform: str, handle: str) -> str:
+    clean_handle = str(handle or "").strip().lstrip("@")
+    if not clean_handle:
+        return ""
+    origin = _platform_origin(platform)
+    lang = _makerworld_model_path_lang(platform)
+    return f"{origin}/{lang}/@{quote(clean_handle, safe='@._-')}/collections/likes"
+
+
 def discover_cookie_account_home_summary(
     platform: str,
     raw_cookie: str,
@@ -1717,6 +1726,21 @@ def _extract_followed_collections(payload: Any, platform: str) -> list[dict[str,
     return collections
 
 
+def _extract_followed_collections_page(next_data: Any, platform: str) -> tuple[list[dict[str, Any]], Optional[int]]:
+    page_props = (
+        next_data.get("props", {}).get("pageProps", {})
+        if isinstance(next_data, dict)
+        else {}
+    )
+    if not isinstance(page_props, dict):
+        return [], None
+    favorites = page_props.get("favoritesList")
+    if not isinstance(favorites, (list, dict)):
+        return [], None
+    collections = _extract_followed_collections(favorites, platform)
+    return collections, _extract_total_count(page_props, len(collections))
+
+
 def _followed_collection_path_candidates(uid: str) -> list[str]:
     clean_uid = _coerce_numeric_string(uid)
     candidates = [
@@ -1751,6 +1775,7 @@ def discover_cookie_followed_collections(
     raw_cookie: str,
     *,
     uid: str = "",
+    handle: str = "",
     max_pages: int = 1,
     limit: int = COOKIE_SOURCE_PAGE_LIMIT,
     max_probe_count: int = 18,
@@ -1760,6 +1785,39 @@ def discover_cookie_followed_collections(
     session = requests.Session()
     session.headers.update({"User-Agent": BROWSER_USER_AGENT})
     session.cookies.update(parse_cookies(raw_cookie))
+
+    page_url = _followed_collections_page_url(clean_platform, handle)
+    if page_url:
+        try:
+            html_text = _fetch_listing_html(session, page_url, raw_cookie)
+            page_items, page_total = _extract_followed_collections_page(
+                extract_next_data(html_text),
+                clean_platform,
+            )
+            if page_total is not None:
+                _append_discovery_debug(
+                    "cookie_followed_collections_page_selected",
+                    platform=clean_platform,
+                    page_url=page_url,
+                    collections=len(page_items),
+                    total=page_total,
+                )
+                return {
+                    "platform": clean_platform,
+                    "items": page_items,
+                    "count": len(page_items),
+                    "total": page_total,
+                    "pages_scanned": 1,
+                    "path": page_url,
+                }
+        except Exception as exc:
+            _append_discovery_debug(
+                "cookie_followed_collections_page_failed",
+                platform=clean_platform,
+                page_url=page_url,
+                error=str(exc)[:240],
+            )
+
     discovered: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     pages_scanned = 0

@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.6`
+> 当前版本：`v0.15.7`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-29 · v0.15.7
+
+- 关注收藏夹同步改为读取 MakerWorld 当前的 `collections/likes` 页面，并以页面实际可访问总数为准，不再因旧接口与过期统计显示“0 已同步”。
+- 订阅来源卡在新快照生成前继续显示上一张有效图片；每个订阅归档批次完成后立即重建对应四宫格，不再等到下次同步或 App 重启。
+
 ### 2026-07-28 · v0.15.6
 
 - 兼容 CloakBrowser 将隐藏 target 暴露为 `other` 类型的行为：API 抓取直接通过原始 CDP 完成，不再要求 Puppeteer 将隐藏 target 转换为 `Page`。
@@ -357,11 +362,6 @@ npm --prefix frontend run build
 
 - MakerHub 的浏览器抓取和 `3MF` 点击改用 CloakBrowser 隐藏临时 target；即使 Puppeteer 初始化页面时发生 `Network.enable timed out`，也会按 `targetId` 强制回收，不再持续堆积 API 标签页。
 - 每次浏览器操作前会清理当前 profile 遗留的 MakerHub API 标签；已绑定 CloakBrowser profile 的首页账号卡会直接打开配置的指纹浏览器地址，未绑定账号继续回退 MakerWorld 官网。
-
-### 2026-07-28 · v0.15.4
-
-- 设置页会在指纹浏览器启动或同步失败后复核对应平台的最新状态；自动恢复并完成同步后，旧的 `Network.enable timed out` 操作错误会自动消失。
-- 只有同一平台返回明确的同步成功状态时才清除旧错误，仍处于超时、不可用或未登录状态的真实故障会继续显示。
 
 <details>
 <summary>历史版本</summary>

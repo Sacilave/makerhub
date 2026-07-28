@@ -621,7 +621,7 @@ class SubscriptionManagerTest(unittest.TestCase):
                 "handle": "s450586793",
                 "name": "艾斯",
                 "follow_count": 27,
-                "liked_collection_count": 1,
+                "liked_collection_count": 2,
             },
         ), patch.object(
             subscriptions,
@@ -674,6 +674,7 @@ class SubscriptionManagerTest(unittest.TestCase):
             "discover_cookie_followed_collections",
             return_value={
                 "count": 1,
+                "total": 1,
                 "items": [
                     {
                         "title": "关注收藏夹",

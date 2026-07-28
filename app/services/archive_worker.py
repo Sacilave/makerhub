@@ -44,6 +44,7 @@ from app.services.catalog import (
 from app.services.process_jobs import run_archive_model_job, run_discover_batch_urls_job
 from app.services.proxy_policy import temporary_proxy_env
 from app.services.resource_limiter import resource_slot
+from app.services.source_library import refresh_source_preview_snapshots, source_identity_key
 from app.services.task_state import TaskStateStore
 from app.services.state_events import publish_state_event
 from app.services.three_mf import (
@@ -1726,6 +1727,25 @@ class ArchiveTaskManager:
         with self._batch_refresh_lock:
             return self._refresh_batch_tasks_locked()
 
+    def _refresh_batch_source_preview(self, source_url: str, mode: str) -> None:
+        source_key = source_identity_key(source_url, mode)
+        if not source_key:
+            return
+        try:
+            refresh_source_preview_snapshots(
+                force=False,
+                store=self.store,
+                task_store=self.task_store,
+                source_keys={source_key},
+            )
+        except Exception as exc:
+            _append_batch_queue_log(
+                "source_preview_refresh_failed",
+                batch_url=source_url,
+                mode=mode,
+                error=str(exc)[:240],
+            )
+
     def _refresh_batch_tasks_locked(self) -> bool:
         queued_parent_count = self._restore_queued_batch_parents()
         restored_count = self._restore_orphaned_batch_parents()
@@ -1920,6 +1940,11 @@ class ArchiveTaskManager:
                     failed=failed_count,
                     total=total_expected,
                 )
+                if completed_count:
+                    self._refresh_batch_source_preview(
+                        batch_url,
+                        str(batch_task.get("mode") or ""),
+                    )
                 continue
 
             message = (

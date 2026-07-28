@@ -806,7 +806,8 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
 
         with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
                 patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
-                patch.object(manager, "_archived_task_keys", return_value={"model:2673662"}):
+                patch.object(manager, "_archived_task_keys", return_value={"model:2673662"}), \
+                patch.object(manager, "_refresh_batch_source_preview") as refresh_preview:
             manager.task_store.save_archive_queue(
                 {
                     "active": [
@@ -848,6 +849,10 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertTrue(refreshed)
         self.assertEqual(queue["active"], [])
         self.assertEqual(queue["running_count"], 0)
+        refresh_preview.assert_called_once_with(
+            "https://makerworld.com.cn/zh/@ace/upload",
+            "author_upload",
+        )
         self.assertEqual(queue["queued_count"], 0)
 
     def test_refresh_batch_restores_queued_waiting_parent_after_restart(self):

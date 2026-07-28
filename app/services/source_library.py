@@ -646,8 +646,7 @@ def _source_preview_snapshot_metadata(group: dict[str, Any], metadata: dict[str,
     if group_kind in SOURCE_LIBRARY_REMOTE_KINDS and metadata.get("preview_snapshot_had_image") is False:
         return ""
     signature = _source_preview_snapshot_signature(group, previews)
-    if metadata.get("preview_snapshot_signature") != signature:
-        return ""
+    cached_signature = str(metadata.get("preview_snapshot_signature") or "")
     filename = str(metadata.get("preview_snapshot_filename") or "")
     if not filename:
         return ""
@@ -656,6 +655,14 @@ def _source_preview_snapshot_metadata(group: dict[str, Any], metadata: dict[str,
     path = SOURCE_LIBRARY_SNAPSHOT_DIR / filename
     if not path.is_file():
         return ""
+    if cached_signature != signature:
+        if (
+            not cached_signature
+            or group_kind not in SOURCE_LIBRARY_REMOTE_KINDS
+            or metadata.get("preview_snapshot_had_image") is not True
+        ):
+            return ""
+        return _snapshot_url(filename, cached_signature)
     return _snapshot_url(filename, signature)
 
 

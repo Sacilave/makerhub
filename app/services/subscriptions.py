@@ -1427,7 +1427,12 @@ class SubscriptionManager:
                         if item.get("url"):
                             sources.append({**item, "mode": "author_upload", "source_kind": "followed_author"})
 
-                    followed_collections = discover_cookie_followed_collections(platform, raw_cookie, uid=uid)
+                    followed_collections = discover_cookie_followed_collections(
+                        platform,
+                        raw_cookie,
+                        uid=uid,
+                        handle=str(profile.get("handle") or ""),
+                    )
                     followed_collection_items = [
                         item
                         for item in (
@@ -1454,6 +1459,7 @@ class SubscriptionManager:
                         len(followed_author_items),
                     ) or 0
                     followed_collection_count = _first_non_negative_int(
+                        (followed_collections or {}).get("total") if isinstance(followed_collections, dict) else None,
                         profile.get("liked_collection_count") if isinstance(profile, dict) else None,
                         account_summary.get("liked_collection_count") if isinstance(account_summary, dict) else None,
                         (followed_collections or {}).get("count") if isinstance(followed_collections, dict) else None,

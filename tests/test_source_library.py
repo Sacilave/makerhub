@@ -7,7 +7,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from app.schemas.models import AppConfig, SubscriptionRecord
-from app.services import catalog
+from app.services import catalog, source_library
 from app.services.catalog import _apply_subscription_flags, _source_deleted_model_count, build_dashboard_payload
 from tests.test_helpers import InMemoryDatabaseState
 from app.services.source_library import (
@@ -901,6 +901,34 @@ class SourceLibraryTest(unittest.TestCase):
 
         self.assertIn("preview_snapshot_url", finalized)
         self.assertIn(snapshot_path.name, finalized["preview_snapshot_url"])
+
+    def test_finalize_light_group_keeps_last_valid_remote_preview_until_refresh(self):
+        group = _base_group(
+            key="author-cn-test",
+            kind="author",
+            card_kind="author",
+            title="Ace",
+            subtitle="@ace",
+            site="cn",
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            snapshot_dir = Path(temp_dir)
+            snapshot_path = snapshot_dir / "author-cn-test-stale.webp"
+            Image.new("RGB", (8, 8), "white").save(snapshot_path, "WEBP")
+            with patch("app.services.source_library.SOURCE_LIBRARY_SNAPSHOT_DIR", snapshot_dir):
+                finalized = source_library._finalize_light_group(
+                    group,
+                    {
+                        "preview_snapshot_signature": "stale-signature",
+                        "preview_snapshot_filename": snapshot_path.name,
+                        "preview_snapshot_had_image": True,
+                    },
+                )
+
+        self.assertIn("preview_snapshot_url", finalized)
+        self.assertIn(snapshot_path.name, finalized["preview_snapshot_url"])
+        self.assertIn("v=stale-signat", finalized["preview_snapshot_url"])
 
     def test_finalize_group_ignores_placeholder_only_preview_snapshot(self):
         group = _base_group(

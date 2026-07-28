@@ -705,6 +705,46 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(collections[0]["title"], "关注收藏夹")
         self.assertTrue(collections[0]["url"].startswith("https://makerworld.com.cn/zh/collections/518732"))
 
+    def test_followed_collection_discovery_prefers_profile_likes_page(self):
+        next_data = {
+            "props": {
+                "pageProps": {
+                    "favoritesList": [
+                        {
+                            "id": 267246,
+                            "title": "微型建筑",
+                            "slug": "wei-xing-jian-zhu",
+                            "designCnt": 44,
+                            "hasLiked": True,
+                        }
+                    ],
+                    "total": 1,
+                }
+            }
+        }
+
+        with patch.object(batch_discovery, "_fetch_listing_html", return_value="<html></html>") as fetch_html, \
+                patch.object(batch_discovery, "extract_next_data", return_value=next_data), \
+                patch.object(batch_discovery, "_api_get_json") as api_get, \
+                patch.object(batch_discovery, "_append_discovery_debug"):
+            result = batch_discovery.discover_cookie_followed_collections(
+                "cn",
+                "token=ok",
+                uid="2024907479",
+                handle="s450586793",
+            )
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["title"], "微型建筑")
+        self.assertEqual(
+            result["items"][0]["url"],
+            "https://makerworld.com.cn/zh/collections/267246-wei-xing-jian-zhu",
+        )
+        self.assertTrue(result["path"].endswith("/@s450586793/collections/likes"))
+        fetch_html.assert_called_once()
+        api_get.assert_not_called()
+
     def test_followed_collection_discovery_stops_after_probe_budget(self):
         calls = []
 
