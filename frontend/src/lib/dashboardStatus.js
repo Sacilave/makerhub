@@ -32,6 +32,7 @@ export function dashboardStatusActions(item = {}) {
         ...(action.endpoint ? { endpoint: action.endpoint } : {}),
         ...(action.method ? { method: action.method } : {}),
         ...(Object.prototype.hasOwnProperty.call(action, "body") ? { body: action.body } : {}),
+        ...(action.opens_browser ? { opens_browser: true } : {}),
       }))
       .filter((action) => (
         (action.kind === "route" && action.to)

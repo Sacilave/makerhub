@@ -130,6 +130,28 @@ test("verification status card keeps explicit verified retry action from backend
   ]);
 });
 
+test("browser-managed source card preserves the browser login action", () => {
+  const card = {
+    key: "cn",
+    action_label: "打开指纹浏览器",
+    actions: [{
+      kind: "api",
+      label: "打开指纹浏览器",
+      endpoint: "/api/config/online-accounts/cn/browser/open",
+      method: "POST",
+      opens_browser: true,
+    }],
+  };
+
+  assert.deepEqual(dashboardStatusActions(card), [{
+    kind: "api",
+    label: "打开指纹浏览器",
+    endpoint: "/api/config/online-accounts/cn/browser/open",
+    method: "POST",
+    opens_browser: true,
+  }]);
+});
+
 test("localized verification source status text does not infer retry action", () => {
   const card = {
     key: "cn",

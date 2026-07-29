@@ -405,9 +405,16 @@ def snapshot_to_source_card(
         "reason": current["reason"],
         "source": current["source"],
     }
+    browser_open_action = {
+        "kind": "api",
+        "label": action_label,
+        "endpoint": f"/api/config/online-accounts/{normalized_platform}/browser/open",
+        "method": "POST",
+        "opens_browser": True,
+    } if clean_browser_url else None
     if operational["state"] == "verification_required":
         card["actions"] = [
-            {
+            browser_open_action or {
                 "kind": "external",
                 "label": action_label,
                 "href": action_url,
@@ -420,6 +427,8 @@ def snapshot_to_source_card(
                 "body": {"platform": normalized_platform},
             },
         ]
+    elif browser_open_action:
+        card["actions"] = [browser_open_action]
     return card
 
 

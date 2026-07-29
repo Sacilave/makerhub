@@ -100,7 +100,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["global"]["status"], "状态待确认")
         self.assertEqual(card_map["cn"]["checks"], [])
 
-    def test_browser_managed_source_card_opens_cloakbrowser(self):
+    def test_browser_managed_source_card_opens_cloakbrowser_login_flow(self):
         self._set_account_health(
             cn={
                 "status": "verification_required",
@@ -127,9 +127,11 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["action_label"], "打开指纹浏览器")
         self.assertEqual(card_map["cn"]["url"], "https://llq.ace-station.top:1111")
         self.assertEqual(card_map["cn"]["actions"][0], {
-            "kind": "external",
+            "kind": "api",
             "label": "打开指纹浏览器",
-            "href": "https://llq.ace-station.top:1111",
+            "endpoint": "/api/config/online-accounts/cn/browser/open",
+            "method": "POST",
+            "opens_browser": True,
         })
         self.assertEqual(card_map["cn"]["actions"][1]["label"], "已验证")
         self.assertEqual(card_map["global"]["action_label"], "打开官网")

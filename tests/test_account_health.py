@@ -222,6 +222,28 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(card["url"], "https://makerworld.com.cn")
         self.assertNotIn("actions", card)
 
+    def test_browser_managed_source_card_opens_the_browser_login_flow(self):
+        card = account_health.snapshot_to_source_card(
+            "cn",
+            {
+                "platform": "cn",
+                "status": "ok",
+                "source": "probe",
+                "updated_at": "2026-07-29T10:00:00+08:00",
+            },
+            browser_url="https://llq.example.test:1111/",
+        )
+
+        self.assertEqual(card["action_label"], "打开指纹浏览器")
+        self.assertEqual(card["url"], "https://llq.example.test:1111")
+        self.assertEqual(card["actions"], [{
+            "kind": "api",
+            "label": "打开指纹浏览器",
+            "endpoint": "/api/config/online-accounts/cn/browser/open",
+            "method": "POST",
+            "opens_browser": True,
+        }])
+
     def test_snapshot_to_source_card_exposes_verified_retry_actions(self):
         card = account_health.snapshot_to_source_card(
             "global",

@@ -334,6 +334,7 @@ import {
   sourceRefreshPillClass,
   sourceRefreshStatusLabel,
 } from "../lib/dashboardStatus";
+import { resolveCloakBrowserPublicUrl } from "../lib/browserSession";
 import { formatServerDateTime } from "../lib/helpers";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { subscribeStateRefresh } from "../lib/stateEvents";
@@ -513,6 +514,13 @@ async function runStatusAction(item, action) {
   if (!action?.endpoint || isStatusActionBusy(item, action)) {
     return;
   }
+  const opensBrowser = Boolean(action.opens_browser);
+  const popup = opensBrowser && typeof window !== "undefined"
+    ? window.open("about:blank", "_blank")
+    : null;
+  if (popup) {
+    popup.opener = null;
+  }
   const key = statusActionKey(item, action);
   statusActionState.value = {
     ...statusActionState.value,
@@ -523,12 +531,26 @@ async function runStatusAction(item, action) {
       method: action.method || "POST",
       body: action.body || {},
     });
+    if (opensBrowser) {
+      const publicUrl = resolveCloakBrowserPublicUrl(result?.browser_session?.public_url, window.location);
+      if (popup) {
+        popup.location.replace(publicUrl);
+      } else {
+        window.open(publicUrl, "_blank", "noopener,noreferrer");
+      }
+    }
     statusActionState.value = {
       ...statusActionState.value,
-      [key]: { busy: false, message: result?.message || "重试已提交。" },
+      [key]: {
+        busy: false,
+        message: result?.browser_session?.message || result?.message || "重试已提交。",
+      },
     };
     void load();
   } catch (error) {
+    if (popup) {
+      popup.close();
+    }
     statusActionState.value = {
       ...statusActionState.value,
       [key]: {
