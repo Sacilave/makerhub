@@ -1604,7 +1604,10 @@ class ArchiveQueueStateTest(unittest.TestCase):
         with patch(
             "app.services.task_state.load_database_json_state_array_summary",
             side_effect=lambda key, field, *, limit: summaries[field],
-        ) as load_summary:
+        ) as load_summary, patch(
+            "app.services.task_state.load_database_archive_queue_verification_summary",
+            return_value={"cn": 3, "global": 1},
+        ) as verification_summary:
             queue = store.load_archive_queue_compact(item_limit=5)
 
         self.assertEqual(queue["running_count"], 12)
@@ -1616,6 +1619,8 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertTrue(queue["active_truncated"])
         self.assertTrue(queue["queued_truncated"])
         self.assertTrue(queue["recent_failures_truncated"])
+        self.assertEqual(queue["verification_paused_by_platform"], {"cn": 3, "global": 1})
+        verification_summary.assert_called_once_with("archive_queue")
         self.assertEqual(
             [(args[0], args[1], kwargs["limit"]) for args, kwargs in load_summary.call_args_list],
             [
@@ -1623,6 +1628,43 @@ class ArchiveQueueStateTest(unittest.TestCase):
                 ("archive_queue", "queued", 5),
                 ("archive_queue", "recent_failures", 5),
             ],
+        )
+
+    def test_save_archive_queue_persists_verification_pause_summary(self):
+        state = {}
+        store = TaskStateStore()
+
+        with patch(
+            "app.services.task_state.load_database_json_state",
+            side_effect=lambda key, default: dict(state.get(key) or default),
+        ), patch(
+            "app.services.task_state.save_database_json_state",
+            side_effect=lambda key, value: state.__setitem__(key, value) or value,
+        ):
+            store.save_archive_queue(
+                {
+                    "active": [],
+                    "queued": [
+                        {
+                            "id": "cn-paused",
+                            "status": "paused",
+                            "blocked_reason": "needs_verification",
+                            "url": "https://makerworld.com.cn/zh/models/1",
+                        },
+                        {
+                            "id": "global-paused",
+                            "status": "paused",
+                            "blocked_reason": "needs_verification",
+                            "meta": {"source": "global"},
+                        },
+                    ],
+                    "recent_failures": [],
+                }
+            )
+
+        self.assertEqual(
+            state["archive_queue"]["verification_paused_by_platform"],
+            {"cn": 1, "global": 1},
         )
 
     def test_completed_archive_task_publishes_semantic_event(self):

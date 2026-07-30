@@ -960,6 +960,40 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["updated_at"], "2026-06-12T10:20:00+08:00")
         self.assertEqual(card_map["cn"]["checks"], [])
 
+    def test_paused_archive_verification_tasks_override_normal_card_and_keep_recovery_action(self):
+        self._set_account_health(
+            cn={
+                "status": "ok",
+                "source": "scheduled_cookie_check",
+                "detail": "国内站账号可用，Cookie 已保存。",
+            }
+        )
+
+        class Config:
+            cookies = []
+            proxy = None
+
+        cards = source_health.build_source_health_cards(
+            Config(),
+            [],
+            verification_paused_by_platform={"cn": 3, "global": 0},
+        )
+
+        card = {item["key"]: item for item in cards}["cn"]
+        self.assertEqual(card["account_status"], "ok")
+        self.assertEqual(card["state"], "verification_required")
+        self.assertEqual(card["status"], "等待浏览器验证")
+        self.assertEqual(card["tone"], "warning")
+        self.assertEqual(card["verification_paused_count"], 3)
+        self.assertEqual(card["detail"], "国内站有 3 个 3MF 任务等待浏览器验证。")
+        self.assertEqual(card["actions"][-1], {
+            "kind": "api",
+            "label": "已验证，继续归档",
+            "endpoint": "/api/tasks/missing-3mf/verification-verified",
+            "method": "POST",
+            "body": {"platform": "cn"},
+        })
+
 class InlineExecutor:
     def __init__(self, *args, **kwargs):
         pass

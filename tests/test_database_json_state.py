@@ -694,6 +694,32 @@ class DatabaseInitializationGuardTest(unittest.TestCase):
         self.assertEqual(summary, {"items": [{"model_id": "1"}], "count": 2000})
         self.assertTrue(any(params == ("items", 5, "missing_3mf") for _sql, params in calls))
 
+    def test_archive_queue_verification_summary_reads_only_platform_counts(self):
+        calls = []
+
+        class FakeResult:
+            def fetchone(self):
+                return {"cn_count": 3, "global_count": 1}
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(database, "initialize_database", return_value=True), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            summary = database.load_json_state_archive_queue_verification_summary("archive_queue")
+
+        self.assertEqual(summary, {"cn": 3, "global": 1})
+        self.assertTrue(any(params == ("archive_queue",) for _sql, params in calls))
+
     def test_load_json_states_reads_multiple_keys_in_one_query(self):
         calls = []
 

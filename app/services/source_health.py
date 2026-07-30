@@ -939,6 +939,7 @@ def build_source_health_cards(
     config: Any,
     missing_3mf_items: list[dict[str, Any]] | None = None,
     *,
+    verification_paused_by_platform: dict[str, Any] | None = None,
     remote_refresh_state: dict[str, Any] | None = None,
     prefer_cached: bool = False,
 ) -> list[dict[str, Any]]:
@@ -950,13 +951,60 @@ def build_source_health_cards(
         for item in (getattr(config, "cookies", None) or [])
         if str(getattr(item, "browser_profile_id", "") or "").strip()
     }
+    paused_counts = verification_paused_by_platform if isinstance(verification_paused_by_platform, dict) else {}
+
+    def paused_count(platform: str) -> int:
+        try:
+            return max(int(paused_counts.get(platform) or 0), 0)
+        except (TypeError, ValueError):
+            return 0
 
     def build_card(platform: str) -> dict[str, Any]:
-        return snapshot_to_source_card(
+        card = snapshot_to_source_card(
             platform,
             snapshots.get(platform),
             browser_url=browser_url if platform in browser_managed_platforms else "",
         )
+        count = paused_count(platform)
+        if not count:
+            return card
+
+        title = str(card.get("title") or SOURCE_HEALTH_LABELS.get(platform) or platform)
+        existing_actions = [
+            dict(action)
+            for action in (card.get("actions") or [])
+            if isinstance(action, dict)
+        ]
+        if not existing_actions:
+            if card.get("action_label") and card.get("url"):
+                existing_actions.append(
+                    {
+                        "kind": "external",
+                        "label": str(card["action_label"]),
+                        "href": str(card["url"]),
+                    }
+                )
+        if not any(str(action.get("endpoint") or "") == "/api/tasks/missing-3mf/verification-verified" for action in existing_actions):
+            existing_actions.append(
+                {
+                    "kind": "api",
+                    "label": "已验证，继续归档",
+                    "endpoint": "/api/tasks/missing-3mf/verification-verified",
+                    "method": "POST",
+                    "body": {"platform": platform},
+                }
+            )
+        card.update(
+            {
+                "state": "verification_required",
+                "status": "等待浏览器验证",
+                "tone": "warning",
+                "detail": f"{title}有 {count} 个 3MF 任务等待浏览器验证。",
+                "verification_paused_count": count,
+                "actions": existing_actions,
+            }
+        )
+        return card
 
     with ThreadPoolExecutor(max_workers=len(platforms)) as executor:
         results = list(executor.map(build_card, platforms))

@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.10`
+> 当前版本：`v0.15.11`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-31 · v0.15.11
+
+- 首页账号状态会识别仍在归档队列中等待浏览器验证的 3MF 任务，不再在这类任务存在时笼统显示“可归档”。
+- 完成浏览器验证后可直接点击“已验证，继续归档”；系统只恢复一个受阻 3MF 探测任务，确认成功后再按既有流程继续，避免定时 Cookie 检测造成无谓下载。
+
 ### 2026-07-30 · v0.15.10
 
 - 指纹浏览器启动、Xvnc 或 CDP 发生瞬时故障后，同一 profile 会进入跨 App/Worker 的冷却期；自动归档、同步和抓取请求直接短路，不再持续重复启动。
@@ -360,13 +365,13 @@ npm --prefix frontend run build
 - 每日上限会立即写入对应站点的 3MF 限额守卫，暂停当天后续 3MF 重试，并让首页账号卡显示“今日下载受限”。
 - 从指纹浏览器同步 Cookie 不再覆盖当天已经确认的每日上限状态，避免卡片退回“检测中”。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-07-30 · v0.15.8
 
 - 首页已关联指纹浏览器的账号卡现在会启动对应 profile 并自动进入 MakerWorld 登录页，与设置页“打开浏览器”使用同一流程；未关联账号继续打开官网。
 - 点击时预开浏览器窗口，等待后端启动 profile 后再跳转，避免异步操作被浏览器拦截。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-07-29 · v0.15.7
 

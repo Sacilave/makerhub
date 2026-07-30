@@ -192,6 +192,7 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
         platform=payload.platform,
         primary=primary,
         retry_all=False,
+        resume_paused_probe_first=True,
     )
     result = {
         "accepted": submitted,

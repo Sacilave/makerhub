@@ -779,6 +779,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
                 "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
             },
             retry_all=False,
+            resume_paused_probe_first=True,
         )
         self.assertTrue(payload["accepted"])
         self.assertEqual(payload["accepted_count"], 0)
@@ -890,6 +891,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
             platform="cn",
             primary=None,
             retry_all=False,
+            resume_paused_probe_first=True,
         )
         self.assertTrue(payload["accepted"])
         self.assertEqual(payload["account_health"]["status"], "unknown")

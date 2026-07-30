@@ -770,6 +770,23 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(len(retrying_calls), 1)
         self.assertEqual(retrying_calls[0][1]["status"], "queued")
 
+    def test_manual_verification_resumes_one_paused_probe_before_retrying_missing_records(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager._ensure_worker = Mock()
+
+        with patch.object(manager, "_resume_paused_missing_3mf_retry_tasks_for_platform", return_value=1) as resume_mock:
+            result = manager.retry_verification_missing_3mf(
+                platform="cn",
+                retry_all=False,
+                resume_paused_probe_first=True,
+            )
+
+        resume_mock.assert_called_once_with("cn")
+        manager._ensure_worker.assert_called_once_with()
+        self.assertEqual(result["resumed_count"], 1)
+        self.assertEqual(result["total_count"], 0)
+        self.assertTrue(result["accepted"])
+
     def test_verified_browser_authorization_resumes_paused_three_mf_stage(self):
         manager = ArchiveTaskManager(background_enabled=False)
         queue = {

@@ -10,6 +10,7 @@ from app.core.database import (
     database_configured,
     database_driver_available,
     load_json_state,
+    load_json_state_archive_queue_verification_summary,
     load_json_state_without_initialization,
     load_json_state_array_summary,
     load_json_state_with_revision,
@@ -77,6 +78,22 @@ def load_database_json_state_array_summary(key: str, array_field: str, *, limit:
     return {
         "items": items if isinstance(items, list) else [],
         "count": int(payload.get("count") or 0),
+    }
+
+
+def load_database_archive_queue_verification_summary(key: str) -> dict[str, int]:
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("JSON 状态 key 不能为空。")
+    require_database_json_state()
+    payload = _with_database_json_state_attempts(
+        lambda: load_json_state_archive_queue_verification_summary(clean_key)
+    )
+    if not isinstance(payload, dict):
+        return {"cn": 0, "global": 0}
+    return {
+        "cn": max(int(payload.get("cn") or 0), 0),
+        "global": max(int(payload.get("global") or 0), 0),
     }
 
 

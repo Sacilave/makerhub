@@ -3240,6 +3240,7 @@ def build_dashboard_light_payload(config) -> dict:
             *build_source_health_cards(
                 config,
                 tasks_payload["missing_3mf"]["items"],
+                verification_paused_by_platform=tasks_payload["archive_queue"].get("verification_paused_by_platform"),
                 remote_refresh_state=remote_refresh,
                 prefer_cached=True,
             ),
@@ -3336,6 +3337,7 @@ def build_dashboard_payload(config) -> dict:
         *build_source_health_cards(
             config,
             tasks_payload["missing_3mf"]["items"],
+            verification_paused_by_platform=tasks_payload["archive_queue"].get("verification_paused_by_platform"),
             remote_refresh_state=tasks_payload["remote_refresh"],
             prefer_cached=True,
         ),

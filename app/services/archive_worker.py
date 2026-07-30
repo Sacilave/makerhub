@@ -2567,9 +2567,24 @@ class ArchiveTaskManager:
         platform: str,
         primary: Optional[dict] = None,
         retry_all: bool = True,
+        resume_paused_probe_first: bool = False,
     ) -> dict:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
         self._clear_blocked_queue_backoff()
+        if resume_paused_probe_first:
+            resumed = self._resume_paused_missing_3mf_retry_tasks_for_platform(normalized_platform)
+            if resumed:
+                self._ensure_worker()
+                return {
+                    "accepted": True,
+                    "accepted_count": 0,
+                    "queued_count": 0,
+                    "failed_count": 0,
+                    "resumed_count": resumed,
+                    "total_count": 0,
+                    "message": f"验证后已恢复 {resumed} 个 3MF 探测任务。",
+                    "last_message": "",
+                }
         primary_item = primary if isinstance(primary, dict) else {}
         verification_states = {"verification_required", "cloudflare", "auth_required", "cookie_invalid"}
         missing_payload = self.task_store.load_missing_3mf()

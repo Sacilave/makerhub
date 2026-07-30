@@ -460,6 +460,78 @@ def load_json_state_array_summary(key: str, array_field: str, *, limit: int = 5)
     }
 
 
+def load_json_state_archive_queue_verification_summary(key: str) -> dict[str, int]:
+    """Return paused MakerWorld verification task counts without loading the queue payload."""
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("JSON 状态 key 不能为空。")
+    initialize_database()
+    with database_connection() as connection:
+        row = connection.execute(
+            """
+            WITH state AS (
+                SELECT
+                    value -> 'queued' AS queued_items,
+                    CASE
+                        WHEN jsonb_typeof(value -> 'verification_paused_by_platform') = 'object'
+                            THEN value -> 'verification_paused_by_platform'
+                        ELSE NULL
+                    END AS cached_summary
+                FROM makerhub_json_state
+                WHERE key = %s
+            ),
+            cached AS (
+                SELECT
+                    GREATEST(COALESCE(NULLIF(cached_summary ->> 'cn', '')::int, 0), 0) AS cn_count,
+                    GREATEST(COALESCE(NULLIF(cached_summary ->> 'global', '')::int, 0), 0) AS global_count
+                FROM state
+                WHERE cached_summary IS NOT NULL
+            ),
+            paused_tasks AS (
+                SELECT item
+                FROM state
+                CROSS JOIN LATERAL jsonb_array_elements(
+                    CASE
+                        WHEN jsonb_typeof(queued_items) = 'array' THEN queued_items
+                        ELSE '[]'::jsonb
+                    END
+                ) AS item
+                WHERE lower(COALESCE(item ->> 'status', '')) = 'paused'
+                  AND lower(COALESCE(item ->> 'blocked_reason', '')) = 'needs_verification'
+                  AND cached_summary IS NULL
+            ),
+            classified AS (
+                SELECT CASE
+                    WHEN lower(COALESCE(item -> 'meta' ->> 'source', '')) IN ('cn', 'mw_cn', 'makerworld_cn')
+                        OR lower(COALESCE(NULLIF(item -> 'meta' ->> 'model_url', ''), item ->> 'url', '')) LIKE '%makerworld.com.cn%'
+                        THEN 'cn'
+                    WHEN lower(COALESCE(item -> 'meta' ->> 'source', '')) IN ('global', 'mw_global', 'makerworld_global')
+                        OR lower(COALESCE(NULLIF(item -> 'meta' ->> 'model_url', ''), item ->> 'url', '')) LIKE '%makerworld.com%'
+                        THEN 'global'
+                    ELSE ''
+                END AS platform
+                FROM paused_tasks
+            ),
+            computed AS (
+                SELECT
+                    COUNT(*) FILTER (WHERE platform = 'cn') AS cn_count,
+                    COUNT(*) FILTER (WHERE platform = 'global') AS global_count
+                FROM classified
+            )
+            SELECT
+                COALESCE((SELECT cn_count FROM cached), (SELECT cn_count FROM computed), 0) AS cn_count,
+                COALESCE((SELECT global_count FROM cached), (SELECT global_count FROM computed), 0) AS global_count
+            """,
+            (clean_key,),
+        ).fetchone()
+    if not isinstance(row, dict):
+        return {"cn": 0, "global": 0}
+    return {
+        "cn": int(row.get("cn_count") or 0),
+        "global": int(row.get("global_count") or 0),
+    }
+
+
 def save_json_state(key: str, value: Any) -> Any:
     clean_key = str(key or "").strip()
     if not clean_key:

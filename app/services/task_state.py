@@ -7,6 +7,7 @@ from typing import Any, Optional
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from app.core.database_json_state import (
+    load_database_archive_queue_verification_summary,
     load_database_json_state,
     load_database_json_state_array_summary,
     save_database_json_state,
@@ -354,6 +355,23 @@ def _normalize_archive_queue(payload: Any) -> dict:
         "queued": [_normalize_archive_runtime_item(item, "queued") for item in queued_items],
         "recent_failures": [_normalize_archive_runtime_item(item, "failed") for item in failed_items],
     }
+
+
+def _archive_verification_paused_by_platform(queue: dict[str, Any]) -> dict[str, int]:
+    counts = {"cn": 0, "global": 0}
+    for item in queue.get("queued") or []:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        blocked_reason = str(item.get("blocked_reason") or "").strip().lower()
+        if status != "paused" or blocked_reason != "needs_verification":
+            continue
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        url = str(meta.get("model_url") or item.get("url") or "")
+        platform = normalize_makerworld_source(meta.get("source"), url)
+        if platform in counts:
+            counts[platform] += 1
+    return counts
 
 
 def _state_payload_signature(payload: dict) -> str:
@@ -1464,6 +1482,7 @@ class TaskStateStore:
         queue["running_count"] = len(queue["active"])
         queue["queued_count"] = len(queue["queued"])
         queue["failed_count"] = len(queue["recent_failures"])
+        queue["verification_paused_by_platform"] = _archive_verification_paused_by_platform(queue)
         return queue
 
     def _load_archive_queue_compact_unlocked(self, *, item_limit: int = 5) -> dict:
@@ -1492,6 +1511,9 @@ class TaskStateStore:
         queue["active_truncated"] = counts["active"] > len(queue["active"])
         queue["queued_truncated"] = counts["queued"] > len(queue["queued"])
         queue["recent_failures_truncated"] = counts["recent_failures"] > len(queue["recent_failures"])
+        queue["verification_paused_by_platform"] = load_database_archive_queue_verification_summary(
+            ARCHIVE_QUEUE_STATE_KEY
+        )
         return queue
 
     def _save_archive_queue_unlocked(self, payload: dict) -> dict:
@@ -1502,6 +1524,7 @@ class TaskStateStore:
                 "active": normalized["active"],
                 "queued": normalized["queued"],
                 "recent_failures": normalized["recent_failures"],
+                "verification_paused_by_platform": _archive_verification_paused_by_platform(normalized),
             },
         )
         return self._load_archive_queue_unlocked()
