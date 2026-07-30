@@ -3813,7 +3813,12 @@ class ArchiveTaskManager:
         resolved_model_id = str(result.get("model_id") or "")
         resolved_model_url = normalize_source_url(url)
         for item in result.get("missing_3mf") or []:
-            if str(item.get("downloadState") or "").strip() == "download_limited":
+            missing_state = normalize_three_mf_failure_state(
+                item.get("downloadState") or "",
+                item.get("downloadMessage") or "",
+                url=url,
+            )
+            if missing_state == "download_limited":
                 if not _is_three_mf_limit_guard_active_for_url(url, limit_guard_state):
                     limit_guard_state = _activate_three_mf_limit_guard(
                         message=str(item.get("downloadMessage") or ""),
@@ -3826,11 +3831,7 @@ class ArchiveTaskManager:
                 "model_url": resolved_model_url,
                 "title": str(item.get("title") or item.get("name") or result.get("base_name") or ""),
                 "instance_id": str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
-                "status": normalize_three_mf_failure_state(
-                    item.get("downloadState") or "",
-                    item.get("downloadMessage") or "",
-                    url=url,
-                ),
+                "status": missing_state,
                 "message": _missing_3mf_message_from_result(item, limit_guard_state, url=url),
                 "updated_at": china_now().isoformat(),
             }

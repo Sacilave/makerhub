@@ -359,6 +359,20 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(snapshot["three_mf_gate"], "open")
         self.assertEqual(snapshot["three_mf_reason"], "")
 
+    def test_mark_account_checking_preserves_confirmed_daily_limit(self):
+        account_health.update_three_mf_gate(
+            "cn",
+            gate="daily_limit",
+            reason="download_limited",
+            detail="国区返回了每日下载上限，今日暂停自动重试。",
+        )
+
+        snapshot = account_health.mark_account_checking("cn")
+
+        self.assertEqual(snapshot["three_mf_gate"], "daily_limit")
+        self.assertEqual(snapshot["status"], "ok")
+        self.assertEqual(account_health.operational_status_payload("cn", snapshot)["label"], "今日下载受限")
+
     def test_open_three_mf_gate_preserves_account_status(self):
         account_health.update_account_health(
             "cn",

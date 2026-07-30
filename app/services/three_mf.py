@@ -35,9 +35,20 @@ _THREE_MF_TRANSIENT_STATES = {
 _THREE_MF_FAILURE_INFERENCE_KEYWORDS = {
     "download_limited": (
         "每日下载上限",
+        "今日下载上限",
+        "每日下载次数",
+        "今日下载次数",
+        "下载次数已达到上限",
+        "下载次数达到上限",
+        "今日额度已用完",
+        "今日额度用尽",
         "今日暂停自动重试",
         "daily download limit",
         "reached your daily download limit",
+        "daily quota",
+        "daily quota exhausted",
+        "daily quota exceeded",
+        "download limit reached",
     ),
     "cloudflare": (
         "cloudflare",
@@ -116,6 +127,18 @@ def _normalize_loose_identity_text(value: Any) -> str:
     if not text:
         return ""
     return re.sub(r"[\s\-_:/|\\.,，。;；'\"`~!！?？()\[\]{}<>《》【】（）、+]+", "", text)
+
+
+def is_three_mf_daily_download_limited(value: Any) -> bool:
+    raw_text = str(value or "").strip()
+    if not raw_text:
+        return False
+    lowered = raw_text.lower()
+    normalized = _normalize_loose_identity_text(raw_text)
+    for keyword in _THREE_MF_FAILURE_INFERENCE_KEYWORDS["download_limited"]:
+        if keyword.lower() in lowered or _normalize_loose_identity_text(keyword) in normalized:
+            return True
+    return False
 
 
 def _unique_non_empty(values: list[Any]) -> list[str]:
@@ -226,6 +249,8 @@ def normalize_three_mf_failure_state(
         return normalized_state
 
     raw_message = str(message or "").strip()
+    if is_three_mf_daily_download_limited(raw_message):
+        return "download_limited"
     if not raw_message:
         if normalized_state in _THREE_MF_FAILURE_PRIORITY and normalized_state not in {"missing", "available"}:
             return normalized_state

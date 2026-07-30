@@ -39,6 +39,17 @@ class ThreeMfFailureTest(unittest.TestCase):
             "auth_required",
         )
 
+    def test_daily_limit_message_overrides_noncanonical_upstream_state(self):
+        for message in (
+            "今日下载次数已达到上限，请明日再试。",
+            "Your daily quota has been exhausted.",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    normalize_three_mf_failure_state("verification_required", message),
+                    "download_limited",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -320,6 +320,8 @@ def mark_account_checking(
     normalized_platform = normalize_account_platform(platform)
     payload = load_account_health()
     current = dict(payload.get(normalized_platform) or _empty_snapshot(normalized_platform))
+    if normalize_three_mf_gate(current.get("three_mf_gate")) == "daily_limit":
+        return _normalize_snapshot(normalized_platform, current)
     current.update(
         {
             "platform": normalized_platform,

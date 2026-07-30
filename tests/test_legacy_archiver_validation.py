@@ -208,6 +208,16 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertNotIn("验证", failure["message"])
         self.assertNotIn("Cloudflare", failure["message"])
 
+    def test_three_mf_daily_limit_outranks_browser_verification_status(self):
+        failure = legacy_archiver._classify_3mf_fetch_failure(
+            status_code=418,
+            text="今日下载次数已达到上限，请明日再试。",
+            source="cn",
+        )
+
+        self.assertEqual(failure["state"], "download_limited")
+        self.assertIn("每日下载上限", failure["message"])
+
     def test_comment_api_base_candidates_prefer_global_bambulab_api(self):
         candidates = legacy_archiver._comment_api_base_candidates(
             "https://makerworld.com/zh/models/2416065",

@@ -410,6 +410,73 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
 
         self.assertEqual([item["progress"] for item in updates], [10, 40, 90, 100])
 
+    def test_run_single_task_activates_limit_guard_from_daily_limit_message(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None))
+        manager.task_store = SimpleNamespace(
+            update_missing_3mf_status=lambda **_payload: None,
+            replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
+            remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
+            update_active_task=lambda *_args, **_kwargs: None,
+            complete_archive_task=lambda *_args, **_kwargs: None,
+        )
+        guard_state = {
+            "active": True,
+            "limited_until": "2099-01-02T00:00:00+08:00",
+            "message": "已达到 MakerWorld 每日下载上限，今日暂停自动重试。",
+            "model_url": "https://makerworld.com.cn/zh/models/123",
+        }
+        daily_limit_failure = {
+            "status": "daily_limit",
+            "detail": guard_state["message"],
+            "instance_id": "instance-1",
+        }
+
+        with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "_activate_three_mf_limit_guard", return_value=guard_state) as activate_guard, \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(
+                    archive_worker_module,
+                    "run_archive_model_job",
+                    return_value={
+                        "model_id": "123",
+                        "base_name": "CN Model",
+                        "work_dir": "",
+                        "missing_3mf": [
+                            {
+                                "id": "instance-1",
+                                "title": "0.2mm",
+                                "downloadState": "verification_required",
+                                "downloadMessage": "今日下载次数已达到上限，请明日再试。",
+                            }
+                        ],
+                    },
+                ), \
+                patch.object(archive_worker_module, "_sync_account_health_for_archive_result", return_value=daily_limit_failure) as sync_health, \
+                patch.object(manager, "_pause_three_mf_retry_tasks_for_gate", return_value=0), \
+                patch.object(manager, "_pause_missing_3mf_retry_tasks_for_limit", return_value=0), \
+                patch.object(manager, "_schedule_browser_session_recovery_for_three_mf_gate") as schedule_browser_recovery, \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_single_task(
+                "task-limit",
+                "https://makerworld.com.cn/zh/models/123",
+                {"source": "cn", "missing_3mf_retry": True},
+            )
+
+        activate_guard.assert_called_once_with(
+            message="今日下载次数已达到上限，请明日再试。",
+            model_id="123",
+            model_url="https://makerworld.com.cn/zh/models/123",
+            instance_id="instance-1",
+        )
+        self.assertEqual(sync_health.call_args.kwargs["missing_items"][0]["status"], "download_limited")
+        schedule_browser_recovery.assert_not_called()
+
     def test_run_loop_can_start_four_single_model_tasks_without_duplicate_leases(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)

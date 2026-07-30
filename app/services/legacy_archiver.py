@@ -37,6 +37,7 @@ from app.services.profile_rating import normalize_profile_rating
 from app.services.resource_limiter import resource_slot
 from app.services.three_mf import (
     describe_three_mf_failure,
+    is_three_mf_daily_download_limited,
     merge_three_mf_failure,
     normalize_makerworld_source,
     normalize_three_mf_failure_state,
@@ -3981,6 +3982,11 @@ def _classify_3mf_fetch_failure(
     combined = " ".join(part for part in (raw_text, payload_text) if part).lower()
     normalized_source = normalize_makerworld_source(source=source)
 
+    if is_three_mf_daily_download_limited(combined):
+        return {
+            "state": "download_limited",
+            "message": describe_three_mf_failure("download_limited", source=normalized_source),
+        }
     if status_code == 418 or any(
         keyword in combined
         for keyword in (
@@ -3999,11 +4005,6 @@ def _classify_3mf_fetch_failure(
         if verification:
             result["verification"] = verification
         return result
-    if "每日下载上限" in combined or ("download" in combined and "limit" in combined and "daily" in combined):
-        return {
-            "state": "download_limited",
-            "message": describe_three_mf_failure("download_limited", source=normalized_source),
-        }
     if "please log in to download models" in combined or "log in to download models" in combined:
         return {
             "state": "auth_required",
