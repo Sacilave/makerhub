@@ -42,6 +42,14 @@ TRANSIENT_BRIDGE_ERROR_MARKERS = (
     "socket hang up",
     "econnreset",
 )
+TRANSIENT_PROFILE_ERROR_MARKERS = (
+    *TRANSIENT_BRIDGE_ERROR_MARKERS,
+    "already running",
+    "xvnc",
+    "resource temporarily unavailable",
+    "eagain",
+    "http 5",
+)
 PROFILE_NAMES = {
     "cn": "MakerHub CN",
     "global": "MakerHub Global",
@@ -371,6 +379,11 @@ def _is_transient_bridge_error(exc: CloakBrowserBridgeError) -> bool:
     return any(marker in detail for marker in TRANSIENT_BRIDGE_ERROR_MARKERS)
 
 
+def _is_transient_profile_error(exc: CloakBrowserError) -> bool:
+    detail = str(exc or "").strip().lower()
+    return any(marker in detail for marker in TRANSIENT_PROFILE_ERROR_MARKERS)
+
+
 def _profile_recovery_marker_path(profile_id: str) -> Path:
     digest = hashlib.sha256(str(profile_id or "").encode("utf-8")).hexdigest()[:24]
     return STATE_DIR / "cloakbrowser_recovery" / f"{digest}.marker"
@@ -401,6 +414,39 @@ def _clear_profile_recovery_attempt(profile_id: str) -> None:
         _profile_recovery_marker_path(profile_id).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _profile_cooldown_error() -> CloakBrowserUnavailable:
+    return CloakBrowserUnavailable(
+        "指纹浏览器启动刚刚失败，已暂停自动重试，请稍后再试。"
+    )
+
+
+def _ensure_running_profile(
+    platform: str,
+    profile_id: str = "",
+) -> tuple[CloakBrowserProfile, CloakBrowserProfile, bool]:
+    clean_profile_id = str(profile_id or "").strip()
+    if clean_profile_id and _profile_recovery_cooldown_active(clean_profile_id):
+        raise _profile_cooldown_error()
+    try:
+        profile = ensure_profile(platform, clean_profile_id)
+    except CloakBrowserError as exc:
+        if clean_profile_id and _is_transient_profile_error(exc):
+            _mark_profile_recovery_attempt(clean_profile_id)
+        raise
+    if _profile_recovery_cooldown_active(profile.id):
+        raise _profile_cooldown_error()
+    try:
+        running, launched_here = launch_profile(profile)
+    except CloakBrowserError as exc:
+        if _is_transient_profile_error(exc):
+            _mark_profile_recovery_attempt(profile.id)
+            raise CloakBrowserUnavailable(
+                "指纹浏览器启动失败，已暂停自动重试，请稍后再试。"
+            ) from exc
+        raise
+    return profile, running, launched_here
 
 
 def _run_bridge_with_profile_recovery(
@@ -658,8 +704,10 @@ def browser_fetch(
         _profile_resource_name(clean_platform, clean_profile_id),
         detail="fetch",
     ):
-        profile = ensure_profile(clean_platform, clean_profile_id)
-        running, _launched_here = launch_profile(profile)
+        _profile, running, _launched_here = _ensure_running_profile(
+            clean_platform,
+            clean_profile_id,
+        )
         payload = _bridge_payload(
             running.id,
             action="fetch",
@@ -756,8 +804,10 @@ def browser_authorize_3mf_download(
     page_url = _browser_model_page_url(model_url, clean_platform, clean_instance_id)
 
     with resource_slot(_profile_resource_name(clean_platform, clean_profile_id), detail="click"):
-        profile = ensure_profile(clean_platform, clean_profile_id)
-        running, _launched_here = launch_profile(profile)
+        _profile, running, _launched_here = _ensure_running_profile(
+            clean_platform,
+            clean_profile_id,
+        )
         running, _restarted, result = _run_bridge_with_profile_recovery(
             clean_platform,
             running,
@@ -795,8 +845,7 @@ def synchronize_browser_session(
 ) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
     with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="synchronize"):
-        profile = ensure_profile(clean_platform, profile_id)
-        running, launched_here = launch_profile(profile)
+        _profile, running, launched_here = _ensure_running_profile(clean_platform, profile_id)
         ticket_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config)
         target_url = ticket_url or PLATFORM_ORIGINS[clean_platform]
         try:
@@ -842,8 +891,7 @@ def prepare_browser_login(
 ) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
     with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="prepare-login"):
-        profile = ensure_profile(clean_platform, profile_id)
-        running, launched_here = launch_profile(profile)
+        _profile, running, launched_here = _ensure_running_profile(clean_platform, profile_id)
         target_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config) or browser_login_url(clean_platform)
         action = "seed" if raw_cookie and target_url != browser_login_url(clean_platform) else "login"
         running, restarted, snapshot = _run_bridge_with_profile_recovery(
@@ -871,8 +919,7 @@ def prepare_browser_login(
 def collect_browser_session(platform: str, profile_id: str) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
     with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="collect"):
-        profile = ensure_profile(clean_platform, profile_id)
-        running, launched_here = launch_profile(profile)
+        _profile, running, launched_here = _ensure_running_profile(clean_platform, profile_id)
         running, restarted, snapshot = _run_bridge_with_profile_recovery(
             clean_platform,
             running,

@@ -653,7 +653,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(bridge_mock.call_count, 2)
         stop_mock.assert_called_once_with("profile-cn")
 
-    def test_collect_browser_session_does_not_attempt_bridge_again_during_recovery_cooldown(self):
+    def test_collect_browser_session_does_not_attempt_profile_launch_again_during_recovery_cooldown(self):
         profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")
         running = cloakbrowser_session.CloakBrowserProfile(
             id="profile-cn",
@@ -664,7 +664,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state_dir, \
                 patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir), create=True), \
                 patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
-                patch.object(cloakbrowser_session, "launch_profile", return_value=(running, False)), \
+                patch.object(cloakbrowser_session, "launch_profile", return_value=(running, False)) as launch_mock, \
                 patch.object(cloakbrowser_session, "stop_profile") as stop_mock, \
                 patch.object(
                     cloakbrowser_session,
@@ -687,7 +687,28 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     cloakbrowser_session.collect_browser_session("cn", "profile-cn")
 
         self.assertEqual(bridge_mock.call_count, 2)
+        self.assertEqual(launch_mock.call_count, 2)
         stop_mock.assert_called_once_with("profile-cn")
+
+    def test_collect_browser_session_throttles_transient_profile_launch_failures(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")
+        launch_error = cloakbrowser_session.CloakBrowserUnavailable(
+            "指纹浏览器返回 HTTP 500：Xvnc failed to start"
+        )
+
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir), create=True), \
+                patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+                patch.object(
+                    cloakbrowser_session,
+                    "launch_profile",
+                    side_effect=launch_error,
+                ) as launch_mock:
+            for _ in range(2):
+                with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserUnavailable, "指纹浏览器"):
+                    cloakbrowser_session.collect_browser_session("cn", "profile-cn")
+
+        launch_mock.assert_called_once_with(profile)
 
     def test_collect_browser_session_does_not_restart_for_non_transient_bridge_error(self):
         profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")

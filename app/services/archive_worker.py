@@ -81,6 +81,7 @@ BATCH_CHILD_TRANSIENT_FAILURE_TOKENS = (
     "cloakbrowser 服务暂时不可用",
 )
 CLOAKBROWSER_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
+CLOAKBROWSER_TASK_SESSION_REFRESH_SECONDS = 2 * 60
 THREE_MF_RECOVERY_PROBE_BATCH_SIZE = 1
 CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE = (
     "指纹浏览器登录态已同步，但 MakerWorld 仍拒绝 3MF 下载；请在官网完成验证后再继续归档。"
@@ -807,6 +808,17 @@ def _temporary_proxy_env(config, target_url: str = ""):
         yield
 
 
+def _browser_session_refresh_due(account: object) -> bool:
+    if str(getattr(account, "browser_status", "") or "").strip().lower() != "synced":
+        return True
+    synced_at = parse_datetime(str(getattr(account, "browser_synced_at", "") or ""))
+    if synced_at is None:
+        return True
+    return (china_now() - synced_at) >= timedelta(
+        seconds=CLOAKBROWSER_TASK_SESSION_REFRESH_SECONDS
+    )
+
+
 class ArchiveTaskManager:
     def __init__(self, *, background_enabled: Optional[bool] = None) -> None:
         self.store = JsonStore()
@@ -904,6 +916,8 @@ class ArchiveTaskManager:
 
         profile_id = str(current.browser_profile_id or "").strip()
         if not profile_id:
+            return current, ""
+        if not _browser_session_refresh_due(current):
             return current, ""
 
         expected_cookie = sanitize_cookie_header(current.cookie)

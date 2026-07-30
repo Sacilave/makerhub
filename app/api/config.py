@@ -2589,6 +2589,15 @@ def _schedule_cloakbrowser_monitor(platform: str, target: CookiePair, proxy_conf
                     if candidate and candidate != sanitize_cookie_header(snapshot.cookie):
                         _store_browser_session_result(platform, snapshot, result, proxy_snapshot)
                         return
+                except CloakBrowserUnavailable as exc:
+                    _save_browser_status(
+                        platform,
+                        expected_cookie=snapshot.cookie,
+                        profile_id=current.browser_profile_id or snapshot.browser_profile_id,
+                        status="waiting",
+                        message=f"指纹浏览器服务暂时不可用，已暂停自动同步：{str(exc)[:240]}",
+                    )
+                    return
                 except Exception as exc:
                     last_error = str(exc)[:240]
                 time.sleep(CLOAKBROWSER_MONITOR_INTERVAL_SECONDS)

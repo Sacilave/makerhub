@@ -434,6 +434,43 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved.browser_synced_at, "2026-07-26T03:00:00+08:00")
             self.assertIn("暂时不可用", saved.browser_message)
 
+    async def test_browser_monitor_stops_after_service_outage_without_retrying(self):
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            target = CookiePair(
+                platform="cn",
+                browser_profile_id="profile-cn",
+                browser_status="waiting",
+                browser_message="指纹浏览器已打开，完成登录后会自动同步回 MakerHub。",
+            )
+            config.cookies = [target]
+            store.save(config)
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(
+                        config_api,
+                        "collect_browser_session",
+                        side_effect=CloakBrowserUnavailable("指纹浏览器返回 HTTP 500：Xvnc failed to start"),
+                    ) as collect_mock, \
+                    patch.object(config_api.threading, "Thread", side_effect=lambda **kwargs: ImmediateThread(**kwargs)), \
+                    patch.object(config_api.time, "monotonic", side_effect=[0.0, 0.0, 601.0]), \
+                    patch.object(config_api.time, "sleep") as sleep_mock:
+                config_api._schedule_cloakbrowser_monitor("cn", target, config.proxy)
+
+            saved = store.load().cookies[0]
+            collect_mock.assert_called_once_with("cn", "profile-cn")
+            sleep_mock.assert_not_called()
+            self.assertEqual(saved.browser_status, "waiting")
+            self.assertIn("服务暂时不可用", saved.browser_message)
+
 
 if __name__ == "__main__":
     unittest.main()

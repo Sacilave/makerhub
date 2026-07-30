@@ -155,6 +155,28 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         self.assertEqual(saved.cookie, browser_result.cookie)
         self.assertEqual(saved.browser_status, "synced")
 
+    def test_task_session_refresh_reuses_recent_browser_session_without_collecting_again(self):
+        manager, store = self._manager_with_cookie("token=synced; refreshToken=fresh")
+        config = store.load()
+        config.cookies = [
+            config.cookies[0].model_copy(
+                update={
+                    "browser_status": "synced",
+                    "browser_synced_at": archive_worker_module.china_now().isoformat(),
+                }
+            )
+        ]
+        store.save(config)
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(archive_worker_module, "collect_browser_session") as collect_mock:
+            refreshed, error = manager._refresh_browser_session_for_task("cn")
+
+        collect_mock.assert_not_called()
+        self.assertEqual(error, "")
+        self.assertIsNotNone(refreshed)
+        self.assertEqual(refreshed.cookie, "token=synced; refreshToken=fresh")
+
     def test_stale_browser_sync_result_does_not_overwrite_newer_cookie(self):
         manager, store = self._manager_with_cookie("token=old; refreshToken=old")
         config = store.load()

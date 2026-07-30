@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.9`
+> 当前版本：`v0.15.10`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-30 · v0.15.10
+
+- 指纹浏览器启动、Xvnc 或 CDP 发生瞬时故障后，同一 profile 会进入跨 App/Worker 的冷却期；自动归档、同步和抓取请求直接短路，不再持续重复启动。
+- Worker 会复用 2 分钟内已同步的浏览器登录态，不再为每个归档子任务重复读取一次 profile。
+- 用户打开浏览器后的自动同步首次遇到浏览器服务不可用即停止轮询，并明确保留“服务暂时不可用”状态，不会误提示重新登录。
+
 ### 2026-07-30 · v0.15.9
 
 - MakerWorld 返回“今日下载次数已达到上限”、`daily quota` 等限额文案时，会优先识别为平台每日上限，即使上游状态码或字段同时表现为浏览器验证。
@@ -359,13 +365,13 @@ npm --prefix frontend run build
 - 首页已关联指纹浏览器的账号卡现在会启动对应 profile 并自动进入 MakerWorld 登录页，与设置页“打开浏览器”使用同一流程；未关联账号继续打开官网。
 - 点击时预开浏览器窗口，等待后端启动 profile 后再跳转，避免异步操作被浏览器拦截。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-07-29 · v0.15.7
 
 - 关注收藏夹同步改为读取 MakerWorld 当前的 `collections/likes` 页面，并以页面实际可访问总数为准，不再因旧接口与过期统计显示“0 已同步”。
 - 订阅来源卡在新快照生成前继续显示上一张有效图片；每个订阅归档批次完成后立即重建对应四宫格，不再等到下次同步或 App 重启。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-07-28 · v0.15.6
 

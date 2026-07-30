@@ -117,6 +117,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value={"queued_count": 0, "subscription_ids": []}), \
                     patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value={"queued_count": 0, "platforms": []}), \
                     patch.object(config_api.crawler.manager, "retry_verification_missing_3mf", return_value=verification_retry) as retry_verification_mock, \
+                    patch.object(config_api, "_schedule_online_account_cookie_test") as schedule_mock, \
                     patch.object(config_api, "_get_github_version_status", return_value={}), \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
@@ -134,6 +135,8 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             retry_verification_mock.assert_any_call(platform="cn", retry_all=False)
             retry_verification_mock.assert_any_call(platform="global", retry_all=False)
             self.assertEqual(retry_verification_mock.call_count, 2)
+            scheduled_platforms = {call.args[0] for call in schedule_mock.call_args_list}
+            self.assertEqual(scheduled_platforms, {"cn", "global"})
             self.assertEqual(payload["missing_3mf_verification_retry"]["cn"], verification_retry)
             self.assertEqual(payload["missing_3mf_verification_retry"]["global"], verification_retry)
 
