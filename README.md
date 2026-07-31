@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.13`
+> 当前版本：`v0.15.14`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-31 · v0.15.14
+
+- 设置页账号卡与首页统一使用账号健康状态和 3MF gate 作为归档结论，不再让过期的浏览器过程状态覆盖“可归档”等真实状态。
+- 指纹浏览器恢复后，即使有效登录 Cookie 没有变化，也会清理旧的“等待登录 / 需要确认”提示并写回“浏览器已同步”；缺少登录 token 时不会误报同步成功。
+
 ### 2026-07-31 · v0.15.13
 
 - Global 指纹浏览器 profile 会复用 MakerHub 的 HTTP/HTTPS 代理；新建 profile 和每次启动前都会校验该配置。
@@ -358,12 +363,6 @@ npm --prefix frontend run build
 - 修复首页轻量归档队列查询在 Postgres 下将 MakerWorld URL 的 `%` 误判为 SQL 参数，导致接口返回 `500` 并让卡片错误显示为全零的问题。
 - 原有订阅、归档任务、本地库与源端刷新数据未被修改；修复后首页会重新读取原持久化数据。
 
-### 2026-07-30 · v0.15.10
-
-- 指纹浏览器启动、Xvnc 或 CDP 发生瞬时故障后，同一 profile 会进入跨 App/Worker 的冷却期；自动归档、同步和抓取请求直接短路，不再持续重复启动。
-- Worker 会复用 2 分钟内已同步的浏览器登录态，不再为每个归档子任务重复读取一次 profile。
-- 用户打开浏览器后的自动同步首次遇到浏览器服务不可用即停止轮询，并明确保留“服务暂时不可用”状态，不会误提示重新登录。
-
 <details>
 <summary>历史版本</summary>
 
@@ -371,6 +370,12 @@ npm --prefix frontend run build
 
 - 首页账号状态会识别仍在归档队列中等待浏览器验证的 3MF 任务，不再在这类任务存在时笼统显示“可归档”。
 - 完成浏览器验证后可直接点击“已验证，继续归档”；系统只恢复一个受阻 3MF 探测任务，确认成功后再按既有流程继续，避免定时 Cookie 检测造成无谓下载。
+
+### 2026-07-30 · v0.15.10
+
+- 指纹浏览器启动、Xvnc 或 CDP 发生瞬时故障后，同一 profile 会进入跨 App/Worker 的冷却期；自动归档、同步和抓取请求直接短路，不再持续重复启动。
+- Worker 会复用 2 分钟内已同步的浏览器登录态，不再为每个归档子任务重复读取一次 profile。
+- 用户打开浏览器后的自动同步首次遇到浏览器服务不可用即停止轮询，并明确保留“服务暂时不可用”状态，不会误提示重新登录。
 
 ### 2026-07-30 · v0.15.9
 

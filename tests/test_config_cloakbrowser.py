@@ -471,6 +471,77 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved.browser_status, "waiting")
             self.assertIn("服务暂时不可用", saved.browser_message)
 
+    async def test_browser_monitor_clears_stale_status_when_authenticated_cookie_is_unchanged(self):
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            target = CookiePair(
+                platform="global",
+                cookie="token=same-account",
+                browser_profile_id="profile-global",
+                browser_status="action_required",
+                browser_message="请先在关联的指纹浏览器中完成 MakerWorld 登录。",
+            )
+            config.cookies = [target]
+            store.save(config)
+            result = CloakBrowserSessionResult(
+                profile_id="profile-global",
+                cookie="token=same-account",
+            )
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "collect_browser_session", return_value=result), \
+                    patch.object(config_api.threading, "Thread", side_effect=lambda **kwargs: ImmediateThread(**kwargs)), \
+                    patch.object(config_api.time, "monotonic", side_effect=[0.0, 0.0, 601.0]), \
+                    patch.object(config_api.time, "sleep") as sleep_mock, \
+                    patch.object(config_api, "append_business_log"), \
+                    patch.object(config_api, "publish_state_event"):
+                config_api._schedule_cloakbrowser_monitor("global", target, config.proxy)
+
+            saved = store.load().cookies[0]
+            sleep_mock.assert_not_called()
+            self.assertEqual(saved.browser_status, "synced")
+            self.assertEqual(saved.browser_message, "指纹浏览器登录态已同步。")
+
+    async def test_unchanged_browser_cookie_without_auth_token_is_not_marked_synced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            target = CookiePair(
+                platform="cn",
+                cookie="cf_clearance=browser-clearance",
+                browser_profile_id="profile-cn",
+                browser_status="waiting",
+            )
+            config.cookies = [target]
+            store.save(config)
+            result = CloakBrowserSessionResult(
+                profile_id="profile-cn",
+                cookie="cf_clearance=browser-clearance",
+            )
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "append_business_log"), \
+                    patch.object(config_api, "publish_state_event"):
+                saved, applied = config_api._store_browser_session_result(
+                    "cn",
+                    target,
+                    result,
+                    config.proxy,
+                )
+
+            current = saved.cookies[0]
+            self.assertFalse(applied)
+            self.assertEqual(current.browser_status, "action_required")
+            self.assertIn("尚未登录", current.browser_message)
+
 
 if __name__ == "__main__":
     unittest.main()

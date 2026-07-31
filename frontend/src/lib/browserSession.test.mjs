@@ -58,6 +58,16 @@ test("unlinked browser is hidden for an archive-ready account", () => {
   assert.equal(shouldShowBrowserSession({}, { action: "none" }), false);
 });
 
+test("stale browser warning is hidden when the account is confirmed archive-ready", () => {
+  assert.equal(shouldShowBrowserSession({
+    browser_profile_id: "profile-global",
+    browser_status: "action_required",
+  }, {
+    state: "ok",
+    action: "none",
+  }), false);
+});
+
 test("browser state is shown when verification requires browser recovery", () => {
   assert.equal(shouldShowBrowserSession({}, { action: "browser" }), true);
 });

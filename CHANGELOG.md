@@ -1,5 +1,11 @@
 # 更新说明
 
+## 2026-07-31 · v0.15.14
+
+- 设置页线上账号卡改为与首页共用账号健康状态和 3MF gate 作为主状态；已确认可归档时，不再展示遗留的“等待浏览器登录 / 需要浏览器确认”警告。
+- 浏览器登录监听读取到与 MakerHub 相同的有效 Cookie 时也会写回 `synced`，清理 profile 恢复前遗留的过程状态。
+- 同一 Cookie 缺少 MakerWorld 登录 token 时保持 `action_required`，避免把未登录 profile 误判为已同步。
+
 ## 2026-07-31 · v0.15.13
 
 - Global 指纹浏览器 profile 会复用 MakerHub 的 HTTP/HTTPS 代理；新建 profile 和每次启动前都会校验该配置。

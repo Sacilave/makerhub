@@ -2479,7 +2479,7 @@ def _store_browser_session_result(
         and candidate_token
         and hmac.compare_digest(current_token, candidate_token)
     )
-    if changed and not candidate_token:
+    if not candidate_token:
         metadata = _browser_status_metadata(
             profile_id=result.profile_id,
             status="action_required",
@@ -2586,7 +2586,7 @@ def _schedule_cloakbrowser_monitor(platform: str, target: CookiePair, proxy_conf
                 try:
                     result = collect_browser_session(platform, current.browser_profile_id or snapshot.browser_profile_id)
                     candidate = sanitize_cookie_header(result.cookie)
-                    if candidate and candidate != sanitize_cookie_header(snapshot.cookie):
+                    if candidate:
                         _store_browser_session_result(platform, snapshot, result, proxy_snapshot)
                         return
                 except CloakBrowserUnavailable as exc:

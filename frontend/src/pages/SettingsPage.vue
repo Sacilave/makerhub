@@ -1123,15 +1123,7 @@ const onlineAccountItems = computed(() => {
       const sourceSync = syncStateByPlatform[item.platform];
       const operational = accountHealthByPlatform[item.platform] || {};
       const operationalView = accountOperationalView(operational);
-      const browserManaged = Boolean(String(mergedItem.browser_profile_id || "").trim());
-      const displayView = browserManaged
-        ? {
-          label: browserSessionStatusLabel(mergedItem),
-          statusClass: browserSessionStatusClass(mergedItem),
-          message: browserSessionMessage(mergedItem),
-          action: "browser",
-        }
-        : operationalView;
+      const displayView = operationalView;
       const sourceStats = accountSourceStats(
         sourceInventory,
         sourceSync,
@@ -1152,7 +1144,7 @@ const onlineAccountItems = computed(() => {
         browserStatusClass: browserSessionStatusClass(mergedItem),
         browserMessage: browserSessionMessage(mergedItem),
         browserBusy: browserSessionBusy(mergedItem),
-        showBrowserSession: !browserManaged && shouldShowBrowserSession(mergedItem, operational),
+        showBrowserSession: shouldShowBrowserSession(mergedItem, operational),
         ...sourceStats,
       };
     });
