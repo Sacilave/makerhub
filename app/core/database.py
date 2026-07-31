@@ -503,10 +503,10 @@ def load_json_state_archive_queue_verification_summary(key: str) -> dict[str, in
             classified AS (
                 SELECT CASE
                     WHEN lower(COALESCE(item -> 'meta' ->> 'source', '')) IN ('cn', 'mw_cn', 'makerworld_cn')
-                        OR lower(COALESCE(NULLIF(item -> 'meta' ->> 'model_url', ''), item ->> 'url', '')) LIKE '%makerworld.com.cn%'
+                        OR lower(COALESCE(NULLIF(item -> 'meta' ->> 'model_url', ''), item ->> 'url', '')) LIKE '%%makerworld.com.cn%%'
                         THEN 'cn'
                     WHEN lower(COALESCE(item -> 'meta' ->> 'source', '')) IN ('global', 'mw_global', 'makerworld_global')
-                        OR lower(COALESCE(NULLIF(item -> 'meta' ->> 'model_url', ''), item ->> 'url', '')) LIKE '%makerworld.com%'
+                        OR lower(COALESCE(NULLIF(item -> 'meta' ->> 'model_url', ''), item ->> 'url', '')) LIKE '%%makerworld.com%%'
                         THEN 'global'
                     ELSE ''
                 END AS platform

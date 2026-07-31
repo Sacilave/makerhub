@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.11`
+> 当前版本：`v0.15.12`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,10 +348,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
-### 2026-07-31 · v0.15.11
+### 2026-07-31 · v0.15.12
 
-- 首页账号状态会识别仍在归档队列中等待浏览器验证的 3MF 任务，不再在这类任务存在时笼统显示“可归档”。
-- 完成浏览器验证后可直接点击“已验证，继续归档”；系统只恢复一个受阻 3MF 探测任务，确认成功后再按既有流程继续，避免定时 Cookie 检测造成无谓下载。
+- 修复首页轻量归档队列查询在 Postgres 下将 MakerWorld URL 的 `%` 误判为 SQL 参数，导致接口返回 `500` 并让卡片错误显示为全零的问题。
+- 原有订阅、归档任务、本地库与源端刷新数据未被修改；修复后首页会重新读取原持久化数据。
 
 ### 2026-07-30 · v0.15.10
 
@@ -367,6 +367,11 @@ npm --prefix frontend run build
 
 <details>
 <summary>历史版本</summary>
+
+### 2026-07-31 · v0.15.11
+
+- 首页账号状态会识别仍在归档队列中等待浏览器验证的 3MF 任务，不再在这类任务存在时笼统显示“可归档”。
+- 完成浏览器验证后可直接点击“已验证，继续归档”；系统只恢复一个受阻 3MF 探测任务，确认成功后再按既有流程继续，避免定时 Cookie 检测造成无谓下载。
 
 ### 2026-07-30 · v0.15.8
 

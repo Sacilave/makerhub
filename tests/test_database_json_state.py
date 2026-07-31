@@ -1,3 +1,4 @@
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -719,6 +720,10 @@ class DatabaseInitializationGuardTest(unittest.TestCase):
 
         self.assertEqual(summary, {"cn": 3, "global": 1})
         self.assertTrue(any(params == ("archive_queue",) for _sql, params in calls))
+        sql = next(sql for sql, params in calls if params == ("archive_queue",))
+        self.assertIn("LIKE '%%makerworld.com.cn%%'", sql)
+        self.assertIn("LIKE '%%makerworld.com%%'", sql)
+        self.assertIsNone(re.search(r"(?<!%)%m", sql))
 
     def test_load_json_states_reads_multiple_keys_in_one_query(self):
         calls = []
