@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.12`
+> 当前版本：`v0.15.13`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-07-31 · v0.15.13
+
+- Global 指纹浏览器 profile 会复用 MakerHub 的 HTTP/HTTPS 代理；新建 profile 和每次启动前都会校验该配置。
+- 代理变更时，系统会先停止 Global profile、写入新代理并重新启动，避免浏览器继续使用旧的直连网络；国内 profile 保持用户原有设置并直连。
+
 ### 2026-07-31 · v0.15.12
 
 - 修复首页轻量归档队列查询在 Postgres 下将 MakerWorld URL 的 `%` 误判为 SQL 参数，导致接口返回 `500` 并让卡片错误显示为全零的问题。
@@ -359,12 +364,6 @@ npm --prefix frontend run build
 - Worker 会复用 2 分钟内已同步的浏览器登录态，不再为每个归档子任务重复读取一次 profile。
 - 用户打开浏览器后的自动同步首次遇到浏览器服务不可用即停止轮询，并明确保留“服务暂时不可用”状态，不会误提示重新登录。
 
-### 2026-07-30 · v0.15.9
-
-- MakerWorld 返回“今日下载次数已达到上限”、`daily quota` 等限额文案时，会优先识别为平台每日上限，即使上游状态码或字段同时表现为浏览器验证。
-- 每日上限会立即写入对应站点的 3MF 限额守卫，暂停当天后续 3MF 重试，并让首页账号卡显示“今日下载受限”。
-- 从指纹浏览器同步 Cookie 不再覆盖当天已经确认的每日上限状态，避免卡片退回“检测中”。
-
 <details>
 <summary>历史版本</summary>
 
@@ -372,6 +371,12 @@ npm --prefix frontend run build
 
 - 首页账号状态会识别仍在归档队列中等待浏览器验证的 3MF 任务，不再在这类任务存在时笼统显示“可归档”。
 - 完成浏览器验证后可直接点击“已验证，继续归档”；系统只恢复一个受阻 3MF 探测任务，确认成功后再按既有流程继续，避免定时 Cookie 检测造成无谓下载。
+
+### 2026-07-30 · v0.15.9
+
+- MakerWorld 返回“今日下载次数已达到上限”、`daily quota` 等限额文案时，会优先识别为平台每日上限，即使上游状态码或字段同时表现为浏览器验证。
+- 每日上限会立即写入对应站点的 3MF 限额守卫，暂停当天后续 3MF 重试，并让首页账号卡显示“今日下载受限”。
+- 从指纹浏览器同步 Cookie 不再覆盖当天已经确认的每日上限状态，避免卡片退回“检测中”。
 
 ### 2026-07-30 · v0.15.8
 

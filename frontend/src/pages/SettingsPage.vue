@@ -224,7 +224,7 @@
               </span>
               <span class="subscription-switch__label">{{ proxyForm.enabled ? "启用中" : "已停用" }}</span>
             </button>
-            <small class="archive-form__hint">开启后归档、订阅与源端刷新请求会带上当前代理设置；国内站会按代理策略直连。</small>
+            <small class="archive-form__hint">开启后归档、订阅与源端刷新请求会带上当前代理设置；Global 指纹浏览器会复用同一代理，代理变更后会在下一次操作时重启 profile 生效；国内站直连。</small>
           </label>
           <label class="field-card">
             <span>HTTP Proxy</span>

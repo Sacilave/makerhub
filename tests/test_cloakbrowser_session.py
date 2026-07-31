@@ -381,6 +381,85 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertFalse(create_payload["auto_launch"])
         self.assertEqual({item["tag"] for item in create_payload["tags"]}, {"makerhub", "cn"})
 
+    def test_ensure_profile_sets_managed_global_proxy_when_creating_profile(self):
+        responses = [[], {"id": "created-global", "name": "MakerHub Global", "status": "stopped"}]
+        with patch.object(cloakbrowser_session, "_request", side_effect=responses) as request_mock:
+            profile = cloakbrowser_session.ensure_profile(
+                "global",
+                browser_proxy="http://proxy.example:7890",
+            )
+
+        self.assertEqual(profile.id, "created-global")
+        self.assertEqual(
+            request_mock.call_args_list[1].kwargs["json_payload"]["proxy"],
+            "http://proxy.example:7890",
+        )
+
+    def test_global_profile_proxy_change_stops_updates_and_relaunches_profile(self):
+        direct_profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-global",
+            name="MakerHub Global",
+            status="running",
+        )
+        stopped_profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-global",
+            name="MakerHub Global",
+            status="stopped",
+        )
+        proxied_profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-global",
+            name="MakerHub Global",
+            status="stopped",
+            proxy="http://proxy.example:7891",
+        )
+        running_profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-global",
+            name="MakerHub Global",
+            status="running",
+            proxy="http://proxy.example:7891",
+        )
+        proxy_config = {
+            "enabled": True,
+            "http_proxy": "http://proxy.example:7890",
+            "https_proxy": "http://proxy.example:7891",
+        }
+
+        with patch.object(cloakbrowser_session, "ensure_profile", return_value=direct_profile), \
+                patch.object(cloakbrowser_session, "_stop_profile_for_proxy_change", return_value=stopped_profile) as stop_mock, \
+                patch.object(cloakbrowser_session, "_update_profile_proxy", return_value=proxied_profile) as update_mock, \
+                patch.object(cloakbrowser_session, "launch_profile", return_value=(running_profile, True)) as launch_mock:
+            _profile, running, launched_here = cloakbrowser_session._ensure_running_profile(
+                "global",
+                "profile-global",
+                proxy_config=proxy_config,
+            )
+
+        self.assertEqual(running.proxy, "http://proxy.example:7891")
+        self.assertTrue(launched_here)
+        stop_mock.assert_called_once_with(direct_profile)
+        update_mock.assert_called_once_with(stopped_profile, "http://proxy.example:7891")
+        launch_mock.assert_called_once_with(proxied_profile)
+
+    def test_cn_profile_keeps_its_browser_proxy_unmanaged(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+            proxy="http://user-controlled.example:7890",
+        )
+        with patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+                patch.object(cloakbrowser_session, "_update_profile_proxy") as update_mock, \
+                patch.object(cloakbrowser_session, "launch_profile", return_value=(profile, False)):
+            _profile, running, launched_here = cloakbrowser_session._ensure_running_profile(
+                "cn",
+                "profile-cn",
+                proxy_config={"enabled": True, "https_proxy": "http://proxy.example:7891"},
+            )
+
+        self.assertEqual(running.proxy, "http://user-controlled.example:7890")
+        self.assertFalse(launched_here)
+        update_mock.assert_not_called()
+
     def test_browser_cookie_items_preserve_structured_domain_and_expand_tokens(self):
         items = cloakbrowser_session.browser_cookie_items(
             "token=access; refreshToken=refresh",

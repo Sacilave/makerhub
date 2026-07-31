@@ -21,7 +21,7 @@ from app.services.online_accounts import (
     PLATFORM_ORIGINS,
     TICKET_ENDPOINTS,
 )
-from app.services.proxy_policy import proxy_mapping
+from app.services.proxy_policy import proxy_mapping, proxy_url
 from app.services.resource_limiter import resource_slot
 
 
@@ -102,6 +102,7 @@ class CloakBrowserProfile:
     name: str
     status: str = "stopped"
     cdp_url: str = ""
+    proxy: str = ""
 
 
 @dataclass(frozen=True)
@@ -248,6 +249,7 @@ def _profile_from_payload(payload: Any) -> CloakBrowserProfile | None:
         name=str(payload.get("name") or "").strip(),
         status=str(payload.get("status") or "stopped").strip().lower() or "stopped",
         cdp_url=str(payload.get("cdp_url") or "").strip(),
+        proxy=str(payload.get("proxy") or "").strip(),
     )
 
 
@@ -263,7 +265,34 @@ def _matches_managed_profile(payload: dict[str, Any], platform: str) -> bool:
     return "makerhub" in tag_names and platform in tag_names
 
 
-def ensure_profile(platform: str, profile_id: str = "") -> CloakBrowserProfile:
+def _managed_profile_proxy(
+    platform: str,
+    proxy_config: ProxyConfig | dict[str, Any] | None = None,
+) -> str | None:
+    """Return the MakerHub-managed proxy for a profile, if that profile owns one."""
+    if normalize_platform(platform) != "global":
+        return None
+    active_proxy = proxy_config
+    if active_proxy is None:
+        try:
+            from app.core.store import JsonStore
+
+            active_proxy = JsonStore().load().proxy
+        except Exception:
+            active_proxy = None
+    return proxy_url(active_proxy, PLATFORM_ORIGINS["global"], platform="global")
+
+
+def _profile_uses_proxy(profile: CloakBrowserProfile, proxy: str) -> bool:
+    return str(profile.proxy or "").strip() == str(proxy or "").strip()
+
+
+def ensure_profile(
+    platform: str,
+    profile_id: str = "",
+    *,
+    browser_proxy: str | None = None,
+) -> CloakBrowserProfile:
     clean_platform = normalize_platform(platform)
     clean_profile_id = str(profile_id or "").strip()
     if clean_profile_id:
@@ -279,26 +308,25 @@ def ensure_profile(platform: str, profile_id: str = "") -> CloakBrowserProfile:
                 if profile is not None:
                     return profile
 
-    payload = _request(
-        "POST",
-        "/api/profiles",
-        json_payload={
-            "name": PROFILE_NAMES[clean_platform],
-            "locale": PROFILE_LOCALES[clean_platform],
-            "timezone": PROFILE_TIMEZONES[clean_platform],
-            "platform": "windows",
-            "humanize": True,
-            "human_preset": "careful",
-            "headless": False,
-            "auto_launch": False,
-            "clipboard_sync": True,
-            "notes": f"MakerHub managed {clean_platform} account profile",
-            "tags": [
-                {"tag": "makerhub", "color": "#22c55e"},
-                {"tag": clean_platform, "color": "#64748b"},
-            ],
-        },
-    )
+    payload_data: dict[str, Any] = {
+        "name": PROFILE_NAMES[clean_platform],
+        "locale": PROFILE_LOCALES[clean_platform],
+        "timezone": PROFILE_TIMEZONES[clean_platform],
+        "platform": "windows",
+        "humanize": True,
+        "human_preset": "careful",
+        "headless": False,
+        "auto_launch": False,
+        "clipboard_sync": True,
+        "notes": f"MakerHub managed {clean_platform} account profile",
+        "tags": [
+            {"tag": "makerhub", "color": "#22c55e"},
+            {"tag": clean_platform, "color": "#64748b"},
+        ],
+    }
+    if browser_proxy is not None:
+        payload_data["proxy"] = str(browser_proxy or "").strip() or None
+    payload = _request("POST", "/api/profiles", json_payload=payload_data)
     profile = _profile_from_payload(payload)
     if profile is None:
         raise CloakBrowserError("指纹浏览器创建 profile 后没有返回有效 ID。")
@@ -317,6 +345,7 @@ def launch_profile(profile: CloakBrowserProfile) -> tuple[CloakBrowserProfile, b
             name=profile.name,
             status="running",
             cdp_url=f"/api/profiles/{profile.id}/cdp",
+            proxy=profile.proxy,
         )
     return launched, True
 
@@ -329,6 +358,29 @@ def stop_profile(profile_id: str) -> None:
         _request("POST", f"/api/profiles/{clean_profile_id}/stop")
     except CloakBrowserError:
         return
+
+
+def _stop_profile_for_proxy_change(profile: CloakBrowserProfile) -> CloakBrowserProfile:
+    stop_profile(profile.id)
+    deadline = time.monotonic() + min(max(_timeout_seconds(), 5), 15)
+    while time.monotonic() < deadline:
+        current = _profile_from_payload(_request("GET", f"/api/profiles/{profile.id}")) or profile
+        if current.status == "stopped":
+            return current
+        time.sleep(0.2)
+    raise CloakBrowserUnavailable("指纹浏览器正在切换全局站代理，请稍后重试。")
+
+
+def _update_profile_proxy(profile: CloakBrowserProfile, proxy: str) -> CloakBrowserProfile:
+    payload = _request(
+        "PUT",
+        f"/api/profiles/{profile.id}",
+        json_payload={"proxy": str(proxy or "").strip() or None},
+    )
+    updated = _profile_from_payload(payload)
+    if updated is None:
+        raise CloakBrowserError("指纹浏览器更新全局站代理后没有返回有效 profile。")
+    return updated
 
 
 def _profile_resource_name(platform: str, profile_id: str = "") -> str:
@@ -425,18 +477,30 @@ def _profile_cooldown_error() -> CloakBrowserUnavailable:
 def _ensure_running_profile(
     platform: str,
     profile_id: str = "",
+    *,
+    proxy_config: ProxyConfig | dict[str, Any] | None = None,
+    allow_recovery_restart: bool = False,
 ) -> tuple[CloakBrowserProfile, CloakBrowserProfile, bool]:
     clean_profile_id = str(profile_id or "").strip()
-    if clean_profile_id and _profile_recovery_cooldown_active(clean_profile_id):
+    if (
+        clean_profile_id
+        and not allow_recovery_restart
+        and _profile_recovery_cooldown_active(clean_profile_id)
+    ):
         raise _profile_cooldown_error()
     try:
-        profile = ensure_profile(platform, clean_profile_id)
+        managed_proxy = _managed_profile_proxy(platform, proxy_config)
+        profile = ensure_profile(platform, clean_profile_id, browser_proxy=managed_proxy)
     except CloakBrowserError as exc:
         if clean_profile_id and _is_transient_profile_error(exc):
             _mark_profile_recovery_attempt(clean_profile_id)
         raise
-    if _profile_recovery_cooldown_active(profile.id):
+    if not allow_recovery_restart and _profile_recovery_cooldown_active(profile.id):
         raise _profile_cooldown_error()
+    if managed_proxy is not None and not _profile_uses_proxy(profile, managed_proxy):
+        if profile.status == "running":
+            profile = _stop_profile_for_proxy_change(profile)
+        profile = _update_profile_proxy(profile, managed_proxy)
     try:
         running, launched_here = launch_profile(profile)
     except CloakBrowserError as exc:
@@ -469,8 +533,11 @@ def _run_bridge_with_profile_recovery(
     _mark_profile_recovery_attempt(running.id)
     try:
         stop_profile(running.id)
-        recovered_profile = ensure_profile(platform, running.id)
-        recovered_running, _launched = launch_profile(recovered_profile)
+        _recovered_profile, recovered_running, _launched = _ensure_running_profile(
+            platform,
+            running.id,
+            allow_recovery_restart=True,
+        )
         retry_payload = dict(payload)
         retry_payload["cdp_url"] = (
             f"{_configured_url()}/api/profiles/{recovered_running.id}/cdp"
@@ -845,7 +912,11 @@ def synchronize_browser_session(
 ) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
     with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="synchronize"):
-        _profile, running, launched_here = _ensure_running_profile(clean_platform, profile_id)
+        _profile, running, launched_here = _ensure_running_profile(
+            clean_platform,
+            profile_id,
+            proxy_config=proxy_config,
+        )
         ticket_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config)
         target_url = ticket_url or PLATFORM_ORIGINS[clean_platform]
         try:
@@ -891,7 +962,11 @@ def prepare_browser_login(
 ) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
     with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="prepare-login"):
-        _profile, running, launched_here = _ensure_running_profile(clean_platform, profile_id)
+        _profile, running, launched_here = _ensure_running_profile(
+            clean_platform,
+            profile_id,
+            proxy_config=proxy_config,
+        )
         target_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config) or browser_login_url(clean_platform)
         action = "seed" if raw_cookie and target_url != browser_login_url(clean_platform) else "login"
         running, restarted, snapshot = _run_bridge_with_profile_recovery(
