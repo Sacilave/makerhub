@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.15`
+> 当前版本：`v0.15.16`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-01 · v0.15.16
+
+- 修复旧版本遗留的浏览器登录态同步暂停任务无法自动恢复的问题；3MF gate 已打开时，Worker 启动会自动恢复一个探测任务，避免重复消耗下载额度。
+
 ### 2026-08-01 · v0.15.15
 
 - 修复浏览器登录态同步和账号配置更新并发时，旧同步结果被误判为 profile 切换、页面错误提示“需要重新登录”的问题。
@@ -358,13 +362,13 @@ npm --prefix frontend run build
 - 设置页账号卡与首页统一使用账号健康状态和 3MF gate 作为归档结论，不再让过期的浏览器过程状态覆盖“可归档”等真实状态。
 - 指纹浏览器恢复后，即使有效登录 Cookie 没有变化，也会清理旧的“等待登录 / 需要确认”提示并写回“浏览器已同步”；缺少登录 token 时不会误报同步成功。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-07-31 · v0.15.13
 
 - Global 指纹浏览器 profile 会复用 MakerHub 的 HTTP/HTTPS 代理；新建 profile 和每次启动前都会校验该配置。
 - 代理变更时，系统会先停止 Global profile、写入新代理并重新启动，避免浏览器继续使用旧的直连网络；国内 profile 保持用户原有设置并直连。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-07-31 · v0.15.12
 

@@ -3264,6 +3264,7 @@ class ArchiveTaskManager:
         queue = self._repair_queue_before_worker_start(repair_active=False)
         if hasattr(self.task_store, "resume_verification_paused_archive_tasks"):
             gate_by_platform = self._verification_resume_gate_snapshot(queue)
+            queue = self._resume_legacy_browser_session_tasks_when_gate_open(queue, gate_by_platform)
             self._schedule_browser_recovery_for_legacy_cookie_invalid_gates(queue, gate_by_platform)
         if int(queue.get("running_count") or 0) > 0:
             queue = self.task_store.refresh_recent_active_archive_leases()
@@ -3377,6 +3378,41 @@ class ArchiveTaskManager:
     def _verification_resume_allowed(self, item: dict, gate_by_platform: dict[str, dict[str, Any]]) -> bool:
         platform, _url, _meta = self._task_platform_and_url(item)
         return bool((gate_by_platform.get(platform) or {}).get("open"))
+
+    def _resume_legacy_browser_session_tasks_when_gate_open(
+        self,
+        queue: dict,
+        gate_by_platform: dict[str, dict[str, Any]],
+    ) -> dict:
+        resume_tasks = getattr(self.task_store, "resume_verification_paused_archive_tasks", None)
+        if not callable(resume_tasks):
+            return queue
+
+        def _matches(item: dict) -> bool:
+            if not _is_three_mf_only_task(item):
+                return False
+            if str(item.get("blocked_reason") or "").strip():
+                return False
+            if str(item.get("message") or "").strip() != CLOAKBROWSER_SESSION_REFRESHED_MESSAGE:
+                return False
+            return self._verification_resume_allowed(item, gate_by_platform)
+
+        if not any(isinstance(item, dict) and _matches(item) for item in queue.get("queued") or []):
+            return queue
+        resumed_queue = resume_tasks(
+            selector=_matches,
+            limit=THREE_MF_RECOVERY_PROBE_BATCH_SIZE,
+            message="浏览器登录态已恢复，正在探测 3MF 下载权限",
+            meta_updates={"browser_session_recovery": True},
+        )
+        if int(resumed_queue.get("resumed_count") or 0) > 0:
+            append_business_log(
+                "missing_3mf",
+                "legacy_browser_session_retry_resumed",
+                "浏览器登录态已恢复，已放行一个遗留 3MF 探测任务。",
+                resumed_count=int(resumed_queue.get("resumed_count") or 0),
+            )
+        return resumed_queue
 
     def _schedule_browser_recovery_for_legacy_cookie_invalid_gates(
         self,

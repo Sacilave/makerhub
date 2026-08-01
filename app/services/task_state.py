@@ -75,6 +75,7 @@ ARCHIVE_COMPLETION_MESSAGE_MARKERS = (
 )
 ARCHIVE_VERIFICATION_REQUIRED_MESSAGE = "MakerWorld 需要验证，前往官网任意下载一个模型。"
 ARCHIVE_VERIFICATION_RESUMED_MESSAGE = "验证已通过，恢复归档队列。"
+ARCHIVE_LEGACY_BROWSER_SESSION_RECOVERY_MESSAGE = "指纹浏览器登录态已更新，正在重试当前受阻的 3MF 下载。"
 _STATE_LOCKS: dict[str, threading.RLock] = {}
 _STATE_LOCKS_GUARD = threading.Lock()
 _ORGANIZER_HISTORY_COUNT_CACHE = {
@@ -2484,7 +2485,11 @@ class TaskStateStore:
                         blocked_reason == "needs_verification"
                         or (
                             not blocked_reason
-                            and message == ARCHIVE_VERIFICATION_REQUIRED_MESSAGE
+                            and message
+                            in {
+                                ARCHIVE_VERIFICATION_REQUIRED_MESSAGE,
+                                ARCHIVE_LEGACY_BROWSER_SESSION_RECOVERY_MESSAGE,
+                            }
                         )
                     )
                 )
