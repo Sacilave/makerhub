@@ -4,6 +4,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -87,6 +88,12 @@ CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE = (
     "指纹浏览器登录态已同步，但 MakerWorld 仍拒绝 3MF 下载；请在官网完成验证后再继续归档。"
 )
 CLOAKBROWSER_SESSION_REFRESHED_MESSAGE = "指纹浏览器登录态已更新，正在重试当前受阻的 3MF 下载。"
+
+
+@dataclass(frozen=True)
+class _BrowserSessionPersistResult:
+    outcome: str
+    account: object | None = None
 
 
 def _archive_worker_concurrency(config: Any = None) -> int:
@@ -847,24 +854,28 @@ class ArchiveTaskManager:
         profile_id: str,
         status: str,
         message: str,
-    ) -> object | None:
+    ) -> _BrowserSessionPersistResult:
         expected_cookie_value = sanitize_cookie_header(expected_cookie)
         expected_profile_id = str(profile_id or "").strip()
         saved_pair = None
+        outcome = "save_failed"
         timestamp = china_now().isoformat()
 
         def _update_latest(config):
-            nonlocal saved_pair
+            nonlocal outcome, saved_pair
             saved_pair = None
             current = next((item for item in config.cookies if item.platform == platform), None)
             if current is None:
+                outcome = "account_missing"
                 return config
 
             current_cookie = sanitize_cookie_header(current.cookie)
             current_profile_id = str(current.browser_profile_id or "").strip()
-            if expected_profile_id and current_profile_id and current_profile_id != expected_profile_id:
+            if expected_profile_id and current_profile_id != expected_profile_id:
+                outcome = "profile_changed"
                 return config
             if current_cookie != expected_cookie_value:
+                outcome = "stale_cookie"
                 return config
 
             next_cookie = sanitize_cookie_header(cookie) or current_cookie
@@ -882,6 +893,7 @@ class ArchiveTaskManager:
             )
             config.cookies = [next_pair if item.platform == platform else item for item in config.cookies]
             saved_pair = next_pair
+            outcome = "saved"
             return config
 
         try:
@@ -894,15 +906,44 @@ class ArchiveTaskManager:
                 platform=platform,
                 error=str(exc)[:240],
             )
-            return None
+            return _BrowserSessionPersistResult("save_failed")
         if saved_pair is None:
-            return None
+            return _BrowserSessionPersistResult(outcome)
         publish_state_event(
             "online_accounts",
             "state.changed",
             {"platform": platform, "status": saved_pair.browser_status},
         )
-        return next((item for item in saved.cookies if item.platform == platform), saved_pair)
+        account = next((item for item in saved.cookies if item.platform == platform), saved_pair)
+        return _BrowserSessionPersistResult("saved", account)
+
+    def _reload_browser_session_after_persist_race(
+        self,
+        platform: str,
+        outcome: str,
+    ) -> object | None:
+        try:
+            config = self.store.load()
+            current = next((item for item in config.cookies if item.platform == platform), None)
+        except Exception as exc:
+            _log_archive(
+                "cloakbrowser_task_session_race_reload_failed",
+                "浏览器登录态更新与归档任务并发，重新读取最新账号失败。",
+                level="warning",
+                platform=platform,
+                outcome=outcome,
+                error=str(exc)[:240],
+            )
+            return None
+        if current is None or not extract_auth_token(getattr(current, "cookie", "") or ""):
+            return None
+        _log_archive(
+            "cloakbrowser_task_session_race_reloaded",
+            "浏览器登录态已被并发更新，归档任务改用最新账号配置。",
+            platform=platform,
+            outcome=outcome,
+        )
+        return current
 
     def _refresh_browser_session_for_task(self, platform: str) -> tuple[object | None, str]:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
@@ -946,7 +987,7 @@ class ArchiveTaskManager:
                 return current, ""
             return None, f"指纹浏览器服务暂时不可用：{str(exc)[:240]}"
         except CloakBrowserError as exc:
-            self._persist_browser_recovery_session(
+            persisted = self._persist_browser_recovery_session(
                 normalized_platform,
                 expected_cookie=expected_cookie,
                 cookie=expected_cookie,
@@ -954,11 +995,18 @@ class ArchiveTaskManager:
                 status="action_required",
                 message=f"无法读取指纹浏览器登录态：{str(exc)[:240]}",
             )
+            if persisted.outcome in {"stale_cookie", "profile_changed"}:
+                latest = self._reload_browser_session_after_persist_race(
+                    normalized_platform,
+                    persisted.outcome,
+                )
+                if latest is not None:
+                    return latest, ""
             return None, f"无法读取关联的指纹浏览器登录态：{str(exc)[:240]}"
 
         browser_cookie = sanitize_cookie_header(browser_result.cookie)
         if not extract_auth_token(browser_cookie):
-            self._persist_browser_recovery_session(
+            persisted = self._persist_browser_recovery_session(
                 normalized_platform,
                 expected_cookie=expected_cookie,
                 cookie=expected_cookie,
@@ -966,9 +1014,16 @@ class ArchiveTaskManager:
                 status="action_required",
                 message="请先在关联的指纹浏览器中完成 MakerWorld 登录；归档不会使用历史 Cookie。",
             )
+            if persisted.outcome in {"stale_cookie", "profile_changed"}:
+                latest = self._reload_browser_session_after_persist_race(
+                    normalized_platform,
+                    persisted.outcome,
+                )
+                if latest is not None:
+                    return latest, ""
             return None, "关联的指纹浏览器尚未登录 MakerWorld，请完成浏览器登录后重试。"
 
-        saved = self._persist_browser_recovery_session(
+        persisted = self._persist_browser_recovery_session(
             normalized_platform,
             expected_cookie=expected_cookie,
             cookie=browser_cookie,
@@ -976,9 +1031,16 @@ class ArchiveTaskManager:
             status="synced",
             message="已采用关联指纹浏览器的当前登录态。",
         )
-        if saved is None:
-            return None, "指纹浏览器 profile 已切换，未采用旧 profile 的登录态。"
-        return saved, ""
+        if persisted.outcome == "saved":
+            return persisted.account, ""
+        if persisted.outcome in {"stale_cookie", "profile_changed"}:
+            latest = self._reload_browser_session_after_persist_race(
+                normalized_platform,
+                persisted.outcome,
+            )
+            if latest is not None:
+                return latest, ""
+        return None, "指纹浏览器会话同步发生并发更新，请稍后重试。"
 
     def _recover_browser_session_for_three_mf_gate(self, platform: str, *, primary: Optional[dict] = None) -> dict[str, str]:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
@@ -1059,7 +1121,7 @@ class ArchiveTaskManager:
             )
             return {"outcome": "unchanged", "message": CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE}
 
-        saved = self._persist_browser_recovery_session(
+        persisted = self._persist_browser_recovery_session(
             normalized_platform,
             expected_cookie=expected_cookie,
             cookie=browser_cookie,
@@ -1067,8 +1129,11 @@ class ArchiveTaskManager:
             status="synced",
             message="指纹浏览器登录态已自动同步。",
         )
-        if saved is None:
-            return {"outcome": "stale", "message": "MakerHub 登录态已变化，跳过浏览器同步结果。"}
+        if persisted.outcome != "saved":
+            return {
+                "outcome": persisted.outcome,
+                "message": "MakerHub 登录态已更新，跳过过期的浏览器同步结果。",
+            }
 
         try:
             mark_account_checking(

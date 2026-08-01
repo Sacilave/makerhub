@@ -177,7 +177,7 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         self.assertIsNotNone(refreshed)
         self.assertEqual(refreshed.cookie, "token=synced; refreshToken=fresh")
 
-    def test_stale_browser_sync_result_does_not_overwrite_newer_cookie(self):
+    def test_stale_browser_sync_result_reports_newer_cookie_without_overwriting_it(self):
         manager, store = self._manager_with_cookie("token=old; refreshToken=old")
         config = store.load()
         config.cookies = [
@@ -199,10 +199,135 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
             message="过期的同步结果",
         )
 
-        self.assertIsNone(saved)
+        self.assertEqual(saved.outcome, "stale_cookie")
+        self.assertIsNone(saved.account)
         current = store.load().cookies[0]
         self.assertEqual(current.cookie, "token=new; refreshToken=new")
         self.assertEqual(current.browser_message, "较新的登录态")
+
+    def test_profile_change_is_distinguished_from_a_newer_cookie(self):
+        manager, store = self._manager_with_cookie("token=old; refreshToken=old")
+        config = store.load()
+        config.cookies = [
+            config.cookies[0].model_copy(
+                update={
+                    "browser_profile_id": "profile-new",
+                    "cookie": "token=new; refreshToken=new",
+                }
+            )
+        ]
+        store.save(config)
+
+        saved = manager._persist_browser_recovery_session(
+            "cn",
+            expected_cookie="token=old; refreshToken=old",
+            cookie="token=stale; refreshToken=stale",
+            profile_id="profile-cn",
+            status="synced",
+            message="过期的同步结果",
+        )
+
+        self.assertEqual(saved.outcome, "profile_changed")
+        self.assertIsNone(saved.account)
+
+    def test_task_session_refresh_uses_newer_cookie_when_browser_sync_races_with_config_update(self):
+        manager, store = self._manager_with_cookie("token=old; refreshToken=old")
+        browser_result = CloakBrowserSessionResult(
+            profile_id="profile-cn",
+            cookie="token=browser; refreshToken=browser",
+        )
+
+        def replace_cookie_during_collection(*_args):
+            config = store.load()
+            config.cookies = [
+                config.cookies[0].model_copy(
+                    update={
+                        "cookie": "token=new; refreshToken=new",
+                        "browser_status": "synced",
+                    }
+                )
+            ]
+            store.save(config)
+            return browser_result
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(
+                    archive_worker_module,
+                    "collect_browser_session",
+                    side_effect=replace_cookie_during_collection,
+                ):
+            refreshed, error = manager._refresh_browser_session_for_task("cn")
+
+        self.assertEqual(error, "")
+        self.assertIsNotNone(refreshed)
+        self.assertEqual(refreshed.cookie, "token=new; refreshToken=new")
+
+    def test_task_session_refresh_uses_newer_profile_when_profile_changes_during_sync(self):
+        manager, store = self._manager_with_cookie("token=old; refreshToken=old")
+        browser_result = CloakBrowserSessionResult(
+            profile_id="profile-cn",
+            cookie="token=browser; refreshToken=browser",
+        )
+
+        def replace_profile_during_collection(*_args):
+            config = store.load()
+            config.cookies = [
+                config.cookies[0].model_copy(
+                    update={
+                        "browser_profile_id": "profile-new",
+                        "cookie": "token=new; refreshToken=new",
+                        "browser_status": "synced",
+                    }
+                )
+            ]
+            store.save(config)
+            return browser_result
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(
+                    archive_worker_module,
+                    "collect_browser_session",
+                    side_effect=replace_profile_during_collection,
+                ):
+            refreshed, error = manager._refresh_browser_session_for_task("cn")
+
+        self.assertEqual(error, "")
+        self.assertIsNotNone(refreshed)
+        self.assertEqual(refreshed.browser_profile_id, "profile-new")
+        self.assertEqual(refreshed.cookie, "token=new; refreshToken=new")
+
+    def test_logged_out_browser_snapshot_does_not_override_a_newer_cookie(self):
+        manager, store = self._manager_with_cookie("token=old; refreshToken=old")
+        browser_result = CloakBrowserSessionResult(
+            profile_id="profile-cn",
+            cookie="cf_clearance=verified",
+        )
+
+        def replace_cookie_during_collection(*_args):
+            config = store.load()
+            config.cookies = [
+                config.cookies[0].model_copy(
+                    update={
+                        "cookie": "token=new; refreshToken=new",
+                        "browser_status": "synced",
+                    }
+                )
+            ]
+            store.save(config)
+            return browser_result
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(
+                    archive_worker_module,
+                    "collect_browser_session",
+                    side_effect=replace_cookie_during_collection,
+                ):
+            refreshed, error = manager._refresh_browser_session_for_task("cn")
+
+        self.assertEqual(error, "")
+        self.assertIsNotNone(refreshed)
+        self.assertEqual(refreshed.cookie, "token=new; refreshToken=new")
+        self.assertEqual(store.load().cookies[0].browser_status, "synced")
 
     def test_task_session_refresh_rejects_a_logged_out_browser_without_using_old_cookie(self):
         manager, store = self._manager_with_cookie("token=old; refreshToken=old")
@@ -286,6 +411,17 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
             model_id="123",
             instance_id="",
         )
+        update_gate_mock.assert_not_called()
+
+    def test_browser_session_sync_race_does_not_close_three_mf_gate(self):
+        with patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
+            archive_worker_module._sync_account_health_for_archive_exception(
+                task_meta={"source": "cn"},
+                model_url="https://makerworld.com.cn/zh/models/123",
+                model_id="123",
+                detail="指纹浏览器会话同步发生并发更新，请稍后重试。",
+            )
+
         update_gate_mock.assert_not_called()
 
     def test_browser_recovery_task_passes_saved_profile_to_3mf_authorization(self):

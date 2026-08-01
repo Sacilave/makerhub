@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.14`
+> 当前版本：`v0.15.15`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-01 · v0.15.15
+
+- 修复浏览器登录态同步和账号配置更新并发时，旧同步结果被误判为 profile 切换、页面错误提示“需要重新登录”的问题。
+- 归档任务会自动改用已保存的最新浏览器登录态；真实浏览器未登录和实际验证要求仍会保留原有提示。
+
 ### 2026-07-31 · v0.15.14
 
 - 设置页账号卡与首页统一使用账号健康状态和 3MF gate 作为归档结论，不再让过期的浏览器过程状态覆盖“可归档”等真实状态。
@@ -358,13 +363,13 @@ npm --prefix frontend run build
 - Global 指纹浏览器 profile 会复用 MakerHub 的 HTTP/HTTPS 代理；新建 profile 和每次启动前都会校验该配置。
 - 代理变更时，系统会先停止 Global profile、写入新代理并重新启动，避免浏览器继续使用旧的直连网络；国内 profile 保持用户原有设置并直连。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-07-31 · v0.15.12
 
 - 修复首页轻量归档队列查询在 Postgres 下将 MakerWorld URL 的 `%` 误判为 SQL 参数，导致接口返回 `500` 并让卡片错误显示为全零的问题。
 - 原有订阅、归档任务、本地库与源端刷新数据未被修改；修复后首页会重新读取原持久化数据。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-07-31 · v0.15.11
 
