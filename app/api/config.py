@@ -92,6 +92,7 @@ from app.services.cloakbrowser_session import (
     CloakBrowserSessionResult,
     CloakBrowserUnavailable,
     cloakbrowser_configured,
+    cloakbrowser_public_url,
     collect_browser_session,
     prepare_browser_login,
 )
@@ -151,6 +152,8 @@ CLOAKBROWSER_MONITOR_LOCK = threading.Lock()
 CLOAKBROWSER_MONITOR_RUNNING: set[str] = set()
 CLOAKBROWSER_MONITOR_TIMEOUT_SECONDS = 10 * 60
 CLOAKBROWSER_MONITOR_INTERVAL_SECONDS = 5
+CLOAKBROWSER_LOGIN_LOCK = threading.Lock()
+CLOAKBROWSER_LOGIN_RUNNING: set[str] = set()
 github_version_refresh_task: asyncio.Task | None = None
 github_version_refresh_lock = asyncio.Lock()
 GITHUB_README_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/README.md"
@@ -2566,6 +2569,123 @@ def _store_browser_session_result(
     return saved, True
 
 
+def _run_cloakbrowser_login(platform: str, target: CookiePair, proxy_config: ProxyConfig) -> None:
+    try:
+        result = prepare_browser_login(
+            platform,
+            "",
+            profile_id=target.browser_profile_id,
+            proxy_config=proxy_config,
+        )
+    except CloakBrowserUnavailable as exc:
+        _save_browser_status(
+            platform,
+            expected_cookie=target.cookie,
+            profile_id=target.browser_profile_id,
+            status=target.browser_status or ("waiting" if target.browser_profile_id else "not_linked"),
+            message=f"指纹浏览器服务暂时不可用：{str(exc)[:240]}",
+            synced_at=target.browser_synced_at,
+        )
+        append_business_log(
+            "settings",
+            "cloakbrowser_login_unavailable",
+            "指纹浏览器登录窗口后台启动失败。",
+            level="warning",
+            platform=platform,
+            error=str(exc)[:240],
+        )
+        return
+    except CloakBrowserError as exc:
+        _save_browser_status(
+            platform,
+            expected_cookie=target.cookie,
+            profile_id=target.browser_profile_id,
+            status="action_required",
+            message=f"指纹浏览器启动失败：{str(exc)[:240]}",
+        )
+        append_business_log(
+            "settings",
+            "cloakbrowser_login_failed",
+            "指纹浏览器登录窗口后台启动失败。",
+            level="warning",
+            platform=platform,
+            error=str(exc)[:240],
+        )
+        return
+    except Exception as exc:
+        _save_browser_status(
+            platform,
+            expected_cookie=target.cookie,
+            profile_id=target.browser_profile_id,
+            status="action_required",
+            message="指纹浏览器启动失败，请稍后重试。",
+        )
+        append_business_log(
+            "settings",
+            "cloakbrowser_login_failed",
+            "指纹浏览器登录窗口后台启动异常。",
+            level="warning",
+            platform=platform,
+            error=str(exc)[:240],
+        )
+        return
+
+    saved = _save_browser_status(
+        platform,
+        expected_cookie=target.cookie,
+        profile_id=result.profile_id,
+        status="waiting",
+        message="指纹浏览器已打开，完成登录后会自动同步回 MakerHub。",
+    )
+    if saved is None:
+        append_business_log(
+            "settings",
+            "cloakbrowser_login_stale",
+            "账号配置已更新，跳过过期的浏览器启动结果。",
+            platform=platform,
+            profile_id=result.profile_id,
+        )
+        return
+    current = next((item for item in saved.cookies if item.platform == platform), target)
+    _schedule_cloakbrowser_monitor(platform, current, saved.proxy)
+    append_business_log(
+        "settings",
+        "cloakbrowser_login_opened",
+        "指纹浏览器登录窗口已启动。",
+        platform=platform,
+        profile_id=result.profile_id,
+    )
+
+
+def _schedule_cloakbrowser_login(platform: str, target: CookiePair, proxy_config: ProxyConfig) -> bool:
+    with CLOAKBROWSER_LOGIN_LOCK:
+        if platform in CLOAKBROWSER_LOGIN_RUNNING:
+            return False
+        CLOAKBROWSER_LOGIN_RUNNING.add(platform)
+    snapshot = target.model_copy(deep=True)
+    proxy_snapshot = proxy_config.model_copy(deep=True) if hasattr(proxy_config, "model_copy") else copy.deepcopy(proxy_config)
+
+    def _worker() -> None:
+        try:
+            _run_cloakbrowser_login(platform, snapshot, proxy_snapshot)
+        finally:
+            with CLOAKBROWSER_LOGIN_LOCK:
+                CLOAKBROWSER_LOGIN_RUNNING.discard(platform)
+
+    thread = threading.Thread(
+        target=_worker,
+        name=f"makerhub-cloakbrowser-login-{platform}",
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception:
+        with CLOAKBROWSER_LOGIN_LOCK:
+            CLOAKBROWSER_LOGIN_RUNNING.discard(platform)
+        raise
+    return True
+
+
 def _schedule_cloakbrowser_monitor(platform: str, target: CookiePair, proxy_config: ProxyConfig) -> None:
     with CLOAKBROWSER_MONITOR_LOCK:
         if platform in CLOAKBROWSER_MONITOR_RUNNING:
@@ -3663,64 +3783,50 @@ async def open_config_online_account_browser(platform: str, request: Request):
         config.cookies = _upsert_cookie_pair(config.cookies, target)
         config = store.save(config)
 
-    _save_browser_status(
+    saved = _save_browser_status(
         clean_platform,
         expected_cookie=target.cookie,
         profile_id=target.browser_profile_id,
         status="launching",
         message="正在启动指纹浏览器登录窗口。",
-    )
+    ) or store.load()
     try:
-        result = await run_task_api(
-            prepare_browser_login,
-            clean_platform,
-            "",
-            profile_id=target.browser_profile_id,
-            proxy_config=config.proxy,
-        )
-    except CloakBrowserUnavailable as exc:
+        queued = _schedule_cloakbrowser_login(clean_platform, target, config.proxy)
+    except Exception as exc:
         _save_browser_status(
             clean_platform,
             expected_cookie=target.cookie,
             profile_id=target.browser_profile_id,
             status=target.browser_status or ("waiting" if target.browser_profile_id else "not_linked"),
-            message=f"指纹浏览器服务暂时不可用：{str(exc)[:240]}",
+            message="MakerHub 暂时无法创建浏览器后台启动任务，请稍后重试。",
             synced_at=target.browser_synced_at,
         )
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except CloakBrowserError as exc:
-        _save_browser_status(
-            clean_platform,
-            expected_cookie=target.cookie,
-            profile_id=target.browser_profile_id,
-            status="action_required",
-            message=f"指纹浏览器启动失败：{str(exc)[:240]}",
+        append_business_log(
+            "settings",
+            "cloakbrowser_login_queue_failed",
+            "指纹浏览器后台启动任务创建失败。",
+            level="warning",
+            platform=clean_platform,
+            error=str(exc)[:240],
         )
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    saved = _save_browser_status(
-        clean_platform,
-        expected_cookie=target.cookie,
-        profile_id=result.profile_id,
-        status="waiting",
-        message="指纹浏览器已打开，完成登录后会自动同步回 MakerHub。",
-    ) or store.load()
-    current = next((item for item in saved.cookies if item.platform == clean_platform), target)
-    _schedule_cloakbrowser_monitor(clean_platform, current, saved.proxy)
+        raise HTTPException(
+            status_code=503,
+            detail="MakerHub 暂时无法创建浏览器后台启动任务，请稍后重试。",
+        ) from exc
     append_business_log(
         "settings",
-        "cloakbrowser_login_opened",
-        "指纹浏览器登录窗口已启动。",
+        "cloakbrowser_login_queued",
+        "指纹浏览器登录窗口已提交后台启动。" if queued else "指纹浏览器登录窗口正在后台启动。",
         platform=clean_platform,
-        profile_id=result.profile_id,
+        profile_id=target.browser_profile_id,
     )
     response = _public_config_payload(saved)
     response["browser_session"] = {
         "platform": clean_platform,
-        "profile_id": result.profile_id,
-        "status": "waiting",
-        "public_url": result.public_url,
-        "message": "完成浏览器登录后会自动同步回 MakerHub。",
+        "profile_id": target.browser_profile_id,
+        "status": "launching",
+        "public_url": cloakbrowser_public_url(),
+        "message": "指纹浏览器正在启动，完成登录后会自动同步回 MakerHub。",
     }
     return response
 

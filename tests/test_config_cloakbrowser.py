@@ -318,46 +318,36 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved.cookies[0].cookie, "token=browser")
             retry_mock.assert_called_once_with({"cn"})
 
-    async def test_open_browser_returns_public_url_and_starts_monitor(self):
+    async def test_open_browser_returns_public_url_and_queues_background_launch(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             config = store.load()
             config.cookies = [CookiePair(platform="cn", cookie="token=old")]
             store.save(config)
-            result = CloakBrowserSessionResult(
-                profile_id="profile-cn",
-                cookie="token=old",
-                public_url="https://browser.example.test",
-            )
 
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "cloakbrowser_configured", return_value=True), \
-                    patch.object(config_api, "prepare_browser_login", return_value=result) as prepare_mock, \
-                    patch.object(config_api, "_schedule_cloakbrowser_monitor") as monitor_mock, \
+                    patch.object(config_api, "cloakbrowser_public_url", return_value="https://browser.example.test"), \
+                    patch.object(config_api, "_schedule_cloakbrowser_login", return_value=True) as schedule_mock, \
+                    patch.object(config_api, "prepare_browser_login") as prepare_mock, \
                     patch.object(config_api, "_public_config_payload", side_effect=_public_payload), \
                     patch.object(config_api, "append_business_log"), \
                     patch.object(config_api, "publish_state_event"):
                 payload = await config_api.open_config_online_account_browser("cn", _request())
 
             self.assertEqual(payload["browser_session"]["public_url"], "https://browser.example.test")
-            self.assertEqual(store.load().cookies[0].browser_profile_id, "profile-cn")
-            self.assertEqual(store.load().cookies[0].browser_status, "waiting")
-            self.assertEqual(prepare_mock.call_args.args[1], "")
-            monitor_mock.assert_called_once()
+            self.assertEqual(payload["browser_session"]["status"], "launching")
+            self.assertEqual(store.load().cookies[0].browser_status, "launching")
+            prepare_mock.assert_not_called()
+            schedule_mock.assert_called_once()
 
     async def test_open_browser_creates_an_empty_browser_backed_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
-            result = CloakBrowserSessionResult(
-                profile_id="profile-global",
-                cookie="",
-                public_url="https://browser.example.test",
-            )
-
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "cloakbrowser_configured", return_value=True), \
-                    patch.object(config_api, "prepare_browser_login", return_value=result), \
-                    patch.object(config_api, "_schedule_cloakbrowser_monitor"), \
+                    patch.object(config_api, "cloakbrowser_public_url", return_value="https://browser.example.test"), \
+                    patch.object(config_api, "_schedule_cloakbrowser_login", return_value=True), \
                     patch.object(config_api, "_public_config_payload", side_effect=_public_payload), \
                     patch.object(config_api, "append_business_log"), \
                     patch.object(config_api, "publish_state_event"):
@@ -366,8 +356,43 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             saved = next(item for item in store.load().cookies if item.platform == "global")
             self.assertEqual(saved.platform, "global")
             self.assertEqual(saved.cookie, "")
-            self.assertEqual(saved.browser_profile_id, "profile-global")
-            self.assertEqual(saved.browser_status, "waiting")
+            self.assertEqual(saved.browser_profile_id, "")
+            self.assertEqual(saved.browser_status, "launching")
+
+    async def test_open_browser_returns_json_service_error_when_background_thread_cannot_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [
+                CookiePair(
+                    platform="cn",
+                    cookie="token=synced",
+                    browser_profile_id="profile-cn",
+                    browser_status="synced",
+                    browser_message="指纹浏览器登录态已同步。",
+                    browser_synced_at="2026-07-26T03:00:00+08:00",
+                )
+            ]
+            store.save(config)
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "cloakbrowser_configured", return_value=True), \
+                    patch.object(
+                        config_api,
+                        "_schedule_cloakbrowser_login",
+                        side_effect=RuntimeError("can't start new thread"),
+                    ), \
+                    patch.object(config_api, "append_business_log"), \
+                    patch.object(config_api, "publish_state_event"):
+                with self.assertRaises(config_api.HTTPException) as raised:
+                    await config_api.open_config_online_account_browser("cn", _request())
+
+            self.assertEqual(raised.exception.status_code, 503)
+            self.assertNotIn("can't start", str(raised.exception.detail))
+            saved = store.load().cookies[0]
+            self.assertEqual(saved.browser_status, "synced")
+            self.assertEqual(saved.browser_synced_at, "2026-07-26T03:00:00+08:00")
+            self.assertIn("后台启动任务", saved.browser_message)
 
     async def test_manual_browser_sync_preserves_synced_status_during_temporary_outage(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -401,7 +426,7 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved.browser_synced_at, "2026-07-26T03:00:00+08:00")
             self.assertIn("暂时不可用", saved.browser_message)
 
-    async def test_open_browser_preserves_synced_status_during_bridge_protocol_timeout(self):
+    async def test_background_browser_open_preserves_synced_status_during_bridge_protocol_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             config = store.load()
@@ -418,21 +443,68 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             store.save(config)
 
             with patch.object(config_api, "store", store), \
-                    patch.object(config_api, "cloakbrowser_configured", return_value=True), \
                     patch.object(
                         config_api,
                         "prepare_browser_login",
                         side_effect=CloakBrowserBridgeError("Network.enable timed out."),
                     ), \
+                    patch.object(config_api, "append_business_log"), \
                     patch.object(config_api, "publish_state_event"):
-                with self.assertRaises(config_api.HTTPException) as raised:
-                    await config_api.open_config_online_account_browser("cn", _request())
+                config_api._run_cloakbrowser_login("cn", config.cookies[0], config.proxy)
 
-            self.assertEqual(raised.exception.status_code, 502)
             saved = store.load().cookies[0]
             self.assertEqual(saved.browser_status, "synced")
             self.assertEqual(saved.browser_synced_at, "2026-07-26T03:00:00+08:00")
             self.assertIn("暂时不可用", saved.browser_message)
+
+    async def test_background_browser_open_starts_monitor_after_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            target = CookiePair(platform="cn", cookie="token=old", browser_profile_id="profile-cn")
+            config.cookies = [target]
+            store.save(config)
+            result = CloakBrowserSessionResult(
+                profile_id="profile-cn",
+                cookie="token=old",
+                public_url="https://browser.example.test",
+            )
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "prepare_browser_login", return_value=result) as prepare_mock, \
+                    patch.object(config_api, "_schedule_cloakbrowser_monitor") as monitor_mock, \
+                    patch.object(config_api, "append_business_log"), \
+                    patch.object(config_api, "publish_state_event"):
+                config_api._run_cloakbrowser_login("cn", target, config.proxy)
+
+            saved = store.load().cookies[0]
+            self.assertEqual(saved.browser_profile_id, "profile-cn")
+            self.assertEqual(saved.browser_status, "waiting")
+            self.assertEqual(prepare_mock.call_args.args[1], "")
+            monitor_mock.assert_called_once()
+
+    async def test_background_browser_open_is_deduplicated_per_platform(self):
+        pending_threads = []
+
+        class PendingThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+                pending_threads.append(self)
+
+            def start(self):
+                return None
+
+        target = CookiePair(platform="cn", browser_profile_id="profile-cn")
+        try:
+            with patch.object(config_api.threading, "Thread", side_effect=lambda **kwargs: PendingThread(**kwargs)):
+                first = config_api._schedule_cloakbrowser_login("cn", target, config_api.ProxyConfig())
+                second = config_api._schedule_cloakbrowser_login("cn", target, config_api.ProxyConfig())
+        finally:
+            config_api.CLOAKBROWSER_LOGIN_RUNNING.discard("cn")
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(len(pending_threads), 1)
 
     async def test_browser_monitor_stops_after_service_outage_without_retrying(self):
         class ImmediateThread:
