@@ -665,10 +665,10 @@ def _sync_account_health_for_archive_result(
                 model_id=model_id,
                 instance_id=http_error["instance_id"] or instance_id,
             )
-        elif missing_3mf_retry and not missing_items:
+        elif (missing_3mf_retry or browser_session_recovery) and not missing_items:
             mark_account_ok(
                 platform,
-                source="missing_3mf_retry" if missing_3mf_retry else "archive_download",
+                source="browser_session_recovery" if browser_session_recovery else "missing_3mf_retry",
                 model_url=model_url,
                 model_id=model_id,
                 instance_id=instance_id,
@@ -3334,7 +3334,14 @@ class ArchiveTaskManager:
                 continue
             if _is_batch_parent_waiting_for_children(item):
                 continue
-            if self._is_three_mf_only_task_blocked_by_gate(item):
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            gate = None
+            if _is_three_mf_only_task(item) and not bool(meta.get("browser_session_recovery")):
+                url = normalize_source_url(str(meta.get("model_url") or item.get("url") or item.get("title") or ""))
+                gate = three_mf_gate_for_url(url, meta)
+            if self._is_three_mf_only_task_blocked_by_gate(item, gate=gate):
+                if self._promote_unknown_three_mf_probe(queue, item, gate=gate):
+                    return item
                 continue
             return item
         for item in queued:
@@ -3347,15 +3354,44 @@ class ArchiveTaskManager:
                 return item
         return None
 
-    def _is_three_mf_only_task_blocked_by_gate(self, item: dict) -> bool:
+    def _promote_unknown_three_mf_probe(
+        self,
+        queue: dict,
+        item: dict,
+        *,
+        gate: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        if not _is_three_mf_only_task(item):
+            return False
+        platform, url, meta = self._task_platform_and_url(item)
+        gate_snapshot = gate if isinstance(gate, dict) else three_mf_gate_for_url(url, meta)
+        if str(gate_snapshot.get("state") or "").strip().lower() != "unknown":
+            return False
+        for active_item in queue.get("active") or []:
+            if not _is_three_mf_only_task(active_item):
+                continue
+            active_platform, _active_url, active_meta = self._task_platform_and_url(active_item)
+            if active_platform == platform and bool(active_meta.get("browser_session_recovery")):
+                return False
+        promoted_meta = dict(meta)
+        promoted_meta["browser_session_recovery"] = True
+        item["meta"] = promoted_meta
+        return True
+
+    def _is_three_mf_only_task_blocked_by_gate(
+        self,
+        item: dict,
+        *,
+        gate: Optional[dict[str, Any]] = None,
+    ) -> bool:
         if not _is_three_mf_only_task(item):
             return False
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
         if bool(meta.get("browser_session_recovery")):
             return False
         url = normalize_source_url(str(meta.get("model_url") or item.get("url") or item.get("title") or ""))
-        gate = three_mf_gate_for_url(url, meta)
-        return not bool(gate.get("open"))
+        gate_snapshot = gate if isinstance(gate, dict) else three_mf_gate_for_url(url, meta)
+        return not bool(gate_snapshot.get("open"))
 
     @staticmethod
     def _task_platform_and_url(item: dict) -> tuple[str, str, dict[str, Any]]:

@@ -608,6 +608,87 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
 
         self.assertFalse(blocked)
 
+    def test_unknown_gate_promotes_one_queued_three_mf_task_to_probe(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        queue = {
+            "active": [],
+            "queued": [
+                {
+                    "id": "probe-1",
+                    "status": "queued",
+                    "url": "https://makerworld.com.cn/zh/models/123",
+                    "meta": {"three_mf_download": True, "source": "cn"},
+                }
+            ],
+        }
+
+        with patch.object(
+            archive_worker_module,
+            "three_mf_gate_for_url",
+            return_value={"open": False, "state": "unknown", "platform": "cn"},
+        ):
+            selected = manager._next_executable_task(queue)
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["id"], "probe-1")
+        self.assertTrue(selected["meta"]["browser_session_recovery"])
+
+    def test_unknown_gate_does_not_start_second_probe_for_same_platform(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        queue = {
+            "active": [
+                {
+                    "id": "active-probe",
+                    "status": "running",
+                    "url": "https://makerworld.com.cn/zh/models/100",
+                    "meta": {
+                        "three_mf_download": True,
+                        "browser_session_recovery": True,
+                        "source": "cn",
+                    },
+                }
+            ],
+            "queued": [
+                {
+                    "id": "probe-2",
+                    "status": "queued",
+                    "url": "https://makerworld.com.cn/zh/models/123",
+                    "meta": {"three_mf_download": True, "source": "cn"},
+                }
+            ],
+        }
+
+        with patch.object(
+            archive_worker_module,
+            "three_mf_gate_for_url",
+            return_value={"open": False, "state": "unknown", "platform": "cn"},
+        ):
+            selected = manager._next_executable_task(queue)
+
+        self.assertIsNone(selected)
+        self.assertNotIn("browser_session_recovery", queue["queued"][0]["meta"])
+
+    def test_successful_browser_probe_opens_gate_for_three_mf_download_task(self):
+        with patch.object(archive_worker_module, "mark_account_ok") as mark_ok_mock:
+            failure = archive_worker_module._sync_account_health_for_archive_result(
+                platform="cn",
+                model_url="https://makerworld.com.cn/zh/models/123",
+                model_id="123",
+                instance_id="instance-1",
+                missing_items=[],
+                missing_3mf_retry=False,
+                browser_session_recovery=True,
+            )
+
+        self.assertIsNone(failure)
+        mark_ok_mock.assert_called_once_with(
+            "cn",
+            source="browser_session_recovery",
+            model_url="https://makerworld.com.cn/zh/models/123",
+            model_id="123",
+            instance_id="instance-1",
+        )
+
     def test_browser_recovery_auth_failure_requires_browser_confirmation_not_relogin(self):
         missing_items = [
             {

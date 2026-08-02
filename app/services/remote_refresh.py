@@ -5,7 +5,7 @@ import os
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -733,7 +733,7 @@ def _remote_sync_value(remote_sync: dict[str, Any], *keys: str) -> Any:
 def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    return [copy.deepcopy(item) for item in value if isinstance(item, dict)]
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _attachment_key(item: Any) -> str:
@@ -832,46 +832,122 @@ def _media_asset_url_values(item: Any, *fields: str) -> list[str]:
     return urls
 
 
-def _comment_remote_signature(items: Any) -> list[Any]:
-    signature: list[Any] = []
-    if not isinstance(items, list):
-        return signature
-    for item in items:
+def _update_signature_digest(digest: Any, field: str, value: Any) -> None:
+    digest.update(
+        json.dumps(
+            [field, value],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8", errors="ignore")
+    )
+    digest.update(b"\n")
+
+
+def _asset_url_signature(meta: dict[str, Any]) -> dict[str, Any]:
+    author = meta.get("author") if isinstance(meta.get("author"), dict) else {}
+    cover = meta.get("cover") if isinstance(meta.get("cover"), dict) else {}
+    instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+    comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    digest = hashlib.sha256()
+    _update_signature_digest(
+        digest,
+        "cover",
+        _media_asset_url_values(cover, "url", "originalUrl") or [_normalized_asset_url(meta.get("coverUrl"))],
+    )
+    _update_signature_digest(digest, "author_avatar", _normalized_asset_url(author.get("avatarUrl")))
+    for item in meta.get("designImages") or []:
+        if isinstance(item, dict):
+            _update_signature_digest(digest, "design", _media_asset_url_values(item, "originalUrl", "url"))
+    for item in meta.get("summaryImages") or []:
+        if isinstance(item, dict):
+            _update_signature_digest(digest, "summary", _media_asset_url_values(item, "originalUrl", "url", "src"))
+    for item in instances:
         if not isinstance(item, dict):
             continue
-        author = item.get("author") if isinstance(item.get("author"), dict) else {}
-        images = item.get("images") if isinstance(item.get("images"), list) else []
-        signature.append(
+        _update_signature_digest(
+            digest,
+            "instance",
             {
-                "id": _normalized_remote_value(item.get("id")),
-                "content": _normalized_remote_value(item.get("content") or item.get("text")),
-                "time": _normalized_remote_value(item.get("time") or item.get("createdAt") or item.get("createTime")),
-                "reply_count": _remote_int(item.get("replyCount")),
-                "author": {
-                    "name": _normalized_remote_value(author.get("name")),
-                    "avatar": _normalized_asset_url(author.get("avatarUrl")),
-                },
-                "images": [
-                    _media_asset_url_values(image, "url", "originalUrl", "imageUrl", "src")
-                    for image in images
-                    if isinstance(image, dict)
+                "key": _instance_key(item),
+                "pictures": [
+                    _media_asset_url_values(picture, "url", "originalUrl", "imageUrl", "src")
+                    for picture in item.get("pictures") or []
+                    if isinstance(picture, dict)
                 ],
-                "replies": _comment_remote_signature(item.get("replies")),
-            }
+                "plates": [
+                    _normalized_asset_url(plate.get("thumbnailUrl"))
+                    for plate in item.get("plates") or []
+                    if isinstance(plate, dict)
+                ],
+                "cover": _media_asset_url_values(
+                    item,
+                    "cover",
+                    "coverUrl",
+                    "previewImage",
+                    "thumbnail",
+                    "thumbnailUrl",
+                ),
+            },
         )
-    return signature
+
+    def add_comments(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            author_payload = raw.get("author") if isinstance(raw.get("author"), dict) else {}
+            _update_signature_digest(
+                digest,
+                "comment",
+                {
+                    "id": _normalized_remote_value(raw.get("id")),
+                    "avatar": _normalized_asset_url(author_payload.get("avatarUrl")),
+                    "images": [
+                        _media_asset_url_values(image, "url", "originalUrl", "imageUrl", "src")
+                        for image in raw.get("images") or []
+                        if isinstance(image, dict)
+                    ],
+                },
+            )
+            add_comments(raw.get("replies"))
+
+    add_comments(comments)
+    for item in meta.get("attachments") or []:
+        if isinstance(item, dict):
+            _update_signature_digest(
+                digest,
+                "attachment",
+                _normalized_asset_url(item.get("url") or item.get("downloadUrl")),
+            )
+    return {"version": 1, "digest": digest.hexdigest()}
 
 
-def _instance_remote_signature(items: Any) -> list[Any]:
-    signature: list[Any] = []
-    if not isinstance(items, list):
-        return signature
-    for item in items:
+def _remote_content_signature(meta: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(meta, dict):
+        return {}
+    digest = hashlib.sha256()
+    _update_signature_digest(digest, "title", _normalized_remote_value(meta.get("title")))
+    _update_signature_digest(digest, "title_translated", _normalized_remote_value(meta.get("titleTranslated")))
+    _update_signature_digest(digest, "cover_url", _normalized_asset_url(meta.get("coverUrl")))
+    _update_signature_digest(digest, "tags", meta.get("tags") if isinstance(meta.get("tags"), list) else [])
+    _update_signature_digest(digest, "stats", meta.get("stats") if isinstance(meta.get("stats"), dict) else {})
+    _update_signature_digest(digest, "summary", _summary_signature(meta.get("summary")))
+    attachment_keys = sorted(
+        key
+        for key in (_attachment_key(item) for item in meta.get("attachments") or [])
+        if key
+    )
+    _update_signature_digest(digest, "attachments", attachment_keys)
+
+    for item in meta.get("instances") or []:
         if not isinstance(item, dict):
             continue
-        plates = item.get("plates") if isinstance(item.get("plates"), list) else []
-        pictures = item.get("pictures") if isinstance(item.get("pictures"), list) else []
-        signature.append(
+        _update_signature_digest(
+            digest,
+            "instance",
             {
                 "key": _instance_key(item),
                 "title": _normalized_remote_value(item.get("title") or item.get("name")),
@@ -881,110 +957,42 @@ def _instance_remote_signature(items: Any) -> list[Any]:
                 "download_state": _normalized_remote_value(item.get("downloadState")),
                 "download_message": _normalized_remote_value(item.get("downloadMessage")),
                 "profile": item.get("profileDetails") if isinstance(item.get("profileDetails"), dict) else {},
-                "plates": [
-                    {
-                        "index": _normalized_remote_value(plate.get("index")),
-                        "url": _normalized_asset_url(plate.get("thumbnailUrl")),
-                    }
-                    for plate in plates
+                "plate_indexes": [
+                    _normalized_remote_value(plate.get("index"))
+                    for plate in item.get("plates") or []
                     if isinstance(plate, dict)
                 ],
-                "pictures": [
-                    {
-                        "index": _normalized_remote_value(picture.get("index")),
-                        "url": _normalized_asset_url(picture.get("url") or picture.get("originalUrl")),
-                    }
-                    for picture in pictures
+                "picture_indexes": [
+                    _normalized_remote_value(picture.get("index"))
+                    for picture in item.get("pictures") or []
                     if isinstance(picture, dict)
                 ],
-            }
+            },
         )
-    return signature
 
-
-def _asset_url_signature(meta: dict[str, Any]) -> dict[str, Any]:
-    author = meta.get("author") if isinstance(meta.get("author"), dict) else {}
-    cover = meta.get("cover") if isinstance(meta.get("cover"), dict) else {}
-    instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
-    comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
-    comment_items: list[dict[str, Any]] = []
-
-    def collect_comments(items: Any) -> None:
+    def add_comment_content(items: Any) -> None:
         if not isinstance(items, list):
             return
-        for raw in items:
-            if not isinstance(raw, dict):
+        for item in items:
+            if not isinstance(item, dict):
                 continue
-            comment_items.append(raw)
-            collect_comments(raw.get("replies"))
+            author_payload = item.get("author") if isinstance(item.get("author"), dict) else {}
+            _update_signature_digest(
+                digest,
+                "comment",
+                {
+                    "id": _normalized_remote_value(item.get("id")),
+                    "content": _normalized_remote_value(item.get("content") or item.get("text")),
+                    "time": _normalized_remote_value(item.get("time") or item.get("createdAt") or item.get("createTime")),
+                    "reply_count": _remote_int(item.get("replyCount")),
+                    "author_name": _normalized_remote_value(author_payload.get("name")),
+                },
+            )
+            add_comment_content(item.get("replies"))
+            _update_signature_digest(digest, "comment_end", True)
 
-    collect_comments(comments)
-    return {
-        "cover": _media_asset_url_values(cover, "url", "originalUrl") or [_normalized_asset_url(meta.get("coverUrl"))],
-        "author_avatar": _normalized_asset_url(author.get("avatarUrl")),
-        "design": [
-            _media_asset_url_values(item, "originalUrl", "url")
-            for item in meta.get("designImages") or []
-            if isinstance(item, dict)
-        ],
-        "summary": [
-            _media_asset_url_values(item, "originalUrl", "url", "src")
-            for item in meta.get("summaryImages") or []
-            if isinstance(item, dict)
-        ],
-        "instances": [
-            {
-                "key": _instance_key(item),
-                "pictures": [
-                    _media_asset_url_values(picture, "url", "originalUrl", "imageUrl", "src")
-                    for picture in (item.get("pictures") if isinstance(item, dict) else []) or []
-                    if isinstance(picture, dict)
-                ],
-                "plates": [
-                    _normalized_asset_url(plate.get("thumbnailUrl"))
-                    for plate in (item.get("plates") if isinstance(item, dict) else []) or []
-                    if isinstance(plate, dict)
-                ],
-                "cover": _media_asset_url_values(item, "cover", "coverUrl", "previewImage", "thumbnail", "thumbnailUrl") if isinstance(item, dict) else [],
-            }
-            for item in instances
-            if isinstance(item, dict)
-        ],
-        "comments": [
-            {
-                "id": _normalized_remote_value(item.get("id")),
-                "avatar": _normalized_asset_url((item.get("author") or {}).get("avatarUrl") if isinstance(item.get("author"), dict) else ""),
-                "images": [
-                    _media_asset_url_values(image, "url", "originalUrl", "imageUrl", "src")
-                    for image in (item.get("images") if isinstance(item.get("images"), list) else [])
-                    if isinstance(image, dict)
-                ],
-            }
-            for item in comment_items
-        ],
-        "attachments": [
-            _normalized_asset_url(item.get("url") or item.get("downloadUrl"))
-            for item in meta.get("attachments") or []
-            if isinstance(item, dict)
-        ],
-    }
-
-
-def _remote_content_signature(meta: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(meta, dict):
-        return {}
-    return {
-        "title": _normalized_remote_value(meta.get("title")),
-        "title_translated": _normalized_remote_value(meta.get("titleTranslated")),
-        "cover_url": _normalized_asset_url(meta.get("coverUrl")),
-        "tags": meta.get("tags") if isinstance(meta.get("tags"), list) else [],
-        "stats": meta.get("stats") if isinstance(meta.get("stats"), dict) else {},
-        "summary": _summary_signature(meta.get("summary")),
-        "attachments": sorted(_attachment_key(item) for item in meta.get("attachments") or [] if _attachment_key(item)),
-        "instances": _instance_remote_signature(meta.get("instances")),
-        "comments": _comment_remote_signature(meta.get("comments")),
-        "assets": _asset_url_signature(meta),
-    }
+    add_comment_content(meta.get("comments"))
+    return {"version": 1, "digest": digest.hexdigest()}
 
 
 def _asset_ref_path(model_root: Path, rel_path: str = "", local_name: str = "", default_dir: str = "images") -> Optional[Path]:
@@ -1189,7 +1197,9 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
     added_instance_count = _count_added_items(existing_instances, fresh_instances, _instance_key)
     attachments_added = _count_added_items(existing_attachments, fresh_attachments, _attachment_key)
     summary_changed = _summary_signature(existing_meta.get("summary")) != _summary_signature(fresh_meta.get("summary"))
-    assets_changed = _asset_url_signature(existing_meta) != _asset_url_signature(fresh_meta)
+    existing_asset_signature = _asset_url_signature(existing_meta)
+    fresh_asset_signature = _asset_url_signature(fresh_meta)
+    assets_changed = existing_asset_signature != fresh_asset_signature
     remote_changed = _remote_content_signature(existing_meta) != _remote_content_signature(fresh_meta)
     missing_assets = _has_missing_asset_refs(meta_path.parent, fresh_meta)
     existing_instance_keys = {
@@ -1402,7 +1412,7 @@ class RemoteRefreshManager:
     def _resumable_active_run(self) -> dict[str, Any]:
         state = self.task_store.load_remote_refresh_state()
         active_run = state.get("active_run") if isinstance(state.get("active_run"), dict) else {}
-        if str(active_run.get("status") or "") not in {"running", "resuming", "interrupted"}:
+        if str(active_run.get("status") or "") not in {"running", "resuming", "interrupted", "deferred"}:
             return {}
         if not str(active_run.get("batch_id") or "").strip():
             return {}
@@ -1856,8 +1866,24 @@ class RemoteRefreshManager:
                 current_item={},
             )
             return
-        if self._resume_active_run_if_possible(config):
-            return
+        if self._resumable_active_run():
+            resume_busy_reason = self._service_busy_reason()
+            if resume_busy_reason:
+                now_iso = _now_iso()
+                retry_at = (_now()).timestamp() + 60
+                self.task_store.patch_remote_refresh_state(
+                    status="deferred",
+                    running=False,
+                    next_run_at=china_from_timestamp(retry_at).isoformat(),
+                    scheduled_cron=normalized_cron,
+                    last_attempt_at=now_iso,
+                    last_deferred_at=now_iso,
+                    last_defer_reason=resume_busy_reason,
+                    current_item={},
+                )
+                return
+            if self._resume_active_run_if_possible(config):
+                return
 
         next_run_at = _parse_iso(state.get("next_run_at"))
         if not manual_requested and next_run_at and next_run_at > _now():
@@ -2118,6 +2144,7 @@ class RemoteRefreshManager:
             last_progress_publish_at = time.monotonic()
             batch_metrics = _empty_batch_metrics()
             slow_models: list[dict[str, Any]] = []
+            defer_reason = ""
 
             def publish_batch_progress(*, force: bool = False) -> None:
                 nonlocal last_progress_publish_at
@@ -2145,52 +2172,85 @@ class RemoteRefreshManager:
                     publish_event=True,
                 )
 
-            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="remote-refresh-model") as executor:
-                future_map = {
-                    executor.submit(self._refresh_one, item, index=index, total=len(candidates), config=config): item
-                    for index, item in enumerate(candidates, start=1)
-                }
-                for future in as_completed(future_map):
-                    item = future_map[future]
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        error_message = _sanitize_remote_refresh_message(exc, exc.__class__.__name__)
-                        result = {
-                            "ok": False,
-                            "error": error_message,
-                            "metrics": {
+            def consume_future(future: Any, item: dict[str, Any]) -> None:
+                nonlocal succeeded, failed, skipped, completed_total
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    error_message = _sanitize_remote_refresh_message(exc, exc.__class__.__name__)
+                    result = {
+                        "ok": False,
+                        "error": error_message,
+                        "metrics": {
+                            "title": str(item.get("title") or item.get("model_dir") or ""),
+                            "model_dir": str(item.get("model_dir") or ""),
+                        },
+                        "record": _remote_refresh_result_record(
+                            model_dir=str(item.get("model_dir") or ""),
+                            title=str(item.get("title") or item.get("model_dir") or ""),
+                            url=normalize_source_url(str(item.get("origin_url") or "")),
+                            status="failed",
+                            message=error_message,
+                            metrics={
                                 "title": str(item.get("title") or item.get("model_dir") or ""),
                                 "model_dir": str(item.get("model_dir") or ""),
                             },
-                            "record": _remote_refresh_result_record(
-                                model_dir=str(item.get("model_dir") or ""),
-                                title=str(item.get("title") or item.get("model_dir") or ""),
-                                url=normalize_source_url(str(item.get("origin_url") or "")),
-                                status="failed",
-                                message=error_message,
-                                metrics={
-                                    "title": str(item.get("title") or item.get("model_dir") or ""),
-                                    "model_dir": str(item.get("model_dir") or ""),
-                                },
-                                change_labels=["刷新失败"],
-                            ),
-                        }
-                    record = result.get("record") if isinstance(result.get("record"), dict) else None
-                    if record is not None and batch_buffer is not None:
-                        batch_buffer.append(record)
-                    if result.get("ok"):
-                        succeeded += 1
-                        if result.get("skipped"):
-                            skipped += 1
-                    else:
-                        failed += 1
-                    completed_total += 1
-                    publish_batch_progress()
-                    item_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
-                    _merge_batch_metrics(batch_metrics, item_metrics)
-                    if item_metrics:
-                        slow_models.append(item_metrics)
+                            change_labels=["刷新失败"],
+                        ),
+                    }
+                record = result.get("record") if isinstance(result.get("record"), dict) else None
+                if record is not None and batch_buffer is not None:
+                    batch_buffer.append(record)
+                if result.get("ok"):
+                    succeeded += 1
+                    if result.get("skipped"):
+                        skipped += 1
+                else:
+                    failed += 1
+                completed_total += 1
+                publish_batch_progress()
+                item_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+                _merge_batch_metrics(batch_metrics, item_metrics)
+                if item_metrics:
+                    slow_models.append(item_metrics)
+
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="remote-refresh-model") as executor:
+                pending_candidates = iter(enumerate(candidates, start=1))
+                future_map: dict[Any, dict[str, Any]] = {}
+
+                def submit_next() -> bool:
+                    try:
+                        index, item = next(pending_candidates)
+                    except StopIteration:
+                        return False
+                    future = executor.submit(
+                        self._refresh_one,
+                        item,
+                        index=index,
+                        total=len(candidates),
+                        config=config,
+                    )
+                    future_map[future] = item
+                    return True
+
+                for _ in range(workers):
+                    if not submit_next():
+                        break
+
+                while future_map:
+                    completed_futures, _pending = wait(
+                        set(future_map),
+                        return_when=FIRST_COMPLETED,
+                    )
+                    for future in completed_futures:
+                        item = future_map.pop(future)
+                        consume_future(future, item)
+
+                    if not defer_reason and self._service_busy_reason() == "archive_queue_busy":
+                        defer_reason = "archive_queue_busy"
+                    while not defer_reason and len(future_map) < workers:
+                        if not submit_next():
+                            break
                 publish_batch_progress(force=True)
 
             finished_at = _now_iso()
@@ -2213,6 +2273,68 @@ class RemoteRefreshManager:
             remaining_total = max(eligible_total - processed_total, 0)
             failure_samples = batch_summary["failure_samples"]
             recent_items = batch_summary["recent_items"]
+            if defer_reason:
+                deferred_at = _now_iso()
+                retry_at = (_now()).timestamp() + 60
+                message = (
+                    f"源端刷新已暂停派发，成功 {succeeded} 个，失败 {failed} 个；"
+                    f"归档队列处理完成后继续剩余 {remaining_total} 个模型。"
+                )
+                self.task_store.patch_remote_refresh_state(
+                    status="deferred",
+                    running=False,
+                    current_item={},
+                    current_items=[],
+                    next_run_at=china_from_timestamp(retry_at).isoformat(),
+                    scheduled_cron=normalized_cron,
+                    last_success_at=finished_at if succeeded else str(previous_state.get("last_success_at") or ""),
+                    last_error_at=finished_at if failed else str(previous_state.get("last_error_at") or ""),
+                    last_message=message,
+                    last_deferred_at=deferred_at,
+                    last_defer_reason=defer_reason,
+                    last_batch_succeeded=succeeded,
+                    last_batch_failed=failed,
+                    last_batch_skipped=skipped,
+                    last_batch_total=candidate_total,
+                    last_eligible_total=eligible_total,
+                    last_remaining_total=remaining_total,
+                    last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
+                    last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
+                    last_batch_metrics={**batch_metrics, "batch_duration_ms": round((time.perf_counter() - batch_started_perf) * 1000, 1)},
+                    last_resource_waits=_resource_wait_delta(resource_wait_baseline),
+                    last_slow_models=_top_slow_models(slow_models),
+                    recent_items=recent_items,
+                    active_run=self._active_run_payload(
+                        batch_id=batch_id,
+                        status="deferred",
+                        started_at=started_at,
+                        resumed_at=str((resume_active_run or {}).get("resumed_at") or ""),
+                        scheduled_cron=normalized_cron,
+                        manual=manual_run,
+                        candidate_total=candidate_total,
+                        completed_total=processed_total,
+                        manifest_path=manifest.path,
+                        result_path=result_path,
+                    ),
+                )
+                invalidate_archive_snapshot("remote_refresh_batch_deferred")
+                _append_remote_refresh_log(
+                    "batch_deferred",
+                    succeeded=succeeded,
+                    failed=failed,
+                    remaining_total=remaining_total,
+                    reason=defer_reason,
+                )
+                append_business_log(
+                    "remote_refresh",
+                    "batch_deferred",
+                    message,
+                    succeeded=succeeded,
+                    failed=failed,
+                    remaining_total=remaining_total,
+                    reason=defer_reason,
+                )
+                return
             message = (
                 f"{'源端刷新恢复完成' if resume_active_run else '源端刷新完成'}，成功 {succeeded} 个，失败 {failed} 个。"
                 f"{_batch_scope_message(eligible_total=eligible_total, remaining_total=remaining_total)}"

@@ -38,6 +38,12 @@ def _hold_cloakbrowser_profile_slot(
 
 
 class CloakBrowserSessionTest(unittest.TestCase):
+    def test_profile_resource_name_is_stable_before_and_after_profile_resolution(self):
+        self.assertEqual(
+            cloakbrowser_session._profile_resource_name("cn"),
+            cloakbrowser_session._profile_resource_name("cn", "profile-cn"),
+        )
+
     def test_spawned_bridge_operations_for_same_profile_do_not_overlap(self):
         with tempfile.TemporaryDirectory() as state_dir:
             ready_queue = SPAWN_CONTEXT.Queue()
@@ -251,6 +257,39 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "x-bbl-captcha-result": "verified",
         })
         self.assertEqual(payload["cookies"][0]["name"], "token")
+
+    def test_browser_fetch_protocol_timeout_does_not_restart_profile(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir), create=True), \
+                patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+                patch.object(cloakbrowser_session, "launch_profile", return_value=(profile, False)), \
+                patch.object(cloakbrowser_session, "stop_profile") as stop_mock, \
+                patch.object(
+                    cloakbrowser_session,
+                    "_run_bridge",
+                    side_effect=cloakbrowser_session.CloakBrowserBridgeError("Network.enable timed out."),
+                ), \
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    },
+                    clear=False,
+                ):
+            with self.assertRaises(cloakbrowser_session.CloakBrowserBridgeError):
+                cloakbrowser_session.browser_fetch(
+                    "cn",
+                    "https://makerworld.com.cn/zh/models/1",
+                    profile_id="profile-cn",
+                )
+
+        stop_mock.assert_not_called()
 
     def test_browser_fetch_rejects_redirect_outside_platform_domains(self):
         profile = cloakbrowser_session.CloakBrowserProfile(
@@ -871,7 +910,42 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(bridge_payload["navigation_timeout_ms"], 30000)
         self.assertEqual(bridge_payload["authorization_timeout_ms"], 90000)
         self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 150)
-        resource_slot_mock.assert_called_once_with("cloakbrowser_profile_profile-cn", detail="click")
+        resource_slot_mock.assert_called_once_with("cloakbrowser_platform_cn", detail="click")
+
+    def test_browser_3mf_authorization_protocol_timeout_does_not_restart_profile(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir), create=True), \
+                patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+                patch.object(cloakbrowser_session, "launch_profile", return_value=(profile, False)), \
+                patch.object(cloakbrowser_session, "stop_profile") as stop_mock, \
+                patch.object(
+                    cloakbrowser_session,
+                    "_run_bridge",
+                    side_effect=cloakbrowser_session.CloakBrowserBridgeError("Network.enable timed out."),
+                ), \
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    },
+                    clear=False,
+                ):
+            with self.assertRaises(cloakbrowser_session.CloakBrowserBridgeError):
+                cloakbrowser_session.browser_authorize_3mf_download(
+                    "cn",
+                    "https://api.bambulab.cn/v1/design-service/instance/123/f3mf?type=download&fileType=3mf",
+                    profile_id="profile-cn",
+                    model_url="https://makerworld.com.cn/zh/models/456",
+                    instance_id="123",
+                )
+
+        stop_mock.assert_not_called()
 
     def test_browser_3mf_authorization_rejects_model_page_from_another_platform(self):
         with patch.object(cloakbrowser_session, "_run_bridge") as bridge_mock:

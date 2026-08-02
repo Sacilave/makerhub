@@ -514,6 +514,38 @@ class RemoteRefreshManagerTest(unittest.TestCase):
 
         self.assertEqual(resumed, [True])
 
+    def test_tick_keeps_deferred_run_paused_until_archive_queue_is_clear(self):
+        self.task_store.patch_remote_refresh_state(
+            status="deferred",
+            running=False,
+            active_run={
+                "batch_id": "deferred-batch",
+                "status": "deferred",
+                "started_at": "2026-06-06T09:00:00+08:00",
+                "candidate_total": 3,
+                "completed_total": 1,
+                "remaining_total": 2,
+                "manifest_path": "remote_refresh_batches/deferred-batch.manifest.json",
+                "result_path": "remote_refresh_batches/deferred-batch.ndjson",
+            },
+        )
+        busy_reason = ["archive_queue_busy"]
+        resumed = []
+        self.manager._service_busy_reason = lambda: busy_reason[0]
+        self.manager._resume_active_run_if_possible = lambda _config: resumed.append(True) or True
+
+        self.manager._tick()
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertEqual(state["status"], "deferred")
+        self.assertEqual(state["last_defer_reason"], "archive_queue_busy")
+        self.assertEqual(resumed, [])
+
+        busy_reason[0] = ""
+        self.manager._tick()
+
+        self.assertEqual(resumed, [True])
+
     def test_asset_signature_ignores_volatile_cdn_query_params(self):
         existing_meta = {
             "cover": {
@@ -629,6 +661,81 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertNotEqual(
             remote_refresh._asset_url_signature(existing_meta),
             remote_refresh._asset_url_signature(changed_meta),
+        )
+
+    def test_large_remote_signatures_are_compact(self):
+        comments = [
+            {
+                "id": f"comment-{index}",
+                "content": f"content-{index}",
+                "author": {"avatarUrl": f"https://cdn.example.com/avatar/{index}.jpg"},
+                "images": [{"url": f"https://cdn.example.com/comment/{index}.jpg"}],
+            }
+            for index in range(1000)
+        ]
+        meta = {
+            "title": "large model",
+            "comments": comments,
+            "attachments": [
+                {"id": f"attachment-{index}", "url": f"https://cdn.example.com/file/{index}.zip"}
+                for index in range(1000)
+            ],
+        }
+
+        asset_signature = json.dumps(remote_refresh._asset_url_signature(meta), ensure_ascii=False)
+        remote_signature = json.dumps(remote_refresh._remote_content_signature(meta), ensure_ascii=False)
+
+        self.assertLess(len(asset_signature), 512)
+        self.assertLess(len(remote_signature), 1024)
+
+    def test_remote_content_signature_does_not_recompute_asset_signature(self):
+        with patch.object(remote_refresh, "_asset_url_signature") as asset_signature_mock:
+            signature = remote_refresh._remote_content_signature({"title": "model"})
+
+        self.assertEqual(signature["version"], 1)
+        asset_signature_mock.assert_not_called()
+
+    def test_remote_content_signature_detects_comment_content_without_asset_noise(self):
+        existing_meta = {
+            "comments": [
+                {
+                    "id": "comment-1",
+                    "content": "original",
+                    "author": {
+                        "name": "maker",
+                        "avatarUrl": "https://cdn.example.com/avatar.jpg?Expires=100&Signature=old",
+                    },
+                }
+            ]
+        }
+        same_content = {
+            "comments": [
+                {
+                    "id": "comment-1",
+                    "content": "original",
+                    "author": {
+                        "name": "maker",
+                        "avatarUrl": "https://cdn.example.com/avatar.jpg?Expires=200&Signature=new",
+                    },
+                }
+            ]
+        }
+        changed_content = {
+            "comments": [
+                {
+                    **same_content["comments"][0],
+                    "content": "updated",
+                }
+            ]
+        }
+
+        self.assertEqual(
+            remote_refresh._remote_content_signature(existing_meta),
+            remote_refresh._remote_content_signature(same_content),
+        )
+        self.assertNotEqual(
+            remote_refresh._remote_content_signature(existing_meta),
+            remote_refresh._remote_content_signature(changed_content),
         )
 
     def test_refresh_one_fetches_changed_page_and_comment_assets_once(self):
@@ -1363,6 +1470,62 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(state["last_batch_metrics"]["comments"], 3)
         self.assertEqual(len(state["last_slow_models"]), 3)
         self.assertEqual(len(state["recent_items"]), 3)
+
+    def test_run_batch_stops_dispatching_when_archive_queue_becomes_busy(self):
+        original_workers = remote_refresh._remote_refresh_model_workers
+        original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        remote_refresh.REMOTE_REFRESH_BATCH_DIR = self.temp_path / "remote_refresh_batches"
+        config = self.store.load()
+        items = [
+            {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1"},
+            {"model_dir": "m2", "title": "模型 2", "origin_url": "https://makerworld.com.cn/model/2"},
+            {"model_dir": "m3", "title": "模型 3", "origin_url": "https://makerworld.com.cn/model/3"},
+        ]
+        self.manager._pick_candidates = lambda: (
+            items,
+            {
+                "eligible_total": 3,
+                "selected_total": 3,
+                "remaining_total": 0,
+                "missing_cookie": 0,
+                "local_or_invalid": 0,
+            },
+        )
+        self.manager._service_busy_reason = lambda: "archive_queue_busy"
+        started = []
+
+        def fake_refresh_one(item, *, index, total, config):
+            model_dir = str(item.get("model_dir") or "")
+            started.append(model_dir)
+            return {
+                "ok": True,
+                "metrics": {"model_dir": model_dir, "title": item["title"]},
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=model_dir,
+                    title=item["title"],
+                    url=item["origin_url"],
+                    status="success",
+                    message="完成",
+                    metrics={},
+                    change_labels=["已检查，无远端变化"],
+                ),
+            }
+
+        self.manager._refresh_one = fake_refresh_one
+        try:
+            self.manager._run_batch(config)
+        finally:
+            remote_refresh._remote_refresh_model_workers = original_workers
+            remote_refresh.REMOTE_REFRESH_BATCH_DIR = original_batch_dir
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertEqual(started, ["m1"])
+        self.assertEqual(state["status"], "deferred")
+        self.assertEqual(state["last_defer_reason"], "archive_queue_busy")
+        self.assertEqual(state["last_batch_succeeded"], 1)
+        self.assertEqual(state["last_remaining_total"], 2)
+        self.assertEqual(state["active_run"]["completed_total"], 1)
 
     def test_run_batch_publishes_active_run_progress_and_current_items(self):
         original_workers = remote_refresh._remote_refresh_model_workers

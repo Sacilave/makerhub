@@ -384,9 +384,7 @@ def _update_profile_proxy(profile: CloakBrowserProfile, proxy: str) -> CloakBrow
 
 
 def _profile_resource_name(platform: str, profile_id: str = "") -> str:
-    clean_profile_id = str(profile_id or "").strip()
-    identity = clean_profile_id or f"managed-{normalize_platform(platform)}"
-    return f"cloakbrowser_profile_{identity}"
+    return f"cloakbrowser_platform_{normalize_platform(platform)}"
 
 
 def _safe_bridge_env() -> dict[str, str]:
@@ -519,15 +517,16 @@ def _run_bridge_with_profile_recovery(
     payload: dict[str, Any],
     *,
     timeout_seconds: int | None = None,
+    allow_profile_restart: bool = True,
 ) -> tuple[CloakBrowserProfile, bool, dict[str, Any]]:
-    if _profile_recovery_cooldown_active(running.id):
+    if allow_profile_restart and _profile_recovery_cooldown_active(running.id):
         raise CloakBrowserUnavailable(
             "指纹浏览器连接仍未恢复，profile 刚刚自动重启过，请稍后重试。"
         )
     try:
         return running, False, _run_bridge(payload, timeout_seconds=timeout_seconds)
     except CloakBrowserBridgeError as exc:
-        if not _is_transient_bridge_error(exc):
+        if not _is_transient_bridge_error(exc) or not allow_profile_restart:
             raise
 
     _mark_profile_recovery_attempt(running.id)
@@ -789,6 +788,7 @@ def browser_fetch(
             running,
             payload,
             timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
+            allow_profile_restart=False,
         )
 
     final_url = _validate_browser_fetch_url(str(result.get("url") or clean_url), clean_platform)
@@ -887,6 +887,7 @@ def browser_authorize_3mf_download(
                 platform=clean_platform,
             ),
             timeout_seconds=AUTHORIZATION_BRIDGE_TIMEOUT_SECONDS,
+            allow_profile_restart=False,
         )
 
     try:

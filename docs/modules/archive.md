@@ -69,11 +69,13 @@
 - Cookie 失效、Cloudflare、403/404/418、HTML 验证页要给出可诊断错误，不能把整段 HTML 写到 UI 或日志。
 - MakerWorld 页面和 JSON 控制请求必须复用对应 CloakBrowser profile；已关联 profile 不得注入 MakerHub 旧 Cookie / Token，国内和国际 profile 不得串用。
 - CloakBrowser `5xx`、CDP 超时和断开按网络错误重试；只有真实 `401/403`、登录页、Cloudflare challenge 或验证载荷才能更新账号/gate 状态。
+- 普通页面抓取和 3MF 授权遇到瞬时 CDP 超时时只能断开并重连，不得停止共享 profile；只有显式登录态同步/人工恢复流程可以在平台级锁内重启一次 profile。
 - 图片、附件和已取得签名直链的 `3MF` 必须保留普通下载器直连，不得把大文件塞进浏览器通道；真实 `3MF` 点击授权不得内部重复。
 - Scrapling 只保留既有辅助抓取和解析职责；fallback 要有日志 trace，但不要泄露 Cookie/Token。
 - 批量发现结果要和源端总数形成闭环；数量不匹配时应保留状态并提示，不要误归档或误标删除。
 - 同一任务不能重复入队；缺失 3MF 重试也要检查已排队任务。
 - 3MF 每日/站点限额命中后要暂停自动重试，避免每天半夜反复触发上限。
+- Cookie 更新后的 `unknown` gate 每个平台只允许一个 3MF 探测任务；探测成功后必须打开 gate，已有同平台探测运行时不得并发放行第二个。
 - 下载成功后必须刷新模型索引和快照，否则前端会看不到新模型。
 - 源端删除判断不能只靠收藏夹/合集缺失；只有作者上传页确认缺失或直接检查模型链接删除时才标源端删除。
 - Runtime Engine 当前处于冻结状态；归档、订阅和来源刷新继续由 Legacy manager 执行，不得把入队确认描述为最终完成，也不得在没有迁移计划时重新启用 Runtime Engine。
