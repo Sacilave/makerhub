@@ -958,6 +958,56 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         schedule_mock.assert_not_called()
         log_mock.assert_called_once()
 
+    def test_resume_pending_tasks_resumes_legacy_browser_session_task_when_gate_open(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        paused_item = {
+            "id": "legacy-browser-session",
+            "status": "paused",
+            "url": "https://makerworld.com.cn/zh/models/123",
+            "message": "登录态已更新，正在检测 3MF 下载权限。",
+            "meta": {"missing_3mf_retry": True, "source": "cn"},
+        }
+        resumed_item = {
+            **paused_item,
+            "status": "queued",
+            "message": "浏览器登录态已恢复，正在探测 3MF 下载权限",
+            "meta": {**paused_item["meta"], "browser_session_recovery": True},
+        }
+        queue = {
+            "active": [],
+            "queued": [paused_item],
+            "recent_failures": [],
+            "running_count": 0,
+            "queued_count": 1,
+        }
+        resumed_queue = {
+            **queue,
+            "queued": [resumed_item],
+            "resumed_count": 1,
+            "resumed_items": [resumed_item],
+        }
+        resume_mock = Mock(return_value=resumed_queue)
+        manager.task_store = SimpleNamespace(
+            requeue_active_tasks=Mock(return_value=queue),
+            resume_verification_paused_archive_tasks=resume_mock,
+        )
+
+        with patch.object(manager, "_repair_queue_before_worker_start", return_value=queue), \
+                patch.object(manager, "_ensure_worker") as ensure_worker_mock, \
+                patch.object(
+                    archive_worker_module,
+                    "three_mf_gate_for_url",
+                    return_value={"open": True, "state": "open", "platform": "cn"},
+                ), \
+                patch.object(manager, "_schedule_browser_session_recovery_for_three_mf_gate") as schedule_mock, \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.resume_pending_tasks()
+
+        self.assertEqual(result, resumed_queue)
+        self.assertTrue(resume_mock.call_args.kwargs["selector"](paused_item))
+        ensure_worker_mock.assert_called_once()
+        schedule_mock.assert_not_called()
+
     def test_ensure_worker_for_pending_does_not_recover_browser_after_confirmation_required(self):
         manager = ArchiveTaskManager(background_enabled=True)
         paused_item = {

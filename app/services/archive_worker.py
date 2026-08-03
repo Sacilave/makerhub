@@ -3253,6 +3253,14 @@ class ArchiveTaskManager:
                 self._workers.append(worker)
             self._worker = self._workers[0] if self._workers else None
 
+    def _recover_verification_paused_tasks(self, queue: dict) -> dict:
+        if not hasattr(self.task_store, "resume_verification_paused_archive_tasks"):
+            return queue
+        gate_by_platform = self._verification_resume_gate_snapshot(queue)
+        queue = self._resume_legacy_browser_session_tasks_when_gate_open(queue, gate_by_platform)
+        self._schedule_browser_recovery_for_legacy_cookie_invalid_gates(queue, gate_by_platform)
+        return queue
+
     def ensure_worker_for_pending(self) -> dict:
         if self._pending_maintenance_is_recent():
             queue = self._load_pending_queue_compact()
@@ -3263,10 +3271,7 @@ class ArchiveTaskManager:
 
         self._last_pending_maintenance_at = time.monotonic()
         queue = self._repair_queue_before_worker_start(repair_active=False)
-        if hasattr(self.task_store, "resume_verification_paused_archive_tasks"):
-            gate_by_platform = self._verification_resume_gate_snapshot(queue)
-            queue = self._resume_legacy_browser_session_tasks_when_gate_open(queue, gate_by_platform)
-            self._schedule_browser_recovery_for_legacy_cookie_invalid_gates(queue, gate_by_platform)
+        queue = self._recover_verification_paused_tasks(queue)
         if int(queue.get("running_count") or 0) > 0:
             queue = self.task_store.refresh_recent_active_archive_leases()
         if int(queue.get("queued_count") or 0) > 0:
@@ -3322,6 +3327,7 @@ class ArchiveTaskManager:
         queue = self.task_store.requeue_active_tasks()
         if int(queue.get("queued_count") or 0) > 0:
             queue = self._repair_queue_before_worker_start(repair_active=True)
+        queue = self._recover_verification_paused_tasks(queue)
         if (queue.get("queued_count") or 0) > 0:
             self._ensure_worker()
         self._last_pending_maintenance_at = time.monotonic()
@@ -3623,6 +3629,9 @@ class ArchiveTaskManager:
             progress=100,
             message=completion_message,
         )
+        platform = normalize_makerworld_source(meta.get("source"), clean_url)
+        if bool(meta.get("browser_session_recovery")):
+            self._resume_paused_missing_3mf_retry_tasks_for_platform(platform)
         _log_archive(
             "missing_3mf_not_found_cleared",
             "源端已不可用，已停止缺失 3MF 重试。",
@@ -3630,7 +3639,7 @@ class ArchiveTaskManager:
             url=clean_url,
             model_id=clean_model_id,
             instance_id=instance_id,
-            message=message,
+            detail=message,
         )
         return True
 
@@ -4024,7 +4033,7 @@ class ArchiveTaskManager:
                 url=item["model_url"],
                 model_id=item["model_id"],
                 instance_id=item["instance_id"],
-                message=item["message"],
+                detail=item["message"],
             )
         account_platform = normalize_makerworld_source(meta.get("source"), url)
         account_model_url = resolved_model_url

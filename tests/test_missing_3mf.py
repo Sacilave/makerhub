@@ -1031,7 +1031,7 @@ class Missing3mfTest(unittest.TestCase):
                 patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
                 patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
                 patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
-                patch.object(archive_worker_module, "_log_archive", side_effect=lambda *args, **kwargs: log_calls.append((args, kwargs))):
+                patch.object(archive_worker_module, "append_business_log", side_effect=lambda *args, **kwargs: log_calls.append((args, kwargs))):
             manager._run_single_task(
                 "task-not-found",
                 "https://makerworld.com.cn/zh/models/1590150",
@@ -1069,9 +1069,12 @@ class Missing3mfTest(unittest.TestCase):
         mark_account_ok_mock.assert_not_called()
         update_three_mf_gate_mock.assert_called_once()
         self.assertEqual(update_three_mf_gate_mock.call_args.kwargs["instance_id"], "profile-blocked")
-        self.assertTrue(
-            any(args and args[0] == "missing_3mf_not_found_cleared" for args, _kwargs in log_calls)
+        cleared_log = next(
+            (kwargs for args, kwargs in log_calls if len(args) > 1 and args[1] == "missing_3mf_not_found_cleared"),
+            None,
         )
+        self.assertIsNotNone(cleared_log)
+        self.assertEqual(cleared_log["detail"], "源端没有返回该打印配置的 3MF 下载地址。")
 
     def test_run_single_task_completes_when_account_health_sync_fails(self):
         manager = ArchiveTaskManager(background_enabled=False)
@@ -1131,6 +1134,7 @@ class Missing3mfTest(unittest.TestCase):
                 "instance_id": "1738489",
                 "title": "按颜色分盘No AMS",
                 "source": "cn",
+                "browser_session_recovery": True,
             },
         }
         calls = []
@@ -1168,7 +1172,8 @@ class Missing3mfTest(unittest.TestCase):
                     side_effect=RuntimeError("模型页面返回 404，可能已下架、设为私有或转为草稿。"),
                 ), \
                 patch.object(archive_worker_module, "_sync_account_health_for_archive_exception") as sync_health, \
-                patch.object(archive_worker_module, "_log_archive") as log_archive:
+                patch.object(archive_worker_module, "append_business_log") as business_log, \
+                patch.object(manager, "_resume_paused_missing_3mf_retry_tasks_for_platform", return_value=1) as resume_paused:
             manager._run_loop()
 
         self.assertIn(
@@ -1202,15 +1207,18 @@ class Missing3mfTest(unittest.TestCase):
         self.assertNotIn("fail", [call[0] for call in calls])
         self.assertNotIn("update_missing", [call[0] for call in calls])
         sync_health.assert_not_called()
-        log_archive.assert_any_call(
+        business_log.assert_any_call(
+            "archive",
             "missing_3mf_not_found_cleared",
             "源端已不可用，已停止缺失 3MF 重试。",
+            level="info",
             task_id="task-404",
             url="https://makerworld.com.cn/zh/models/1590150",
             model_id="1590150",
             instance_id="1738489",
-            message="模型页面返回 404，可能已下架、设为私有或转为草稿。",
+            detail="模型页面返回 404，可能已下架、设为私有或转为草稿。",
         )
+        resume_paused.assert_called_once_with("cn")
 
     def test_run_loop_keeps_regular_archive_not_found_as_failure(self):
         manager = ArchiveTaskManager(background_enabled=False)
