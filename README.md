@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.20`
+> 当前版本：`v0.15.21`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-03 · v0.15.21
+
+- 修复缺失 3MF 探测遇到已下架或私有模型时归档 Worker 线程退出的问题；终止任务会正常完成并继续下一条探测。
+- Worker 启动时会立即恢复 gate 已打开的遗留暂停任务，不再受 10 分钟维护冷却影响。
+
 ### 2026-08-03 · v0.15.20
 
 - 修复跨版本旧批次在归档队列繁忙时仍显示“运行中 / 恢复中”的问题；周期检查会将核心状态和源端任务卡统一校正为“已暂停”并保留最新进度。
@@ -358,14 +363,14 @@ npm --prefix frontend run build
 - 修复源端刷新绕过归档队列背压的问题；归档任务存在时不会继续启动或派发刷新模型。
 - 新批次和恢复批次会正确显示为“已暂停”并保留完成进度，归档队列清空后从原批次继续，不再误报完成或重复刷新。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-03 · v0.15.18
 
 - 修复 Cookie 更新后 3MF 权限一直停在“检测中”的问题；系统现在只执行一个真实下载探测，成功后自动恢复同平台归档队列。
 - 普通 CDP 超时不再重启共享指纹浏览器 profile，避免浏览器频繁关闭、标签任务中断和登录态反复失效。
 - 源端刷新产生归档任务后会暂停继续派发并在队列清空后续跑；大评论集和资源比较改为固定大小摘要，降低 Worker 内存与 CPU 峰值。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-02 · v0.15.17
 
