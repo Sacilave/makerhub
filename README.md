@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.18`
+> 当前版本：`v0.15.19`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-03 · v0.15.19
+
+- 修复源端刷新绕过归档队列背压的问题；归档任务存在时不会继续启动或派发刷新模型。
+- 新批次和恢复批次会正确显示为“已暂停”并保留完成进度，归档队列清空后从原批次继续，不再误报完成或重复刷新。
+
 ### 2026-08-03 · v0.15.18
 
 - 修复 Cookie 更新后 3MF 权限一直停在“检测中”的问题；系统现在只执行一个真实下载探测，成功后自动恢复同平台归档队列。
@@ -359,12 +364,12 @@ npm --prefix frontend run build
 - “打开指纹浏览器”改为立即返回 Manager 地址，profile 启动和 MakerWorld 登录页导航在后台执行，不再因等待归档 Worker 释放浏览器锁而被反向代理误报 `504`。
 - 同一平台的重复打开请求会复用正在执行的后台任务；启动成功后继续沿用自动登录态同步，真实启动故障仍会写回账号状态和业务日志。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-01 · v0.15.16
 
 - 修复旧版本遗留的浏览器登录态同步暂停任务无法自动恢复的问题；3MF gate 已打开时，Worker 启动会自动恢复一个探测任务，避免重复消耗下载额度。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-01 · v0.15.15
 
