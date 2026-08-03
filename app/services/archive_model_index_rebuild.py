@@ -14,6 +14,7 @@ from app.services.archive_model_index import (
     archive_model_index_is_bootstrapped,
     archive_model_index_status,
     clear_archive_model_index_bootstrap_marker,
+    delete_archive_model_index,
     mark_archive_model_index_bootstrapped,
     truncate_archive_model_index,
     upsert_archive_model_index,
@@ -25,6 +26,7 @@ from app.services.state_events import publish_state_event
 
 ARCHIVE_MODEL_INDEX_REBUILD_STATUS_PATH = STATE_DIR / "archive_model_index_rebuild_status.json"
 ARCHIVE_MODEL_INDEX_REBUILD_STATUS_KEY = "archive_model_index_rebuild_status"
+ARCHIVE_MODEL_INDEX_REPAIR_RETRY_SECONDS = 300
 
 try:
     import fcntl
@@ -121,15 +123,110 @@ def _count_archive_meta_files(archive_root: Path = ARCHIVE_DIR) -> int:
     return sum(1 for path in archive_root.rglob("meta.json") if path.is_file())
 
 
-def _write_database_index_progress(result: dict[str, Any]) -> None:
+def _write_database_index_progress(
+    result: dict[str, Any],
+    *,
+    phase: str = "database_index_rebuild",
+) -> None:
     write_archive_model_index_rebuild_status(
         {
             "running": True,
-            "phase": "database_index_rebuild",
+            "phase": phase,
             "last_error": "",
             "last_result": {"database_index": dict(result)},
         }
     )
+
+
+def repair_archive_model_database_index(
+    model_dirs: list[str],
+    *,
+    archive_root: Path = ARCHIVE_DIR,
+    stale_fingerprint: str = "",
+) -> dict[str, Any]:
+    clean_model_dirs = list(
+        dict.fromkeys(
+            clean
+            for item in model_dirs
+            if (clean := str(item or "").strip().strip("/"))
+        )
+    )
+    result: dict[str, Any] = {
+        "available": archive_model_index_configured(),
+        "skipped": False,
+        "forced": False,
+        "mode": "incremental",
+        "total": len(clean_model_dirs),
+        "processed": 0,
+        "updated": 0,
+        "deleted": 0,
+        "failed": 0,
+        "items": [],
+        "stale_model_dirs": clean_model_dirs,
+        "stale_fingerprint": str(stale_fingerprint or ""),
+    }
+    if not result["available"]:
+        result.update(
+            {
+                "skipped": True,
+                "reason": "Postgres 未配置或驱动未安装。",
+            }
+        )
+        return result
+
+    _write_database_index_progress(result, phase="database_index_repair")
+    for model_dir in clean_model_dirs:
+        meta_path = archive_root / model_dir / "meta.json"
+        try:
+            if not meta_path.is_file():
+                deleted_count = delete_archive_model_index([model_dir])
+                if deleted_count <= 0:
+                    raise RuntimeError("数据库索引删除失败。")
+                result["deleted"] += deleted_count
+                continue
+            model = _normalize_model(meta_path, include_detail=False)
+            if not model:
+                raise ValueError("meta.json 无法解析为模型。")
+            if not upsert_archive_model_index(
+                model_dir,
+                model=model,
+                meta_path=meta_path,
+            ):
+                raise RuntimeError("数据库写入失败。")
+            result["updated"] += 1
+        except Exception as exc:
+            result["failed"] += 1
+            if len(result["items"]) < 50:
+                result["items"].append(
+                    {
+                        "model_dir": model_dir,
+                        "message": str(exc),
+                    }
+                )
+        finally:
+            result["processed"] += 1
+            if (
+                result["processed"] == result["total"]
+                or result["processed"] % 25 == 0
+            ):
+                _write_database_index_progress(result, phase="database_index_repair")
+
+    if result["failed"] > 0:
+        result["retry_after_ts"] = round(
+            time.time() + ARCHIVE_MODEL_INDEX_REPAIR_RETRY_SECONDS
+        )
+    invalidate_archive_snapshot("archive_model_index_repaired")
+    append_business_log(
+        "database",
+        "archive_model_index_repaired",
+        "归档模型数据库索引增量修复完成。",
+        total=result["total"],
+        processed=result["processed"],
+        updated=result["updated"],
+        deleted=result["deleted"],
+        failed=result["failed"],
+    )
+    return result
 
 
 def rebuild_archive_model_database_index(
@@ -293,10 +390,29 @@ def run_archive_model_index_rebuild(force: bool = False, archive_root: Path = AR
     started_at = str(current_status.get("started_at") or "") or china_now_iso()
     force_rebuild = bool(force or current_status.get("force"))
     auto = bool(current_status.get("auto"))
+    last_result = current_status.get("last_result", {})
+    raw_database_request = (
+        last_result.get("database_index", {})
+        if isinstance(last_result, dict)
+        else {}
+    )
+    database_request = raw_database_request if isinstance(raw_database_request, dict) else {}
+    raw_incremental_model_dirs = database_request.get("stale_model_dirs", [])
+    incremental_model_dirs = (
+        raw_incremental_model_dirs
+        if database_request.get("mode") == "incremental"
+        and isinstance(raw_incremental_model_dirs, list)
+        else []
+    )
+    incremental_repair = bool(incremental_model_dirs) and not force_rebuild
     write_archive_model_index_rebuild_status(
         {
             "running": True,
-            "phase": "database_index_rebuild",
+            "phase": (
+                "database_index_repair"
+                if incremental_repair
+                else "database_index_rebuild"
+            ),
             "force": force_rebuild,
             "auto": auto,
             "started_at": started_at,
@@ -305,10 +421,19 @@ def run_archive_model_index_rebuild(force: bool = False, archive_root: Path = AR
         }
     )
     try:
-        result = rebuild_archive_model_database_index(
-            archive_root=archive_root,
-            force=force_rebuild,
-        )
+        if incremental_repair:
+            result = repair_archive_model_database_index(
+                list(incremental_model_dirs),
+                archive_root=archive_root,
+                stale_fingerprint=str(
+                    database_request.get("stale_fingerprint") or ""
+                ),
+            )
+        else:
+            result = rebuild_archive_model_database_index(
+                archive_root=archive_root,
+                force=force_rebuild,
+            )
         finished_at = china_now_iso()
         write_archive_model_index_rebuild_status(
             {
@@ -323,8 +448,16 @@ def run_archive_model_index_rebuild(force: bool = False, archive_root: Path = AR
         )
         append_business_log(
             "database",
-            "archive_model_index_worker_rebuild_completed",
-            "归档模型数据库索引后台重建完成。",
+            (
+                "archive_model_index_worker_repair_completed"
+                if incremental_repair
+                else "archive_model_index_worker_rebuild_completed"
+            ),
+            (
+                "归档模型数据库索引后台增量修复完成。"
+                if incremental_repair
+                else "归档模型数据库索引后台重建完成。"
+            ),
             processed=int(result.get("processed") or 0),
             updated=int(result.get("updated") or 0),
             failed=int(result.get("failed") or 0),
@@ -337,7 +470,11 @@ def run_archive_model_index_rebuild(force: bool = False, archive_root: Path = AR
             "finished_at": finished_at,
             "last_error": "",
             "last_result": {"database_index": result},
-            "message": "数据库索引重建完成。",
+            "message": (
+                "数据库索引增量修复完成。"
+                if incremental_repair
+                else "数据库索引重建完成。"
+            ),
         }
     except Exception as exc:
         finished_at = china_now_iso()

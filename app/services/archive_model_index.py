@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -65,7 +66,11 @@ def _mark_database_unavailable() -> None:
     _DB_RETRY_AFTER = time.monotonic() + _DATABASE_RETRY_SECONDS
 
 
-def _request_archive_model_index_rebuild(stale_model_dirs: list[str]) -> bool:
+def _request_archive_model_index_rebuild(
+    stale_model_dirs: list[str],
+    *,
+    archive_root: Path | None = None,
+) -> bool:
     stale_count = len(stale_model_dirs)
     if stale_count <= 0:
         return False
@@ -73,21 +78,45 @@ def _request_archive_model_index_rebuild(stale_model_dirs: list[str]) -> bool:
         current = load_database_json_state(ARCHIVE_MODEL_INDEX_REBUILD_STATUS_KEY, {})
         if isinstance(current, dict) and current.get("running"):
             return False
+        stale_fingerprint = _stale_model_dirs_fingerprint(
+            stale_model_dirs,
+            archive_root=archive_root or ARCHIVE_DIR,
+        )
+        previous_last_result = (
+            current.get("last_result", {})
+            if isinstance(current, dict)
+            else {}
+        )
+        previous_result = (
+            previous_last_result.get("database_index", {})
+            if isinstance(previous_last_result, dict)
+            else {}
+        )
+        if (
+            isinstance(previous_result, dict)
+            and previous_result.get("mode") == "incremental"
+            and previous_result.get("stale_fingerprint") == stale_fingerprint
+            and int(previous_result.get("failed") or 0) > 0
+            and float(previous_result.get("retry_after_ts") or 0) > time.time()
+        ):
+            return False
         sample = stale_model_dirs[:_STALE_MODEL_DIR_SAMPLE_LIMIT]
         payload: dict[str, Any] = {
             "running": True,
-            "phase": "database_index_rebuild",
-            "force": True,
+            "phase": "database_index_repair",
+            "force": False,
             "auto": False,
             "started_at": china_now_iso(),
             "finished_at": "",
             "last_error": "",
             "last_result": {
                 "database_index": {
+                    "mode": "incremental",
                     "requested_by": "archive_model_index_stale_rows",
                     "stale_count": stale_count,
-                    "stale_model_dirs": sample,
-                    "stale_model_dirs_truncated": stale_count > len(sample),
+                    "stale_model_dirs": stale_model_dirs,
+                    "stale_model_dirs_truncated": False,
+                    "stale_fingerprint": stale_fingerprint,
                 }
             },
         }
@@ -97,22 +126,22 @@ def _request_archive_model_index_rebuild(stale_model_dirs: list[str]) -> bool:
             "archive_model_index_rebuild.changed",
             {
                 "running": True,
-                "phase": "database_index_rebuild",
+                "phase": "database_index_repair",
                 "stale_count": stale_count,
             },
         )
         append_business_log(
             "database",
-            "archive_model_index_rebuild_requested",
-            "归档模型数据库索引已交给 worker 后台重建。",
+            "archive_model_index_repair_requested",
+            "归档模型数据库索引已交给 worker 后台增量修复。",
             stale_count=stale_count,
             sample_model_dirs=sample,
         )
         return True
     except Exception as exc:
         _warn_once(
-            "archive_model_index_rebuild_request_failed",
-            "归档模型数据库索引后台重建请求写入失败。",
+            "archive_model_index_repair_request_failed",
+            "归档模型数据库索引后台增量修复请求写入失败。",
             error=str(exc),
             count=stale_count,
         )
@@ -238,6 +267,24 @@ def _meta_signature(meta_path: Path) -> tuple[int, int]:
     except OSError:
         return (0, 0)
     return (int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _stale_model_dirs_fingerprint(
+    model_dirs: list[str],
+    *,
+    archive_root: Path,
+) -> str:
+    signatures = []
+    clean_model_dirs = {
+        str(item or "").strip().strip("/")
+        for item in model_dirs
+        if str(item or "").strip()
+    }
+    for model_dir in sorted(clean_model_dirs):
+        meta_path = archive_root / model_dir / "meta.json"
+        signatures.append((model_dir, *_meta_signature(meta_path)))
+    payload = json.dumps(signatures, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _remote_short_key(source: str, model_id: str) -> str:
@@ -735,12 +782,16 @@ def load_archive_model_index(archive_root: Path = ARCHIVE_DIR) -> Optional[list[
         if isinstance(payload, dict):
             models.append(dict(payload))
     if stale_model_dirs:
-        _request_archive_model_index_rebuild(stale_model_dirs)
-        _warn_once(
-            "archive_model_index_stale_rows_detected",
-            "发现归档模型数据库索引与 meta.json 不一致，已提交 worker 后台重建；本次继续使用数据库快照。",
-            count=len(stale_model_dirs),
+        repair_queued = _request_archive_model_index_rebuild(
+            stale_model_dirs,
+            archive_root=archive_root,
         )
+        if repair_queued:
+            _warn_once(
+                "archive_model_index_stale_rows_detected",
+                "发现归档模型数据库索引与 meta.json 不一致，已提交 worker 后台增量修复；本次继续使用数据库快照。",
+                count=len(stale_model_dirs),
+            )
     return models
 
 

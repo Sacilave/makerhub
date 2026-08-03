@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.21`
+> 当前版本：`v0.15.22`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-03 · v0.15.22
+
+- 模型元数据变化或删除时只增量修复对应数据库索引，不再清空全库，首页模型总数保持稳定。
+- 修复失败按文件签名短暂防抖，文件修正后可立即重试，避免页面轮询反复提交相同任务。
+
 ### 2026-08-03 · v0.15.21
 
 - 修复缺失 3MF 探测遇到已下架或私有模型时归档 Worker 线程退出的问题；终止任务会正常完成并继续下一条探测。
@@ -358,13 +363,13 @@ npm --prefix frontend run build
 - 修复跨版本旧批次在归档队列繁忙时仍显示“运行中 / 恢复中”的问题；周期检查会将核心状态和源端任务卡统一校正为“已暂停”并保留最新进度。
 - 旧版本遗留的“正在检测 3MF 下载权限”暂停队列会在账号 gate 已打开后自动恢复 1 条探测任务，不再永久停在排队状态。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-03 · v0.15.19
 
 - 修复源端刷新绕过归档队列背压的问题；归档任务存在时不会继续启动或派发刷新模型。
 - 新批次和恢复批次会正确显示为“已暂停”并保留完成进度，归档队列清空后从原批次继续，不再误报完成或重复刷新。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-03 · v0.15.18
 

@@ -660,7 +660,7 @@ class ArchiveModelIndexTest(unittest.TestCase):
             self.assertEqual(detail["model_dir"], "CN_Demo")
             self.assertEqual(detail["detail_path"], "/models/mwcn1067877")
 
-    def test_stale_database_index_returns_snapshot_and_queues_worker_rebuild(self):
+    def test_stale_database_index_returns_snapshot_and_queues_incremental_repair(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()
             _write_meta(archive_root, "LOCAL_Demo", "Demo")
@@ -679,7 +679,7 @@ class ArchiveModelIndexTest(unittest.TestCase):
                 patch.object(archive_model_index, "ARCHIVE_DIR", archive_root), \
                 patch.object(archive_model_index, "load_database_json_state", side_effect=load_state), \
                 patch.object(archive_model_index, "save_database_json_state", side_effect=save_state), \
-                patch.object(archive_model_index, "publish_state_event"):
+                patch.object(archive_model_index, "publish_state_event") as publish_event:
                 model = catalog._normalize_model(meta_path, include_detail=False)
                 self.assertTrue(model)
                 archive_model_index.upsert_archive_model_index("LOCAL_Demo", model=model, meta_path=meta_path)
@@ -706,13 +706,253 @@ class ArchiveModelIndexTest(unittest.TestCase):
             self.assertEqual(loaded[0]["model_dir"], "LOCAL_Demo")
             self.assertEqual(loaded[0]["title"], "Demo")
             self.assertTrue(state["running"])
-            self.assertEqual(state["phase"], "database_index_rebuild")
-            self.assertTrue(state["force"])
+            self.assertEqual(state["phase"], "database_index_repair")
+            self.assertFalse(state["force"])
             self.assertFalse(state["auto"])
             database_index = state["last_result"]["database_index"]
+            self.assertEqual(database_index["mode"], "incremental")
             self.assertEqual(database_index["requested_by"], "archive_model_index_stale_rows")
             self.assertEqual(database_index["stale_count"], 1)
             self.assertEqual(database_index["stale_model_dirs"], ["LOCAL_Demo"])
+            self.assertEqual(publish_event.call_args.args[2]["phase"], "database_index_repair")
+
+    def test_many_stale_rows_still_queue_incremental_repair(self):
+        state = {}
+
+        def load_state(_key, default):
+            return dict(state or default)
+
+        def save_state(_key, payload):
+            state.clear()
+            state.update(payload)
+            return payload
+
+        stale_model_dirs = [f"LOCAL_{index}" for index in range(150)]
+        with patch.object(archive_model_index, "load_database_json_state", side_effect=load_state), \
+                patch.object(archive_model_index, "save_database_json_state", side_effect=save_state), \
+                patch.object(archive_model_index, "publish_state_event"):
+            queued = archive_model_index._request_archive_model_index_rebuild(stale_model_dirs)
+
+        self.assertTrue(queued)
+        self.assertEqual(state["phase"], "database_index_repair")
+        self.assertFalse(state["force"])
+        database_index = state["last_result"]["database_index"]
+        self.assertEqual(database_index["mode"], "incremental")
+        self.assertEqual(database_index["stale_count"], 150)
+        self.assertEqual(database_index["stale_model_dirs"], stale_model_dirs)
+        self.assertFalse(database_index["stale_model_dirs_truncated"])
+
+    def test_worker_incremental_repair_updates_only_stale_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            _write_meta(archive_root, "LOCAL_Changed", "Before")
+            _write_meta(archive_root, "LOCAL_Untouched", "Untouched")
+            status_state = {}
+
+            def load_status(_key, default):
+                return dict(status_state or default)
+
+            def save_status(_key, payload):
+                status_state.clear()
+                status_state.update(payload)
+                return payload
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root), \
+                    patch.object(archive_model_index, "ARCHIVE_DIR", archive_root), \
+                    patch.object(archive_model_index, "load_database_json_state", side_effect=load_status), \
+                    patch.object(archive_model_index, "save_database_json_state", side_effect=save_status), \
+                    patch.object(archive_model_index, "publish_state_event"), \
+                    patch.object(archive_model_index_rebuild, "load_database_json_state", side_effect=load_status), \
+                    patch.object(archive_model_index_rebuild, "save_database_json_state", side_effect=save_status), \
+                    patch.object(archive_model_index_rebuild, "publish_state_event"), \
+                    patch.object(archive_model_index_rebuild, "append_business_log"), \
+                    patch.object(archive_model_index_rebuild, "invalidate_archive_snapshot"):
+                for model_dir in ["LOCAL_Changed", "LOCAL_Untouched"]:
+                    meta_path = archive_root / model_dir / "meta.json"
+                    model = catalog._normalize_model(meta_path, include_detail=False)
+                    self.assertTrue(model)
+                    self.assertTrue(
+                        archive_model_index.upsert_archive_model_index(
+                            model_dir,
+                            model=model,
+                            meta_path=meta_path,
+                        )
+                    )
+                archive_model_index.mark_archive_model_index_bootstrapped(
+                    archive_root=archive_root,
+                    processed_count=2,
+                )
+                changed_meta_path = archive_root / "LOCAL_Changed" / "meta.json"
+                changed_meta = json.loads(changed_meta_path.read_text(encoding="utf-8"))
+                changed_meta["title"] = "After"
+                changed_meta_path.write_text(json.dumps(changed_meta, ensure_ascii=False), encoding="utf-8")
+
+                self.assertTrue(archive_model_index._request_archive_model_index_rebuild(["LOCAL_Changed"]))
+                result = archive_model_index_rebuild.run_archive_model_index_rebuild(
+                    archive_root=archive_root,
+                )
+
+            database_result = result["last_result"]["database_index"]
+            self.assertEqual(database_result["mode"], "incremental")
+            self.assertEqual(database_result["processed"], 1)
+            self.assertEqual(database_result["updated"], 1)
+            self.assertEqual(database_result["deleted"], 0)
+            self.assertEqual(len(self.connection.rows), 2)
+            self.assertEqual(self.connection.rows["LOCAL_Changed"]["model"]["title"], "After")
+            self.assertEqual(self.connection.rows["LOCAL_Untouched"]["model"]["title"], "Untouched")
+            self.assertFalse(
+                any(sql.startswith("TRUNCATE TABLE ARCHIVE_MODEL_INDEX") for sql, _params in self.connection.executed)
+            )
+            self.assertTrue(archive_model_index.archive_model_index_is_bootstrapped(archive_root=archive_root))
+
+    def test_incremental_repair_deletes_index_row_for_missing_meta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            _write_meta(archive_root, "LOCAL_Deleted", "Deleted")
+            _write_meta(archive_root, "LOCAL_Untouched", "Untouched")
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root), \
+                    patch.object(archive_model_index_rebuild, "write_archive_model_index_rebuild_status"), \
+                    patch.object(archive_model_index_rebuild, "append_business_log"), \
+                    patch.object(archive_model_index_rebuild, "invalidate_archive_snapshot"):
+                for model_dir in ["LOCAL_Deleted", "LOCAL_Untouched"]:
+                    meta_path = archive_root / model_dir / "meta.json"
+                    model = catalog._normalize_model(meta_path, include_detail=False)
+                    self.assertTrue(model)
+                    self.assertTrue(
+                        archive_model_index.upsert_archive_model_index(
+                            model_dir,
+                            model=model,
+                            meta_path=meta_path,
+                        )
+                    )
+                archive_model_index.mark_archive_model_index_bootstrapped(
+                    archive_root=archive_root,
+                    processed_count=2,
+                )
+                (archive_root / "LOCAL_Deleted" / "meta.json").unlink()
+
+                result = archive_model_index_rebuild.repair_archive_model_database_index(
+                    ["LOCAL_Deleted"],
+                    archive_root=archive_root,
+                )
+
+            self.assertEqual(result["processed"], 1)
+            self.assertEqual(result["updated"], 0)
+            self.assertEqual(result["deleted"], 1)
+            self.assertEqual(result["failed"], 0)
+            self.assertNotIn("LOCAL_Deleted", self.connection.rows)
+            self.assertIn("LOCAL_Untouched", self.connection.rows)
+            self.assertFalse(
+                any(sql.startswith("TRUNCATE TABLE ARCHIVE_MODEL_INDEX") for sql, _params in self.connection.executed)
+            )
+            self.assertTrue(archive_model_index.archive_model_index_is_bootstrapped(archive_root=archive_root))
+
+    def test_incremental_repair_reports_database_delete_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            with patch.object(archive_model_index_rebuild, "write_archive_model_index_rebuild_status"), \
+                    patch.object(archive_model_index_rebuild, "delete_archive_model_index", return_value=0), \
+                    patch.object(archive_model_index_rebuild, "append_business_log"), \
+                    patch.object(archive_model_index_rebuild, "invalidate_archive_snapshot"):
+                result = archive_model_index_rebuild.repair_archive_model_database_index(
+                    ["LOCAL_Missing"],
+                    archive_root=archive_root,
+                )
+
+            self.assertEqual(result["processed"], 1)
+            self.assertEqual(result["deleted"], 0)
+            self.assertEqual(result["failed"], 1)
+            self.assertEqual(result["items"][0]["model_dir"], "LOCAL_Missing")
+
+    def test_incremental_repair_does_not_delete_row_on_storage_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            with patch.object(archive_model_index_rebuild, "write_archive_model_index_rebuild_status"), \
+                    patch.object(Path, "stat", side_effect=OSError("storage unavailable")), \
+                    patch.object(archive_model_index_rebuild, "delete_archive_model_index") as delete_index, \
+                    patch.object(archive_model_index_rebuild, "append_business_log"), \
+                    patch.object(archive_model_index_rebuild, "invalidate_archive_snapshot"):
+                result = archive_model_index_rebuild.repair_archive_model_database_index(
+                    ["LOCAL_Unavailable"],
+                    archive_root=archive_root,
+                )
+
+            self.assertEqual(result["processed"], 1)
+            self.assertEqual(result["deleted"], 0)
+            self.assertEqual(result["failed"], 1)
+            delete_index.assert_not_called()
+
+    def test_failed_incremental_repair_is_not_immediately_requeued(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            _write_meta(archive_root, "LOCAL_Broken", "Before")
+            meta_path = archive_root / "LOCAL_Broken" / "meta.json"
+            status_state = {}
+
+            def load_status(_key, default):
+                return dict(status_state or default)
+
+            def save_status(_key, payload):
+                status_state.clear()
+                status_state.update(payload)
+                return payload
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root), \
+                    patch.object(archive_model_index, "ARCHIVE_DIR", archive_root), \
+                    patch.object(archive_model_index, "load_database_json_state", side_effect=load_status), \
+                    patch.object(archive_model_index, "save_database_json_state", side_effect=save_status), \
+                    patch.object(archive_model_index, "publish_state_event"), \
+                    patch.object(archive_model_index_rebuild, "load_database_json_state", side_effect=load_status), \
+                    patch.object(archive_model_index_rebuild, "save_database_json_state", side_effect=save_status), \
+                    patch.object(archive_model_index_rebuild, "publish_state_event"), \
+                    patch.object(archive_model_index_rebuild, "append_business_log"), \
+                    patch.object(archive_model_index_rebuild, "invalidate_archive_snapshot"):
+                model = catalog._normalize_model(meta_path, include_detail=False)
+                self.assertTrue(model)
+                self.assertTrue(
+                    archive_model_index.upsert_archive_model_index(
+                        "LOCAL_Broken",
+                        model=model,
+                        meta_path=meta_path,
+                    )
+                )
+                archive_model_index.mark_archive_model_index_bootstrapped(
+                    archive_root=archive_root,
+                    processed_count=1,
+                )
+                meta_path.write_text("{broken", encoding="utf-8")
+
+                first_snapshot = archive_model_index.load_archive_model_index(archive_root=archive_root)
+                repair_result = archive_model_index_rebuild.run_archive_model_index_rebuild(
+                    archive_root=archive_root,
+                )
+                second_snapshot = archive_model_index.load_archive_model_index(archive_root=archive_root)
+                status_after_failed_retry = dict(status_state)
+                meta_path.write_text(
+                    json.dumps(
+                        {
+                            "id": "1",
+                            "title": "Fixed",
+                            "source": "local",
+                            "collectDate": "2026-05-22 12:00",
+                            "author": {"name": "Ace"},
+                            "instances": [],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                third_snapshot = archive_model_index.load_archive_model_index(archive_root=archive_root)
+
+            self.assertIsNotNone(first_snapshot)
+            self.assertIsNotNone(second_snapshot)
+            self.assertIsNotNone(third_snapshot)
+            self.assertEqual(repair_result["last_result"]["database_index"]["failed"], 1)
+            self.assertFalse(status_after_failed_retry["running"])
+            self.assertEqual(status_after_failed_retry["phase"], "completed")
+            self.assertTrue(status_state["running"])
+            self.assertEqual(status_state["phase"], "database_index_repair")
 
     def test_rebuild_skips_when_marker_exists_unless_forced(self):
         with tempfile.TemporaryDirectory() as tmp:
