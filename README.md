@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.17`
+> 当前版本：`v0.15.18`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-03 · v0.15.18
+
+- 修复 Cookie 更新后 3MF 权限一直停在“检测中”的问题；系统现在只执行一个真实下载探测，成功后自动恢复同平台归档队列。
+- 普通 CDP 超时不再重启共享指纹浏览器 profile，避免浏览器频繁关闭、标签任务中断和登录态反复失效。
+- 源端刷新产生归档任务后会暂停继续派发并在队列清空后续跑；大评论集和资源比较改为固定大小摘要，降低 Worker 内存与 CPU 峰值。
+
 ### 2026-08-02 · v0.15.17
 
 - “打开指纹浏览器”改为立即返回 Manager 地址，profile 启动和 MakerWorld 登录页导航在后台执行，不再因等待归档 Worker 释放浏览器锁而被反向代理误报 `504`。
@@ -357,13 +363,13 @@ npm --prefix frontend run build
 
 - 修复旧版本遗留的浏览器登录态同步暂停任务无法自动恢复的问题；3MF gate 已打开时，Worker 启动会自动恢复一个探测任务，避免重复消耗下载额度。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-01 · v0.15.15
 
 - 修复浏览器登录态同步和账号配置更新并发时，旧同步结果被误判为 profile 切换、页面错误提示“需要重新登录”的问题。
 - 归档任务会自动改用已保存的最新浏览器登录态；真实浏览器未登录和实际验证要求仍会保留原有提示。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-07-31 · v0.15.14
 
