@@ -1203,7 +1203,7 @@ def _normalize_remote_refresh_active_run(payload: Any) -> dict:
     status = str(payload.get("status") or "").strip().lower()
     if not batch_id and not status:
         return {}
-    if status not in {"running", "resuming", "interrupted", "completed", "abandoned"}:
+    if status not in {"running", "resuming", "interrupted", "deferred", "completed", "abandoned"}:
         status = "running" if batch_id else ""
     return {
         "batch_id": batch_id,

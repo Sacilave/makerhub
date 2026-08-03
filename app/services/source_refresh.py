@@ -44,11 +44,7 @@ class SourceRefreshTaskManager(RemoteRefreshManager):
         self._current_source_run_id = ""
 
     def _service_busy_reason(self) -> str:
-        organize_tasks = self.task_store.load_organize_tasks()
-        for item in organize_tasks.get("items") or []:
-            if str(item.get("status") or "").strip().lower() in {"pending", "queued", "running"}:
-                return "local_organizer_busy"
-        return ""
+        return super()._service_busy_reason()
 
     def _source_run_payload(
         self,
@@ -251,6 +247,43 @@ class SourceRefreshTaskManager(RemoteRefreshManager):
         )
         self._current_source_run_id = ""
 
+    def _publish_source_run_deferred_from_state(self, *, run_id: str) -> None:
+        state = self.task_store.load_remote_refresh_state()
+        remote_active_run = state.get("active_run") if isinstance(state.get("active_run"), dict) else {}
+        runs = self.task_store.load_source_refresh_runs()
+        source_active_run = runs.get("active_run") if isinstance(runs.get("active_run"), dict) else {}
+        candidate_total = int(remote_active_run.get("candidate_total") or source_active_run.get("candidate_total") or 0)
+        completed_total = int(remote_active_run.get("completed_total") or 0)
+        defer_reason = str(state.get("last_defer_reason") or "archive_queue_busy")
+        self.task_store.patch_source_refresh_runs(
+            active_run=self._source_run_payload(
+                run_id=run_id,
+                status="paused",
+                manual=bool(source_active_run.get("manual") or remote_active_run.get("manual")),
+                started_at=str(source_active_run.get("started_at") or remote_active_run.get("started_at") or ""),
+                candidate_total=candidate_total,
+                completed_total=completed_total,
+                succeeded_total=int(state.get("last_batch_succeeded") or 0),
+                failed_total=int(state.get("last_batch_failed") or 0),
+                skipped_total=int(state.get("last_batch_skipped") or 0),
+                manifest_path=remote_active_run.get("manifest_path") or source_active_run.get("manifest_path") or "",
+                result_path=remote_active_run.get("result_path") or source_active_run.get("result_path") or "",
+                message=str(state.get("last_message") or "源端刷新已暂停，等待归档队列完成。"),
+            ),
+            last_deferred_at=str(state.get("last_deferred_at") or china_now_iso()),
+            last_defer_reason=defer_reason,
+            next_run_at=str(state.get("next_run_at") or ""),
+        )
+
+    def _publish_source_run_result_from_state(self, *, run_id: str) -> None:
+        state = self.task_store.load_remote_refresh_state()
+        active_run = state.get("active_run") if isinstance(state.get("active_run"), dict) else {}
+        status = str(active_run.get("status") or state.get("status") or "")
+        if status == "completed":
+            self._publish_source_run_completed_from_state(run_id=run_id)
+        elif status == "deferred":
+            self._publish_source_run_deferred_from_state(run_id=run_id)
+
     def _publish_source_run_interrupted(self, *, run_id: str, message: str) -> None:
         now = china_now_iso()
         queue = self.task_store.load_source_refresh_queue()
@@ -368,7 +401,7 @@ class SourceRefreshTaskManager(RemoteRefreshManager):
                 self._publish_source_run_interrupted(run_id=run_id, message=str(exc))
                 raise
             else:
-                self._publish_source_run_completed_from_state(run_id=run_id)
+                self._publish_source_run_result_from_state(run_id=run_id)
             return
         resume_active_run = kwargs.get("resume_active_run") if isinstance(kwargs.get("resume_active_run"), dict) else {}
         run_id = str(resume_active_run.get("batch_id") or resume_active_run.get("run_id") or self._current_source_run_id or _source_refresh_run_id())
@@ -389,7 +422,4 @@ class SourceRefreshTaskManager(RemoteRefreshManager):
             last_defer_reason="",
         )
         super()._run_batch(config, **kwargs)
-        state = self.task_store.load_remote_refresh_state()
-        active_run = state.get("active_run") if isinstance(state.get("active_run"), dict) else {}
-        if str(active_run.get("status") or "") == "completed":
-            self._publish_source_run_completed_from_state(run_id=run_id)
+        self._publish_source_run_result_from_state(run_id=run_id)

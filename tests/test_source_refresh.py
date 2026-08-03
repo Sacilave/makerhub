@@ -61,7 +61,7 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
         remote_refresh.invalidate_archive_snapshot = self.original_invalidate_archive_snapshot
         self.temp_dir.cleanup()
 
-    def test_manual_trigger_ignores_archive_queue_busy_and_records_source_run(self):
+    def test_manual_trigger_rejects_when_archive_queue_is_busy(self):
         self.task_store.save_archive_queue(
             {
                 "active": [],
@@ -75,11 +75,11 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
 
         archive_queue = self.task_store.load_archive_queue()
         source_runs = self.task_store.load_source_refresh_runs()
-        self.assertTrue(result["accepted"])
-        self.assertEqual(result["mode"], "new")
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["mode"], "rejected")
         self.assertEqual(archive_queue["queued_count"], 1)
-        self.assertEqual(source_runs["active_run"]["status"], "running")
-        self.assertTrue(source_runs["active_run"]["run_id"])
+        self.assertEqual(source_runs["active_run"], {})
+        self.assertEqual(result["state"]["last_defer_reason"], "archive_queue_busy")
 
     def test_disabled_scheduler_does_not_resume_an_interrupted_batch(self):
         config = self.store.load()
@@ -154,6 +154,76 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
         self.assertEqual(source_runs["last_completed_run"]["candidate_total"], 2)
         self.assertEqual(source_runs["last_completed_run"]["completed_total"], 2)
         self.assertEqual(source_runs["last_completed_run"]["succeeded_total"], 2)
+
+    def test_run_batch_pauses_source_projection_when_archive_queue_becomes_busy(self):
+        original_workers = remote_refresh._remote_refresh_model_workers
+        original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        remote_refresh.REMOTE_REFRESH_BATCH_DIR = self.temp_path / "remote_refresh_batches"
+        config = self.store.load()
+        items = [
+            {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1"},
+            {"model_dir": "m2", "title": "模型 2", "origin_url": "https://makerworld.com.cn/model/2"},
+            {"model_dir": "m3", "title": "模型 3", "origin_url": "https://makerworld.com.cn/model/3"},
+        ]
+        self.manager._pick_candidates = lambda: (
+            items,
+            {
+                "eligible_total": 3,
+                "selected_total": 3,
+                "remaining_total": 0,
+                "missing_cookie": 0,
+                "local_or_invalid": 0,
+            },
+        )
+        refreshed = []
+
+        def fake_refresh_one(item, *, index, total, config):
+            model_dir = str(item.get("model_dir") or "")
+            refreshed.append(model_dir)
+            self.task_store.save_archive_queue(
+                {
+                    "active": [],
+                    "queued": [
+                        {
+                            "id": f"archive-{model_dir}",
+                            "url": item["origin_url"],
+                            "status": "queued",
+                        }
+                    ],
+                    "recent_failures": [],
+                }
+            )
+            return {
+                "ok": True,
+                "metrics": {"model_dir": model_dir, "title": item["title"]},
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=model_dir,
+                    title=item["title"],
+                    url=item["origin_url"],
+                    status="success",
+                    message="完成",
+                    metrics={},
+                    change_labels=["已检查，无远端变化"],
+                ),
+            }
+
+        self.manager._refresh_one = fake_refresh_one
+        try:
+            self.manager._run_batch(config)
+        finally:
+            remote_refresh._remote_refresh_model_workers = original_workers
+            remote_refresh.REMOTE_REFRESH_BATCH_DIR = original_batch_dir
+
+        state = self.task_store.load_remote_refresh_state()
+        source_runs = self.task_store.load_source_refresh_runs()
+        self.assertEqual(refreshed, ["m1"])
+        self.assertEqual(state["status"], "deferred")
+        self.assertEqual(state["last_defer_reason"], "archive_queue_busy")
+        self.assertEqual(source_runs["active_run"]["status"], "paused")
+        self.assertEqual(source_runs["active_run"]["completed_total"], 1)
+        self.assertEqual(source_runs["active_run"]["remaining_total"], 2)
+        self.assertEqual(source_runs["last_defer_reason"], "archive_queue_busy")
 
     def test_run_batch_limits_new_source_refresh_candidate_batch(self):
         original_workers = remote_refresh._remote_refresh_model_workers
@@ -294,6 +364,97 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
         self.assertEqual(source_runs["last_completed_run"]["status"], "completed")
         self.assertEqual(source_runs["last_completed_run"]["completed_total"], 2)
         self.assertEqual(source_runs["last_completed_run"]["succeeded_total"], 2)
+
+    def test_resume_active_run_pauses_source_projection_when_archive_queue_becomes_busy(self):
+        original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        original_workers = remote_refresh._remote_refresh_model_workers
+        remote_refresh.REMOTE_REFRESH_BATCH_DIR = self.temp_path / "remote_refresh_batches"
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        candidates = [
+            {
+                "model_dir": f"m{index}",
+                "title": f"模型 {index}",
+                "origin_url": f"https://makerworld.com.cn/model/{index}",
+            }
+            for index in range(1, 4)
+        ]
+        manifest = remote_refresh._RemoteRefreshBatchManifest.create(
+            batch_id="resume-deferred-source-batch",
+            candidates=candidates,
+            stats={"eligible_total": 3, "selected_total": 3, "remaining_total": 0},
+            cron="0 0 * * *",
+            manual=False,
+            directory=batch_dir,
+        )
+        buffer = remote_refresh._RemoteRefreshBatchBuffer(batch_id="resume-deferred-source-batch", directory=batch_dir)
+        buffer.append(remote_refresh._remote_refresh_result_record(
+            model_dir="m1",
+            title="模型 1",
+            url="https://makerworld.com.cn/model/1",
+            status="success",
+            message="已完成",
+            metrics={},
+            change_labels=["已检查，无远端变化"],
+        ))
+        buffer.close()
+        self.task_store.patch_remote_refresh_state(
+            status="deferred",
+            running=False,
+            active_run={
+                "batch_id": "resume-deferred-source-batch",
+                "status": "deferred",
+                "started_at": "2026-06-08T02:36:35+08:00",
+                "candidate_total": 3,
+                "completed_total": 1,
+                "remaining_total": 2,
+                "manifest_path": remote_refresh._remote_refresh_relative_state_path(manifest.path),
+                "result_path": "remote_refresh_batches/resume-deferred-source-batch.ndjson",
+            },
+        )
+        refreshed = []
+
+        def fake_refresh_one(item, *, index, total, config):
+            model_dir = str(item.get("model_dir") or "")
+            refreshed.append(model_dir)
+            self.task_store.save_archive_queue(
+                {
+                    "active": [],
+                    "queued": [{"id": f"archive-{model_dir}", "url": item["origin_url"], "status": "queued"}],
+                    "recent_failures": [],
+                }
+            )
+            return {
+                "ok": True,
+                "metrics": {"model_dir": model_dir, "title": item["title"]},
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=model_dir,
+                    title=item["title"],
+                    url=item["origin_url"],
+                    status="success",
+                    message="完成",
+                    metrics={},
+                    change_labels=["已检查，无远端变化"],
+                ),
+            }
+
+        self.manager._refresh_one = fake_refresh_one
+        try:
+            resumed = self.manager._resume_active_run_if_possible(self.store.load())
+        finally:
+            remote_refresh.REMOTE_REFRESH_BATCH_DIR = original_batch_dir
+            remote_refresh._remote_refresh_model_workers = original_workers
+
+        state = self.task_store.load_remote_refresh_state()
+        source_runs = self.task_store.load_source_refresh_runs()
+        self.assertTrue(resumed)
+        self.assertEqual(refreshed, ["m2"])
+        self.assertEqual(state["status"], "deferred")
+        self.assertEqual(source_runs["active_run"]["status"], "paused")
+        self.assertEqual(source_runs["active_run"]["completed_total"], 2)
+        self.assertEqual(source_runs["active_run"]["remaining_total"], 1)
+        self.assertEqual(source_runs["last_defer_reason"], "archive_queue_busy")
 
     def test_resume_active_run_limits_remaining_candidates(self):
         original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
