@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.19`
+> 当前版本：`v0.15.20`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -348,6 +348,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-03 · v0.15.20
+
+- 修复跨版本旧批次在归档队列繁忙时仍显示“运行中 / 恢复中”的问题；周期检查会将核心状态和源端任务卡统一校正为“已暂停”并保留最新进度。
+- 旧版本遗留的“正在检测 3MF 下载权限”暂停队列会在账号 gate 已打开后自动恢复 1 条探测任务，不再永久停在排队状态。
+
 ### 2026-08-03 · v0.15.19
 
 - 修复源端刷新绕过归档队列背压的问题；归档任务存在时不会继续启动或派发刷新模型。
@@ -359,13 +364,13 @@ npm --prefix frontend run build
 - 普通 CDP 超时不再重启共享指纹浏览器 profile，避免浏览器频繁关闭、标签任务中断和登录态反复失效。
 - 源端刷新产生归档任务后会暂停继续派发并在队列清空后续跑；大评论集和资源比较改为固定大小摘要，降低 Worker 内存与 CPU 峰值。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-02 · v0.15.17
 
 - “打开指纹浏览器”改为立即返回 Manager 地址，profile 启动和 MakerWorld 登录页导航在后台执行，不再因等待归档 Worker 释放浏览器锁而被反向代理误报 `504`。
 - 同一平台的重复打开请求会复用正在执行的后台任务；启动成功后继续沿用自动登录态同步，真实启动故障仍会写回账号状态和业务日志。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-01 · v0.15.16
 
