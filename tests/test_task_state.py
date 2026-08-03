@@ -1519,6 +1519,13 @@ class ArchiveQueueStateTest(unittest.TestCase):
                         "meta": {"source": "cn", "missing_3mf_retry": True},
                     },
                     {
+                        "id": "legacy-download-probe",
+                        "url": "https://makerworld.com.cn/zh/models/124",
+                        "status": "paused",
+                        "message": "登录态已更新，正在检测 3MF 下载权限。",
+                        "meta": {"source": "cn", "missing_3mf_retry": True},
+                    },
+                    {
                         "id": "manual-pause",
                         "url": "https://makerworld.com.cn/zh/models/456",
                         "status": "paused",
@@ -1535,17 +1542,22 @@ class ArchiveQueueStateTest(unittest.TestCase):
                 patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
             queue = store.resume_verification_paused_archive_tasks(
                 selector=lambda item: item.get("meta", {}).get("source") == "cn",
-                limit=1,
+                limit=2,
                 message="正在探测 3MF 下载权限",
                 meta_updates={"browser_session_recovery": True},
             )
 
-        self.assertEqual(queue["resumed_count"], 1)
-        self.assertEqual([item["id"] for item in queue["resumed_items"]], ["legacy-browser-session"])
+        self.assertEqual(queue["resumed_count"], 2)
+        self.assertEqual(
+            [item["id"] for item in queue["resumed_items"]],
+            ["legacy-browser-session", "legacy-download-probe"],
+        )
         self.assertEqual(queue["queued"][0]["status"], "queued")
         self.assertTrue(queue["queued"][0]["meta"]["browser_session_recovery"])
-        self.assertEqual(queue["queued"][1]["status"], "paused")
-        self.assertEqual(queue["queued"][1]["message"], "用户手动暂停。")
+        self.assertEqual(queue["queued"][1]["status"], "queued")
+        self.assertTrue(queue["queued"][1]["meta"]["browser_session_recovery"])
+        self.assertEqual(queue["queued"][2]["status"], "paused")
+        self.assertEqual(queue["queued"][2]["message"], "用户手动暂停。")
 
     def test_pause_verification_archive_tasks_updates_matching_queue_atomically(self):
         state = {

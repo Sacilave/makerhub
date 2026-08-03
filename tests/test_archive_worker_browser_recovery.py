@@ -910,7 +910,7 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
             "id": "legacy-browser-session",
             "status": "paused",
             "url": "https://makerworld.com.cn/zh/models/123",
-            "message": "指纹浏览器登录态已更新，正在重试当前受阻的 3MF 下载。",
+            "message": "登录态已更新，正在检测 3MF 下载权限。",
             "meta": {"missing_3mf_retry": True, "source": "cn"},
         }
         resumed_item = {

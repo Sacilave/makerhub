@@ -105,6 +105,50 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
         self.assertEqual(state["status"], "disabled")
         self.assertFalse(state["running"])
 
+    def test_tick_projects_a_legacy_active_run_as_paused_while_archive_queue_is_busy(self):
+        self.task_store.save_archive_queue(
+            {
+                "active": [],
+                "queued": [{"id": "archive-1", "url": "https://makerworld.com.cn/model/1", "status": "queued"}],
+                "recent_failures": [],
+            }
+        )
+        self.task_store.patch_remote_refresh_state(
+            status="running",
+            running=False,
+            active_run={
+                "batch_id": "legacy-running-batch",
+                "status": "running",
+                "started_at": "2026-08-03T08:39:50+08:00",
+                "candidate_total": 200,
+                "completed_total": 53,
+                "remaining_total": 147,
+                "manifest_path": "remote_refresh_batches/legacy-running-batch.manifest.json",
+                "result_path": "remote_refresh_batches/legacy-running-batch.ndjson",
+            },
+        )
+        self.task_store.patch_source_refresh_runs(
+            active_run=self.manager._source_run_payload(
+                run_id="legacy-running-batch",
+                status="resuming",
+                candidate_total=200,
+                completed_total=52,
+                started_at="2026-08-03T08:39:50+08:00",
+            ),
+        )
+        self.manager._resume_active_run_if_possible = lambda _config: self.fail("busy archive queue must block resume")
+
+        self.manager._tick()
+
+        state = self.task_store.load_remote_refresh_state()
+        source_runs = self.task_store.load_source_refresh_runs()
+        self.assertEqual(state["status"], "deferred")
+        self.assertEqual(state["active_run"]["status"], "deferred")
+        self.assertEqual(source_runs["active_run"]["status"], "paused")
+        self.assertEqual(source_runs["active_run"]["completed_total"], 53)
+        self.assertEqual(source_runs["active_run"]["remaining_total"], 147)
+        self.assertEqual(source_runs["last_defer_reason"], "archive_queue_busy")
+
     def test_run_batch_writes_source_refresh_queue_and_completed_run(self):
         original_workers = remote_refresh._remote_refresh_model_workers
         remote_refresh._remote_refresh_model_workers = lambda _config=None: 1

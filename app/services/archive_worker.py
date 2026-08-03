@@ -88,6 +88,7 @@ CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE = (
     "指纹浏览器登录态已同步，但 MakerWorld 仍拒绝 3MF 下载；请在官网完成验证后再继续归档。"
 )
 CLOAKBROWSER_SESSION_REFRESHED_MESSAGE = "指纹浏览器登录态已更新，正在重试当前受阻的 3MF 下载。"
+CLOAKBROWSER_LEGACY_PROBE_MESSAGE = "登录态已更新，正在检测 3MF 下载权限。"
 
 
 @dataclass(frozen=True)
@@ -3429,7 +3430,10 @@ class ArchiveTaskManager:
                 return False
             if str(item.get("blocked_reason") or "").strip():
                 return False
-            if str(item.get("message") or "").strip() != CLOAKBROWSER_SESSION_REFRESHED_MESSAGE:
+            if str(item.get("message") or "").strip() not in {
+                CLOAKBROWSER_SESSION_REFRESHED_MESSAGE,
+                CLOAKBROWSER_LEGACY_PROBE_MESSAGE,
+            }:
                 return False
             return self._verification_resume_allowed(item, gate_by_platform)
 

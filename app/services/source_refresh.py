@@ -340,6 +340,30 @@ class SourceRefreshTaskManager(RemoteRefreshManager):
             )
         return result
 
+    def _tick(self) -> None:
+        super()._tick()
+        state = self.task_store.load_remote_refresh_state()
+        if str(state.get("status") or "") != "deferred":
+            return
+        remote_active_run = state.get("active_run") if isinstance(state.get("active_run"), dict) else {}
+        run_id = str(remote_active_run.get("batch_id") or "")
+        if not run_id:
+            return
+        runs = self.task_store.load_source_refresh_runs()
+        source_active_run = runs.get("active_run") if isinstance(runs.get("active_run"), dict) else {}
+        candidate_total = int(remote_active_run.get("candidate_total") or 0)
+        completed_total = int(remote_active_run.get("completed_total") or 0)
+        defer_reason = str(state.get("last_defer_reason") or "")
+        if (
+            str(source_active_run.get("status") or "") == "paused"
+            and int(source_active_run.get("candidate_total") or 0) == candidate_total
+            and int(source_active_run.get("completed_total") or 0) == completed_total
+            and str(runs.get("last_defer_reason") or "") == defer_reason
+        ):
+            return
+        self._current_source_run_id = run_id
+        self._publish_source_run_deferred_from_state(run_id=run_id)
+
     def repair_source_refresh_state(self) -> dict[str, Any]:
         queue = self.task_store.load_source_refresh_queue()
         runs = self.task_store.load_source_refresh_runs()

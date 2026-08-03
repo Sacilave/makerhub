@@ -1866,7 +1866,8 @@ class RemoteRefreshManager:
                 current_item={},
             )
             return
-        if self._resumable_active_run():
+        resumable_active_run = self._resumable_active_run()
+        if resumable_active_run:
             resume_busy_reason = self._service_busy_reason()
             if resume_busy_reason:
                 now_iso = _now_iso()
@@ -1880,6 +1881,7 @@ class RemoteRefreshManager:
                     last_deferred_at=now_iso,
                     last_defer_reason=resume_busy_reason,
                     current_item={},
+                    active_run={**resumable_active_run, "status": "deferred"},
                 )
                 return
             if self._resume_active_run_if_possible(config):
