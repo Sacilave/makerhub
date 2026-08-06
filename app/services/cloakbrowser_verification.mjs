@@ -167,7 +167,6 @@ function createStageSignal(timeoutMs, externalSignal) {
   const onExternalAbort = () => {
     const reason = externalSignal.reason || new VerificationError("aborted");
     actionController.abort(reason);
-    hardController.abort(reason);
   };
   if (externalSignal?.aborted) onExternalAbort();
   else externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
@@ -605,8 +604,7 @@ async function validateClickLayout(challenge, signal) {
   if (rows.length > 3) return false;
   rows.sort((left, right) => left.centerY - right.centerY);
   const rowSizes = rows.map((row) => row.entries.length);
-  if (Math.max(...rowSizes) - Math.min(...rowSizes) > 1) return false;
-  if (rows.length >= 3 && !rowSizes.every((size) => size === rowSizes[0])) return false;
+  if (rows.length > 1 && !rowSizes.every((size) => size === rowSizes[0])) return false;
 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
@@ -625,28 +623,11 @@ async function validateClickLayout(challenge, signal) {
 
   if (rows.length > 1) {
     const columnTolerance = Math.max(8, medianWidth * 0.60);
-    if (rowSizes.every((size) => size === rowSizes[0])) {
-      for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
-        for (let columnIndex = 0; columnIndex < rows[0].entries.length; columnIndex += 1) {
-          if (Math.abs(
-            rows[rowIndex].entries[columnIndex].centerX - rows[0].entries[columnIndex].centerX,
-          ) > columnTolerance) return false;
-        }
-      }
-    } else {
-      const shortRow = rows.find((row) => row.entries.length === Math.min(...rowSizes));
-      const longRow = rows.find((row) => row.entries.length === Math.max(...rowSizes));
-      let longColumnIndex = 0;
-      for (const entry of shortRow.entries) {
-        while (
-          longColumnIndex < longRow.entries.length
-          && longRow.entries[longColumnIndex].centerX < entry.centerX - columnTolerance
-        ) longColumnIndex += 1;
-        if (
-          longColumnIndex >= longRow.entries.length
-          || Math.abs(entry.centerX - longRow.entries[longColumnIndex].centerX) > columnTolerance
-        ) return false;
-        longColumnIndex += 1;
+    for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+      for (let columnIndex = 0; columnIndex < rows[0].entries.length; columnIndex += 1) {
+        if (Math.abs(
+          rows[rowIndex].entries[columnIndex].centerX - rows[0].entries[columnIndex].centerX,
+        ) > columnTolerance) return false;
       }
     }
   }

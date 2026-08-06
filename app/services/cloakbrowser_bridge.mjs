@@ -472,6 +472,12 @@ function isVerificationAuthorization(response) {
   return response.status_code === 418 || Boolean(response.payload?.captchaId);
 }
 
+function isSuccessfulAuthorization(response) {
+  return response.status_code >= 200
+    && response.status_code < 300
+    && Boolean(String(response.payload?.url || "").trim());
+}
+
 async function settlePageGeneratedAuthorization(responseOutcome, originalResponse) {
   const outcome = await responseOutcome;
   if (!outcome.response) return originalResponse;
@@ -528,6 +534,12 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
         signal: secondWaiterController.signal,
       })
       : null;
+    const secondParsedResponse = secondResponseOutcome
+      ? settlePageGeneratedAuthorization(secondResponseOutcome, null)
+      : Promise.resolve(null);
+    const secondAuthorization = secondParsedResponse.then((response) => (
+      isSuccessfulAuthorization(response || {}) ? response : null
+    ));
     try {
       const first = await readAuthorizationResponse(firstOutcome.response);
       if (!options.inputAutoVerify || !isVerificationAuthorization(first)) {
@@ -535,22 +547,48 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
       }
 
       const verificationAdapter = options.verificationAdapter || attemptAutomaticVerification;
-      let verification;
-      try {
-        verification = sanitizeVerificationResult(await verificationAdapter(page, {
-          timeoutMs: AUTO_VERIFY_TIMEOUT_MS,
-        }));
-      } catch {
-        verification = sanitizeVerificationResult({
-          attempted: true,
-          completed: false,
-          reason: "verification_failed",
-        });
-      }
+      const verificationController = new AbortController();
+      const verificationOutcome = Promise.resolve().then(async () => {
+        try {
+          return sanitizeVerificationResult(await verificationAdapter(page, {
+            timeoutMs: AUTO_VERIFY_TIMEOUT_MS,
+            signal: verificationController.signal,
+          }));
+        } catch {
+          return sanitizeVerificationResult({
+            attempted: true,
+            completed: false,
+            reason: "verification_failed",
+          });
+        }
+      });
+      const pageSuccess = secondAuthorization.then((response) => (
+        response
+          ? { source: "page", response }
+          : new Promise(() => {})
+      ));
+      const winner = await Promise.race([
+        pageSuccess,
+        verificationOutcome.then((verification) => ({ source: "adapter", verification })),
+      ]);
 
-      const finalResponse = verification.completed
-        ? await settlePageGeneratedAuthorization(secondResponseOutcome, first)
-        : first;
+      let verification;
+      let finalResponse;
+      if (winner.source === "page") {
+        verificationController.abort(new Error("authorization completed"));
+        const adapterResult = await verificationOutcome;
+        verification = sanitizeVerificationResult({
+          ...adapterResult,
+          completed: true,
+          reason: "completed",
+        });
+        finalResponse = winner.response;
+      } else {
+        verification = winner.verification;
+        finalResponse = verification.completed
+          ? (await secondParsedResponse) || first
+          : first;
+      }
       return {
         ...finalResponse,
         navigation_timed_out: Boolean(options.navigationTimedOut),

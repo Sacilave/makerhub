@@ -307,6 +307,69 @@ test("3MF coordinator arms the second waiter before parsing the first response b
   assert.equal(result.payload.url, "https://download.example.test/verified.3mf");
 });
 
+test("3MF coordinator consumes a passive page success and cancels verification", async () => {
+  const waiters = [];
+  const first = fakeAuthorizationResponse({
+    status: 418,
+    payload: { captchaId: "captcha-123" },
+  });
+  const second = fakeAuthorizationResponse({
+    payload: { name: "verified.3mf", url: "https://download.example.test/passive.3mf" },
+  });
+  let clicks = 0;
+  let adapterAborted = false;
+  const page = {
+    waitForResponse: (matcher, options = {}) => new Promise((resolve, reject) => {
+      waiters.push({
+        resolve: (response) => {
+          assert.equal(matcher(response), true);
+          resolve(response);
+        },
+      });
+      options.signal?.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    }),
+  };
+
+  const result = await coordinateThreeMfAuthorization(page, {
+    instanceId: "123",
+    inputAutoVerify: true,
+    findButton: async () => ({
+      click: async () => {
+        clicks += 1;
+        waiters[0].resolve(first);
+      },
+      dispose: async () => {},
+    }),
+    verificationAdapter: async (_page, { signal }) => new Promise((resolve) => {
+      signal.addEventListener("abort", () => {
+        adapterAborted = true;
+        resolve({
+          attempted: false,
+          completed: false,
+          provider: "turnstile",
+          challenge_type: "checkbox",
+          attempts: 0,
+          reason: "aborted",
+        });
+      }, { once: true });
+      waiters[1].resolve(second);
+    }),
+  });
+
+  assert.equal(clicks, 1);
+  assert.equal(adapterAborted, true);
+  assert.equal(result.status_code, 200);
+  assert.equal(result.payload.url, "https://download.example.test/passive.3mf");
+  assert.deepEqual(result.verification, {
+    attempted: false,
+    completed: true,
+    provider: "turnstile",
+    challenge_type: "checkbox",
+    attempts: 0,
+    reason: "completed",
+  });
+});
+
 test("3MF coordinator aborts and settles the speculative waiter for a non-verification response", async () => {
   const first = fakeAuthorizationResponse();
   let waiterCalls = 0;
@@ -876,6 +939,30 @@ test("click discovery rejects an uneven two-row grid whose columns do not align"
   });
 
   assert.equal(await detectVerificationChallenge(page), null);
+});
+
+test("click discovery rejects aligned but non-rectangular two-row grids", async () => {
+  for (const candidateBoxes of [
+    [
+      { x: 30, y: 80, width: 40, height: 40 },
+      { x: 100, y: 80, width: 40, height: 40 },
+      { x: 170, y: 80, width: 40, height: 40 },
+      { x: 30, y: 140, width: 40, height: 40 },
+      { x: 100, y: 140, width: 40, height: 40 },
+    ],
+    [
+      { x: 30, y: 80, width: 40, height: 40 },
+      { x: 100, y: 80, width: 40, height: 40 },
+      { x: 30, y: 140, width: 40, height: 40 },
+    ],
+  ]) {
+    const { page } = fakeClickDiscoveryPage({
+      containerBox: { x: 0, y: 0, width: 240, height: 220 },
+      candidateBoxes,
+    });
+
+    assert.equal(await detectVerificationChallenge(page), null);
+  }
 });
 
 test("click discovery requires one-to-one column alignment for an uneven two-row grid", async () => {
