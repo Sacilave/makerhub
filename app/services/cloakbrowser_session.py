@@ -29,8 +29,8 @@ from app.services.resource_limiter import resource_slot
 BRIDGE_SCRIPT = ROOT_DIR / "app" / "services" / "cloakbrowser_bridge.mjs"
 DEFAULT_TIMEOUT_SECONDS = 30
 AUTHORIZATION_TIMEOUT_SECONDS = 90
-# 默认授权链路为 170 秒，额外预留 40 秒进程通信余量。
-AUTHORIZATION_BRIDGE_TIMEOUT_SECONDS = 210
+AUTO_VERIFY_TIMEOUT_SECONDS = 50
+AUTHORIZATION_BRIDGE_CLEANUP_MARGIN_SECONDS = 40
 PROFILE_RECOVERY_COOLDOWN_SECONDS = 60
 CLOAKBROWSER_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_IDLE_SECONDS"
 DEFAULT_CLOAKBROWSER_IDLE_SECONDS = 30 * 60
@@ -203,6 +203,24 @@ def _env_bool(env_name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on", "enabled"}
+
+
+def _authorization_bridge_timeout_seconds(navigation_timeout_ms: int) -> int:
+    try:
+        milliseconds = max(int(navigation_timeout_ms), 15_000)
+    except (TypeError, ValueError):
+        milliseconds = DEFAULT_TIMEOUT_SECONDS * 1000
+    navigation_seconds = (milliseconds + 999) // 1000
+    first_response_seconds = max(
+        AUTHORIZATION_TIMEOUT_SECONDS,
+        navigation_seconds,
+    )
+    return (
+        navigation_seconds
+        + first_response_seconds
+        + AUTO_VERIFY_TIMEOUT_SECONDS
+        + AUTHORIZATION_BRIDGE_CLEANUP_MARGIN_SECONDS
+    )
 
 
 def _auth_token() -> str:
@@ -990,18 +1008,21 @@ def browser_authorize_3mf_download(
             clean_platform,
             clean_profile_id,
         )
+        bridge_payload = _bridge_payload(
+            running.id,
+            action="click",
+            target_url=clean_api_url,
+            model_url=page_url,
+            instance_id=clean_instance_id,
+            platform=clean_platform,
+        )
         running, _restarted, result = _run_bridge_with_profile_recovery(
             clean_platform,
             running,
-            _bridge_payload(
-                running.id,
-                action="click",
-                target_url=clean_api_url,
-                model_url=page_url,
-                instance_id=clean_instance_id,
-                platform=clean_platform,
+            bridge_payload,
+            timeout_seconds=_authorization_bridge_timeout_seconds(
+                bridge_payload["navigation_timeout_ms"]
             ),
-            timeout_seconds=AUTHORIZATION_BRIDGE_TIMEOUT_SECONDS,
             allow_profile_restart=False,
         )
 

@@ -223,6 +223,18 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         run_mock.assert_not_called()
 
+    def test_3mf_authorization_bridge_timeout_covers_default_navigation_budget(self):
+        self.assertEqual(
+            cloakbrowser_session._authorization_bridge_timeout_seconds(30_000),
+            210,
+        )
+
+    def test_3mf_authorization_bridge_timeout_covers_maximum_navigation_budget(self):
+        self.assertEqual(
+            cloakbrowser_session._authorization_bridge_timeout_seconds(120_000),
+            330,
+        )
+
     def test_run_bridge_rejects_missing_auth_token_before_subprocess_io(self):
         with patch.object(cloakbrowser_session.subprocess, "run") as run_mock:
             with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserUnavailable, "AUTH_TOKEN"):
@@ -1060,6 +1072,52 @@ class CloakBrowserSessionTest(unittest.TestCase):
                         bridge_mock.call_args.args[0]["auto_verify_3mf"],
                         expected,
                     )
+
+    def test_browser_3mf_authorization_passes_dynamic_timeout_to_subprocess(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        bridge_process = Mock(
+            returncode=0,
+            stdout=(
+                '{"ok":true,"status_code":200,'
+                '"payload":{"name":"part.3mf","url":"https://download.example.test/part.3mf"}}'
+            ),
+            stderr="",
+        )
+
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir), create=True), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_managed_profile_proxy", return_value=None), \
+                patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+                patch.object(cloakbrowser_session, "launch_profile", return_value=(profile, False)), \
+                patch.object(
+                    cloakbrowser_session.subprocess,
+                    "run",
+                    return_value=bridge_process,
+                ) as run_mock, \
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                        "MAKERHUB_CLOAKBROWSER_TIMEOUT": "120",
+                    },
+                    clear=True,
+                ):
+            result = cloakbrowser_session.browser_authorize_3mf_download(
+                "cn",
+                "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
+                profile_id="profile-cn",
+                model_url="https://makerworld.com.cn/zh/models/456",
+                instance_id="123",
+            )
+
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], 330)
 
     def test_browser_3mf_authorization_protocol_timeout_does_not_restart_profile(self):
         profile = cloakbrowser_session.CloakBrowserProfile(
