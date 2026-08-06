@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.23`
+> 当前版本：`v0.16.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -77,6 +77,7 @@ services:
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
       MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
+      MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
       MAKERHUB_TRUSTED_PROXIES: ${MAKERHUB_TRUSTED_PROXIES:-}
     volumes:
       - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
@@ -114,6 +115,7 @@ services:
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
       MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
+      MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
       MAKERHUB_CLOAKBROWSER_IDLE_SECONDS: "${MAKERHUB_CLOAKBROWSER_IDLE_SECONDS:-1800}"
       MAKERHUB_WORKER_RECYCLE_RSS_MIB: "${MAKERHUB_WORKER_RECYCLE_RSS_MIB:-2048}"
     volumes:
@@ -265,6 +267,7 @@ App 和 Worker 始终共享 `MAKERHUB_CONFIG_PATH` 与 `MAKERHUB_ARCHIVE_PATH`�
 | `MAKERHUB_CLOAKBROWSER_DATA_PATH` | `./data/cloakbrowser` | 浏览器 profile 与会话目录 |
 | `MAKERHUB_CLOAKBROWSER_BIND_ADDRESS` | `127.0.0.1` | Manager 宿主机监听地址 |
 | `MAKERHUB_CLOAKBROWSER_PUBLIC_URL` | 空 | 用户浏览器能够访问的 Manager 地址 |
+| `MAKERHUB_AUTO_VERIFY_3MF` | `false` | 开启 3MF 页面自动验证；默认关闭，失败后人工回退 |
 | `MAKERHUB_TRUSTED_PROXIES` | 空 | 允许提供转发头的受控代理地址 |
 
 不要把 `MAKERHUB_TRUSTED_PROXIES` 设置为 `*`、`0.0.0.0/0` 或公网网段。默认不信任 `X-Forwarded-*` 请求头。
@@ -350,6 +353,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-07 · v0.16.0
+
+- 新增可选的 3MF 自动验证：国内站尝试图标点击和滑块，国际站 Turnstile 等待浏览器原生响应后最多点击一个可见复选框；`MAKERHUB_AUTO_VERIFY_3MF` 默认关闭。
+- 单个挑战最多 2 次，只有挑战内容变化后才会再次尝试；每个归档任务只点击一次 3MF 授权，未完成时保留人工回退。
+- 容器包含 OpenCV 本地视觉依赖，带来一定镜像体积代价，但不上传或持久化验证图片、令牌和登录信息。
+
 ### 2026-08-06 · v0.15.23
 
 - 暂停或验证受阻的归档队列改用空闲轮询，并阻止定时订阅继续扩大积压；手动同步和登录态修复仍可运行。
@@ -361,13 +370,13 @@ npm --prefix frontend run build
 - 模型元数据变化或删除时只增量修复对应数据库索引，不再清空全库，首页模型总数保持稳定。
 - 修复失败按文件签名短暂防抖，文件修正后可立即重试，避免页面轮询反复提交相同任务。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-03 · v0.15.21
 
 - 修复缺失 3MF 探测遇到已下架或私有模型时归档 Worker 线程退出的问题；终止任务会正常完成并继续下一条探测。
 - Worker 启动时会立即恢复 gate 已打开的遗留暂停任务，不再受 10 分钟维护冷却影响。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-03 · v0.15.20
 

@@ -319,6 +319,55 @@ class ReleaseDocumentationContractTest(unittest.TestCase):
                 self.assertIn(expected, documentation)
 
 
+class AutomaticVerificationReleaseContractTest(unittest.TestCase):
+    def test_v016_rollout_keeps_automatic_verification_opt_in_and_smokes_opencv(self):
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        compose_text = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")
+        smoke_command = _step(_load_workflow()["jobs"]["verify"], "Smoke test image")["run"]
+        version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+        package = json.loads((ROOT_DIR / "frontend" / "package.json").read_text(encoding="utf-8"))
+        package_lock = json.loads(
+            (ROOT_DIR / "frontend" / "package-lock.json").read_text(encoding="utf-8")
+        )
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        changelog = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
+
+        self.assertIn("MAKERHUB_AUTO_VERIFY_3MF=false", env_example)
+        self.assertEqual(
+            compose_text.count(
+                'MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"'
+            ),
+            2,
+        )
+        self.assertIn("import cv2", smoke_command)
+        self.assertIn("version('opencv-python-headless')", smoke_command)
+        self.assertIn("solve_click_challenge", smoke_command)
+        self.assertNotIn("browser", smoke_command.lower())
+
+        self.assertEqual(version, "0.16.0")
+        self.assertEqual(package["version"], version)
+        self.assertEqual(package_lock["version"], version)
+        self.assertEqual(package_lock["packages"][""]["version"], version)
+        self.assertIn("> 当前版本：`v0.16.0`", readme)
+        self.assertIn("### 2026-08-07 · v0.16.0", readme)
+        self.assertIn("## 2026-08-07 · v0.16.0", changelog)
+
+        release_notes = "\n".join((readme, changelog))
+        for expected in (
+            "图标点击",
+            "滑块",
+            "Turnstile",
+            "默认关闭",
+            "最多 2 次",
+            "只点击一次 3MF",
+            "人工回退",
+            "OpenCV",
+            "镜像体积",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, release_notes)
+
+
 class FrontendTestContractTest(unittest.TestCase):
     def test_npm_test_runs_all_node_test_modules(self):
         package = json.loads((ROOT_DIR / "frontend" / "package.json").read_text(encoding="utf-8"))

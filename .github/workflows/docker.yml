@@ -77,7 +77,7 @@ jobs:
       - name: Smoke test image
         run: >-
           docker run --rm makerhub:verify
-          python -c "from importlib.metadata import version; from pathlib import Path; import app.main; image_version = Path('/app/VERSION').read_text(encoding='utf-8').strip(); assert image_version; assert app.main.app.version == image_version; version('fastapi')"
+          python -c "from importlib.metadata import version; from pathlib import Path; import cv2, numpy as np; import app.main; from app.services.makerworld_captcha_vision import solve_click_challenge; image_version = Path('/app/VERSION').read_text(encoding='utf-8').strip(); assert image_version; assert app.main.app.version == image_version; version('fastapi'); version('opencv-python-headless'); target = np.full((96, 96, 4), 255, dtype=np.uint8); candidate = np.full((96, 96, 4), 255, dtype=np.uint8); cv2.fillPoly(target, [np.array([(48, 14), (14, 78), (82, 78)])], (20, 20, 20, 255)); cv2.circle(candidate, (48, 48), 28, (20, 20, 20, 255), -1); encode = lambda image: cv2.imencode('.png', image)[1].tobytes(); result = solve_click_challenge(encode(target), [encode(candidate), encode(target)]); assert result['ok'] and result['candidate_index'] == 1"
 
   release:
     needs: verify
