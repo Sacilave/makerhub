@@ -9,9 +9,55 @@ export const VISION_TIMEOUT_MS = 8_000;
 
 const MAX_VISION_OUTPUT_BYTES = 64 * 1024;
 const CLEANUP_TIMEOUT_MS = 1_000;
-const DEFAULT_OUTCOME_WAIT_MS = 4_000;
 const DEFAULT_TURNSTILE_WAIT_MS = 500;
 const POLL_INTERVAL_MS = 100;
+
+const SAFE_REASON_CODES = new Set([
+  "aborted",
+  "ambiguous_candidates",
+  "ambiguous_gap",
+  "attempts_exhausted",
+  "candidate_count_invalid",
+  "challenge_unchanged",
+  "challenge_unsupported",
+  "checkbox_unavailable",
+  "cleanup_failed",
+  "click_layout_invalid",
+  "click_target_unavailable",
+  "completed",
+  "confidence_too_low",
+  "discovery_failed",
+  "distance_invalid",
+  "empty_screenshot",
+  "gap_not_found",
+  "geometry_invalid",
+  "image_base64_invalid",
+  "image_decode_failed",
+  "image_dimensions_invalid",
+  "image_foreground_missing",
+  "image_format_invalid",
+  "image_size_invalid",
+  "image_width_invalid",
+  "input_too_large",
+  "interaction_failed",
+  "json_invalid",
+  "low_confidence",
+  "mode_invalid",
+  "no_challenge",
+  "outcome_failed",
+  "payload_invalid",
+  "piece_restore_failed",
+  "piece_unavailable",
+  "request_invalid",
+  "slider_geometry_invalid",
+  "solved",
+  "timeout",
+  "trajectory_out_of_bounds",
+  "unknown",
+  "unsupported_fields",
+  "verification_failed",
+  "vision_rejected",
+]);
 
 const GEETEST_CONTAINERS = ".geetest_box, .geetest_panel, [class*='geetest']";
 const CLICK_TARGET_SELECTORS = [
@@ -77,6 +123,11 @@ function abortError(signal) {
 
 function throwIfAborted(signal) {
   if (signal?.aborted) throw abortError(signal);
+}
+
+function throwIfActionExpired(stage) {
+  throwIfAborted(stage.signal);
+  if (stage.remainingAction() <= 0) throw new VerificationError("timeout");
 }
 
 function abortable(promise, signal) {
@@ -171,13 +222,16 @@ export function sanitizeVerificationResult(value = {}) {
   const attempts = Number.isFinite(rawAttempts)
     ? Math.max(0, Math.min(rawAttempts, MAX_PROVIDER_ATTEMPTS))
     : 0;
+  const reason = typeof value.reason === "string" && SAFE_REASON_CODES.has(value.reason)
+    ? value.reason
+    : "unknown";
   return {
     attempted: Boolean(value.attempted),
     completed: Boolean(value.completed),
     provider,
     challenge_type: challengeType,
     attempts,
-    reason: String(value.reason || "").slice(0, 80),
+    reason,
     ...(Number.isFinite(Number(value.confidence)) ? { confidence: Number(value.confidence) } : {}),
   };
 }
@@ -198,8 +252,12 @@ function cleanVisionPayload(payload) {
       piece_png: payload?.piece_png,
       geometry: {
         image_width: geometry.image_width,
+        image_height: geometry.image_height,
         track_width: geometry.track_width,
+        track_height: geometry.track_height,
         handle_width: geometry.handle_width,
+        piece_offset_x: geometry.piece_offset_x,
+        piece_offset_y: geometry.piece_offset_y,
       },
     };
   }
@@ -380,11 +438,219 @@ async function visibleCandidates(root) {
     const visible = [];
     for (const handle of handles) {
       if (await isVisible(handle)) visible.push(handle);
-      if (visible.length === 6) break;
+      if (visible.length > 6) break;
     }
     if (visible.length >= 2) return visible;
   }
   return [];
+}
+
+function validBox(box) {
+  return box
+    && [box.x, box.y, box.width, box.height].every((value) => Number.isFinite(Number(value)))
+    && Number(box.width) > 0
+    && Number(box.height) > 0;
+}
+
+function median(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function overlapArea(left, right) {
+  const width = Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x));
+  const height = Math.max(0, Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y));
+  return width * height;
+}
+
+async function validateClickLayout(challenge, signal) {
+  const candidates = Array.isArray(challenge?.candidates) ? challenge.candidates : [];
+  if (!challenge?.container || !challenge?.target || candidates.length < 2 || candidates.length > 6) {
+    return false;
+  }
+  if (candidates.some((candidate) => !candidate || candidate === challenge.target)) return false;
+
+  const handles = [challenge.container, challenge.target, ...candidates];
+  let visible;
+  let belongsToContainer;
+  let sharesSelectionRegion;
+  try {
+    [visible, belongsToContainer, sharesSelectionRegion] = await Promise.all([
+      Promise.all(handles.map((handle) => abortable(isVisible(handle), signal))),
+      Promise.all([challenge.target, ...candidates].map((handle) => abortable(
+        challenge.container.evaluate((container, action, element) => (
+          action === "contains" && container.contains(element)
+        ), "contains", handle),
+        signal,
+      ))),
+      abortable(challenge.container.evaluate(
+        (container, action, target, ...candidateElements) => {
+          if (action !== "shared-selection-region" || candidateElements.length < 2) return false;
+          if (
+            !target?.isConnected
+            || !container.contains(target)
+            || candidateElements.some((candidate) => (
+              !candidate?.isConnected
+              || candidate === target
+              || !container.contains(candidate)
+            ))
+          ) return false;
+
+          const nearestSelectionRegion = (candidate) => {
+            let ancestor = candidate.parentElement;
+            while (ancestor && ancestor !== container) {
+              let containedCandidates = 0;
+              for (const sibling of candidateElements) {
+                if (ancestor.contains(sibling)) containedCandidates += 1;
+                if (containedCandidates >= 2) return ancestor;
+              }
+              ancestor = ancestor.parentElement;
+            }
+            return null;
+          };
+          const selectionRegion = nearestSelectionRegion(candidateElements[0]);
+          return Boolean(
+            selectionRegion
+            && !selectionRegion.contains(target)
+            && candidateElements.every((candidate) => (
+              nearestSelectionRegion(candidate) === selectionRegion
+            )),
+          );
+        },
+        "shared-selection-region",
+        challenge.target,
+        ...candidates,
+      ), signal),
+    ]);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return false;
+  }
+  if (!visible.every(Boolean) || !belongsToContainer.every(Boolean) || !sharesSelectionRegion) {
+    return false;
+  }
+
+  let boxes;
+  try {
+    boxes = await Promise.all(
+      handles.map((handle) => abortable(handle.boundingBox(), signal)),
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return false;
+  }
+  if (!boxes.every(validBox)) return false;
+  const [containerBox, targetBox, ...candidateBoxes] = boxes.map((box) => ({
+    x: Number(box.x),
+    y: Number(box.y),
+    width: Number(box.width),
+    height: Number(box.height),
+  }));
+  const containerTolerance = Math.max(4, Math.min(containerBox.width, containerBox.height) * 0.03);
+  const withinContainer = (box) => (
+    box.x >= containerBox.x - containerTolerance
+    && box.y >= containerBox.y - containerTolerance
+    && box.x + box.width <= containerBox.x + containerBox.width + containerTolerance
+    && box.y + box.height <= containerBox.y + containerBox.height + containerTolerance
+  );
+  if (![targetBox, ...candidateBoxes].every(withinContainer)) return false;
+
+  const medianWidth = median(candidateBoxes.map((box) => box.width));
+  const medianHeight = median(candidateBoxes.map((box) => box.height));
+  const widthTolerance = Math.max(6, medianWidth * 0.30);
+  const heightTolerance = Math.max(6, medianHeight * 0.30);
+  if (candidateBoxes.some((box) => (
+    Math.abs(box.width - medianWidth) > widthTolerance
+    || Math.abs(box.height - medianHeight) > heightTolerance
+  ))) return false;
+
+  for (let leftIndex = 0; leftIndex < candidateBoxes.length; leftIndex += 1) {
+    const left = candidateBoxes[leftIndex];
+    if (overlapArea(targetBox, left) > 0) return false;
+    for (let rightIndex = leftIndex + 1; rightIndex < candidateBoxes.length; rightIndex += 1) {
+      const right = candidateBoxes[rightIndex];
+      const overlap = overlapArea(left, right);
+      const smallerArea = Math.min(left.width * left.height, right.width * right.height);
+      if (overlap > smallerArea * 0.05) return false;
+    }
+  }
+
+  const selectionBox = {
+    x: Math.min(...candidateBoxes.map((box) => box.x)),
+    y: Math.min(...candidateBoxes.map((box) => box.y)),
+    width: Math.max(...candidateBoxes.map((box) => box.x + box.width))
+      - Math.min(...candidateBoxes.map((box) => box.x)),
+    height: Math.max(...candidateBoxes.map((box) => box.y + box.height))
+      - Math.min(...candidateBoxes.map((box) => box.y)),
+  };
+  if (overlapArea(targetBox, selectionBox) > 0) return false;
+
+  const rowTolerance = Math.max(6, medianHeight * 0.35);
+  const entries = candidateBoxes
+    .map((box) => ({ box, centerX: box.x + (box.width / 2), centerY: box.y + (box.height / 2) }))
+    .sort((left, right) => left.centerY - right.centerY || left.centerX - right.centerX);
+  const rows = [];
+  for (const entry of entries) {
+    const row = rows.find((candidateRow) => Math.abs(entry.centerY - candidateRow.centerY) <= rowTolerance);
+    if (row) {
+      row.entries.push(entry);
+      row.centerY = row.entries.reduce((total, item) => total + item.centerY, 0) / row.entries.length;
+    } else {
+      rows.push({ centerY: entry.centerY, entries: [entry] });
+    }
+  }
+  if (rows.length > 3) return false;
+  rows.sort((left, right) => left.centerY - right.centerY);
+  const rowSizes = rows.map((row) => row.entries.length);
+  if (Math.max(...rowSizes) - Math.min(...rowSizes) > 1) return false;
+  if (rows.length >= 3 && !rowSizes.every((size) => size === rowSizes[0])) return false;
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    row.entries.sort((left, right) => left.centerX - right.centerX);
+    if (row.entries.some((entry) => Math.abs(entry.centerY - row.centerY) > rowTolerance)) return false;
+    const gaps = row.entries.slice(1).map((entry, gapIndex) => (
+      entry.centerX - row.entries[gapIndex].centerX
+    ));
+    if (gaps.some((gap) => gap < medianWidth * 0.60 || gap > medianWidth * 3.50)) return false;
+    if (gaps.length > 1 && Math.max(...gaps) > Math.min(...gaps) * 2.50) return false;
+    if (index > 0) {
+      const verticalGap = row.centerY - rows[index - 1].centerY;
+      if (verticalGap < medianHeight * 0.50 || verticalGap > medianHeight * 3.50) return false;
+    }
+  }
+
+  if (rows.length > 1) {
+    const columnTolerance = Math.max(8, medianWidth * 0.60);
+    if (rowSizes.every((size) => size === rowSizes[0])) {
+      for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+        for (let columnIndex = 0; columnIndex < rows[0].entries.length; columnIndex += 1) {
+          if (Math.abs(
+            rows[rowIndex].entries[columnIndex].centerX - rows[0].entries[columnIndex].centerX,
+          ) > columnTolerance) return false;
+        }
+      }
+    } else {
+      const shortRow = rows.find((row) => row.entries.length === Math.min(...rowSizes));
+      const longRow = rows.find((row) => row.entries.length === Math.max(...rowSizes));
+      let longColumnIndex = 0;
+      for (const entry of shortRow.entries) {
+        while (
+          longColumnIndex < longRow.entries.length
+          && longRow.entries[longColumnIndex].centerX < entry.centerX - columnTolerance
+        ) longColumnIndex += 1;
+        if (
+          longColumnIndex >= longRow.entries.length
+          || Math.abs(entry.centerX - longRow.entries[longColumnIndex].centerX) > columnTolerance
+        ) return false;
+        longColumnIndex += 1;
+      }
+    }
+  }
+  return true;
 }
 
 async function geetestContainers(frame) {
@@ -458,7 +724,7 @@ export async function detectVerificationChallenge(page) {
       const target = await firstVisible(container, CLICK_TARGET_SELECTORS);
       const candidates = await visibleCandidates(container);
       if (target && candidates.length >= 2) {
-        return {
+        const challenge = {
           provider: "geetest4",
           challenge_type: "icon_click",
           frame,
@@ -466,6 +732,7 @@ export async function detectVerificationChallenge(page) {
           target,
           candidates,
         };
+        if (await validateClickLayout(challenge)) return challenge;
       }
     }
 
@@ -497,7 +764,7 @@ async function screenshotBuffer(handle, signal) {
   return buffer;
 }
 
-function pngPixelWidth(buffer) {
+function pngPixelDimensions(buffer) {
   const signature = "89504e470d0a1a0a";
   if (
     !Buffer.isBuffer(buffer)
@@ -509,8 +776,40 @@ function pngPixelWidth(buffer) {
     throw new VerificationError("image_format_invalid");
   }
   const width = buffer.readUInt32BE(16);
+  const height = buffer.readUInt32BE(20);
   if (width < 1 || width > 32768) throw new VerificationError("image_width_invalid");
-  return width;
+  if (height < 1 || height > 32768) throw new VerificationError("image_dimensions_invalid");
+  return { width, height };
+}
+
+function roundedScreenshotClip(box) {
+  const x = Math.round(Number(box.x));
+  const y = Math.round(Number(box.y));
+  return {
+    x,
+    y,
+    width: Math.round(Number(box.width) + Number(box.x) - x),
+    height: Math.round(Number(box.height) + Number(box.y) - y),
+  };
+}
+
+async function screenshotViewportOffset(handle, signal) {
+  const viewportOffset = await abortable(handle.evaluate((_element, action) => {
+    if (action !== "viewport-offset" || !window.visualViewport) return null;
+    return {
+      x: window.visualViewport.pageLeft,
+      y: window.visualViewport.pageTop,
+    };
+  }, "viewport-offset"), signal);
+  if (
+    !viewportOffset
+    || !Number.isFinite(Number(viewportOffset.x))
+    || !Number.isFinite(Number(viewportOffset.y))
+  ) return null;
+  return {
+    x: Number(viewportOffset.x),
+    y: Number(viewportOffset.y),
+  };
 }
 
 async function stableElementIdentity(handle, signal) {
@@ -679,14 +978,19 @@ async function solveClickChallenge(page, challenge, visionRequest, stage) {
   const candidatePngs = await Promise.all(
     challenge.candidates.map((candidate) => screenshotBuffer(candidate, signal)),
   );
+  throwIfActionExpired(stage);
   const result = await abortable(visionRequest({
     mode: "click",
     target_png: targetPng.toString("base64"),
     candidate_pngs: candidatePngs.map((buffer) => buffer.toString("base64")),
   }, { signal }), signal);
+  throwIfActionExpired(stage);
   const candidateIndex = Number(result?.candidate_index);
   if (!result?.ok || !Number.isInteger(candidateIndex) || !challenge.candidates[candidateIndex]) {
     return { acted: false, reason: String(result?.reason || "vision_rejected"), confidence: result?.confidence };
+  }
+  if (!await validateClickLayout(challenge, signal)) {
+    return { acted: false, reason: "click_layout_invalid", confidence: result.confidence };
   }
   await trustedElementClick(page, challenge.candidates[candidateIndex], stage);
   return { acted: true, confidence: result.confidence };
@@ -788,36 +1092,81 @@ async function solveSliderChallenge(page, challenge, options, visionRequest, sta
   const settled = await Promise.allSettled([
     abortable(challenge.handle.boundingBox(), signal),
     abortable(challenge.background.boundingBox(), signal),
+    abortable(challenge.piece.boundingBox(), signal),
     captureSliderImages(challenge, stage),
+    screenshotViewportOffset(challenge.background, signal),
   ]);
   const failed = settled.find((result) => result.status === "rejected");
   if (failed) throw failed.reason;
-  const [handleBox, backgroundBox, images] = settled.map((result) => result.value);
-  if (!handleBox || !backgroundBox) return { acted: false, reason: "slider_geometry_invalid" };
+  const [handleBox, backgroundBox, pieceBox, images, viewportOffset] = (
+    settled.map((result) => result.value)
+  );
+  if (![handleBox, backgroundBox, pieceBox].every(validBox) || !viewportOffset) {
+    return { acted: false, reason: "slider_geometry_invalid" };
+  }
+  throwIfActionExpired(stage);
+  const backgroundPixels = pngPixelDimensions(images.backgroundBuffer);
+  const backgroundClip = roundedScreenshotClip({
+    ...backgroundBox,
+    x: Number(backgroundBox.x) + viewportOffset.x,
+    y: Number(backgroundBox.y) + viewportOffset.y,
+  });
+  const pieceClip = roundedScreenshotClip({
+    ...pieceBox,
+    x: Number(pieceBox.x) + viewportOffset.x,
+    y: Number(pieceBox.y) + viewportOffset.y,
+  });
+  if (!validBox(backgroundClip) || !validBox(pieceClip)) {
+    return { acted: false, reason: "slider_geometry_invalid" };
+  }
+  const pixelScaleX = backgroundPixels.width / backgroundClip.width;
+  const pixelScaleY = backgroundPixels.height / backgroundClip.height;
   const result = await abortable(visionRequest({
     mode: "slider",
     background_png: images.backgroundBuffer.toString("base64"),
     piece_png: images.pieceBuffer.toString("base64"),
     geometry: {
-      image_width: pngPixelWidth(images.backgroundBuffer),
+      image_width: backgroundPixels.width,
+      image_height: backgroundPixels.height,
       track_width: backgroundBox.width,
+      track_height: backgroundBox.height,
       handle_width: handleBox.width,
+      piece_offset_x: (pieceClip.x - backgroundClip.x) * pixelScaleX,
+      piece_offset_y: (pieceClip.y - backgroundClip.y) * pixelScaleY,
     },
   }, { signal }), signal);
-  const distance = Number(result?.distance_css);
-  if (!result?.ok || !Number.isFinite(distance) || distance < 0) {
+  throwIfActionExpired(stage);
+  const detectedDistance = Number(result?.distance_css);
+  if (!result?.ok || !Number.isFinite(detectedDistance)) {
     return { acted: false, reason: String(result?.reason || "vision_rejected"), confidence: result?.confidence };
   }
 
   const random = options.random || Math.random;
   const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
+  const handleOffsetX = handleBox.x - backgroundBox.x;
+  const distance = detectedDistance - handleOffsetX;
+  if (!Number.isFinite(distance) || distance < 0) {
+    return { acted: false, reason: "distance_invalid", confidence: result.confidence };
+  }
   const startX = handleBox.x + (handleBox.width / 2);
   const startY = handleBox.y + (handleBox.height / 2);
+  const trajectory = buildDragTrajectory(distance, random);
+  const minimumCenterX = backgroundBox.x + (handleBox.width / 2);
+  const maximumCenterX = backgroundBox.x + backgroundBox.width - (handleBox.width / 2);
+  const trajectoryValid = trajectory.every((point) => (
+    Number.isFinite(point.x)
+    && Number.isFinite(point.y)
+    && startX + point.x >= minimumCenterX - 0.5
+    && startX + point.x <= maximumCenterX + 0.5
+  ));
+  if (!trajectoryValid) {
+    return { acted: false, reason: "trajectory_out_of_bounds", confidence: result.confidence };
+  }
   const mouse = await createMouseDriver(page, stage);
   try {
     await mouse.move(startX, startY);
     await mouse.down();
-    for (const point of buildDragTrajectory(distance, random)) {
+    for (const point of trajectory) {
       throwIfAborted(signal);
       await mouse.move(startX + point.x, startY + point.y);
       await abortable(sleep(Math.round(10 + (clampRandom(random) * 25))), signal);
@@ -849,32 +1198,61 @@ async function turnstileResponseReady(page, challenge, options, signal) {
   return false;
 }
 
+async function waitForInitialChallenge(page, options, stage) {
+  const { signal } = stage;
+  const detect = options.detectChallenge || detectVerificationChallenge;
+  const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
+  do {
+    throwIfActionExpired(stage);
+    const challenge = await abortable(detect(page), signal);
+    throwIfActionExpired(stage);
+    if (challenge) return challenge;
+    const remaining = stage.remainingAction();
+    if (remaining <= 0) break;
+    await abortable(sleep(Math.min(POLL_INTERVAL_MS, remaining)), signal);
+    throwIfActionExpired(stage);
+  } while (performance.now() <= stage.actionDeadline);
+  throwIfActionExpired(stage);
+  return null;
+}
+
 async function waitForOutcome(page, challenge, fingerprint, options, stage) {
   const { signal } = stage;
   const detect = options.detectChallenge || detectVerificationChallenge;
   const complete = options.isChallengeComplete || defaultChallengeComplete;
   const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
   const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
-  const requestedWait = Number(options.postInteractionTimeoutMs ?? DEFAULT_OUTCOME_WAIT_MS);
-  const waitDeadline = performance.now() + Math.max(0, requestedWait || 0);
+  let latestChallenge = challenge;
 
   do {
-    if (await abortable(complete(page, challenge), signal)) {
-      return { completed: true, changed: false, challenge };
+    throwIfActionExpired(stage);
+    const latestComplete = await abortable(complete(page, latestChallenge), signal);
+    throwIfActionExpired(stage);
+    if (latestComplete) {
+      return { completed: true, changed: false, challenge: latestChallenge };
     }
     const current = await abortable(detect(page), signal);
-    if (!current) return { completed: false, changed: false, challenge: null };
-    if (await abortable(complete(page, current), signal)) {
-      return { completed: true, changed: false, challenge: current };
+    throwIfActionExpired(stage);
+    if (current) {
+      latestChallenge = current;
+      const currentComplete = await abortable(complete(page, current), signal);
+      throwIfActionExpired(stage);
+      if (currentComplete) {
+        return { completed: true, changed: false, challenge: current };
+      }
+      const currentFingerprint = await abortable(fingerprintChallenge(current, stage), signal);
+      throwIfActionExpired(stage);
+      if (currentFingerprint !== fingerprint) {
+        return { completed: false, changed: true, challenge: current };
+      }
     }
-    const currentFingerprint = await abortable(fingerprintChallenge(current, stage), signal);
-    if (currentFingerprint !== fingerprint) {
-      return { completed: false, changed: true, challenge: current };
-    }
-    if (performance.now() >= waitDeadline) break;
-    await abortable(sleep(Math.min(POLL_INTERVAL_MS, waitDeadline - performance.now())), signal);
-  } while (performance.now() <= waitDeadline);
-  return { completed: false, changed: false, challenge };
+    const remaining = stage.remainingAction();
+    if (remaining <= 0) break;
+    await abortable(sleep(Math.min(POLL_INTERVAL_MS, remaining)), signal);
+    throwIfActionExpired(stage);
+  } while (performance.now() <= stage.actionDeadline);
+  throwIfActionExpired(stage);
+  return { completed: false, changed: false, challenge: latestChallenge };
 }
 
 function failureReason(error, signal, fallback) {
@@ -884,13 +1262,12 @@ function failureReason(error, signal, fallback) {
 
 async function attemptWithinStage(page, options, stage) {
   const { signal } = stage;
-  const detect = options.detectChallenge || detectVerificationChallenge;
   const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
   const visionRequest = options.visionRequest
     || ((payload, requestOptions) => runVisionRequest(payload, requestOptions));
   let challenge;
   try {
-    challenge = await abortable(detect(page), signal);
+    challenge = await waitForInitialChallenge(page, options, stage);
   } catch (error) {
     return sanitizeVerificationResult({
       reason: failureReason(error, signal, "discovery_failed"),
@@ -909,20 +1286,25 @@ async function attemptWithinStage(page, options, stage) {
     reason: "",
   };
   for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
-    if (signal.aborted) {
-      summary.reason = failureReason(null, signal, "aborted");
+    try {
+      throwIfActionExpired(stage);
+    } catch (error) {
+      summary.reason = failureReason(error, signal, "timeout");
       break;
     }
     let fingerprint;
     let interaction;
     try {
       if (challenge.provider === "turnstile") {
-        if (await turnstileResponseReady(page, challenge, options, signal)) {
+        const responseReady = await turnstileResponseReady(page, challenge, options, signal);
+        throwIfActionExpired(stage);
+        if (responseReady) {
           summary.completed = true;
           summary.reason = "completed";
           break;
         }
         fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
+        throwIfActionExpired(stage);
         if (!challenge.checkbox || !await abortable(isVisible(challenge.checkbox), signal)) {
           summary.reason = "checkbox_unavailable";
           break;
@@ -933,11 +1315,13 @@ async function attemptWithinStage(page, options, stage) {
         interaction = { acted: true };
       } else if (challenge.challenge_type === "icon_click") {
         fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
+        throwIfActionExpired(stage);
         summary.attempted = true;
         summary.attempts = attempt;
         interaction = await solveClickChallenge(page, challenge, visionRequest, stage);
       } else if (challenge.challenge_type === "slider") {
         fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
+        throwIfActionExpired(stage);
         summary.attempted = true;
         summary.attempts = attempt;
         interaction = await solveSliderChallenge(page, challenge, options, visionRequest, stage);
@@ -946,6 +1330,12 @@ async function attemptWithinStage(page, options, stage) {
       }
     } catch (error) {
       summary.reason = failureReason(error, signal, "interaction_failed");
+      break;
+    }
+    try {
+      throwIfActionExpired(stage);
+    } catch (error) {
+      summary.reason = failureReason(error, signal, "timeout");
       break;
     }
     if (Number.isFinite(Number(interaction?.confidence))) {

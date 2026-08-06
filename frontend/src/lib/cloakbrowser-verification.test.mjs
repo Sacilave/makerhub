@@ -26,14 +26,25 @@ function fakeHandle({
   many = () => [],
   click = async () => {},
   backendNodeId = 1,
+  contains = () => true,
+  viewportOffset = { x: 0, y: 0 },
+  selectionRegion = "selection-a",
   evaluate,
 } = {}) {
-  return {
+  const handle = {
+    selectionRegion,
     boundingBox: async () => box,
     backendNodeId: async () => backendNodeId,
-    evaluate: evaluate || (async (_callback, argument) => {
+    evaluate: evaluate || (async (_callback, argument, ...relatedHandles) => {
       if (argument === "read-value") return value;
       if (argument === "fingerprint") return fingerprint;
+      if (argument === "contains") return contains(relatedHandles[0]);
+      if (argument === "shared-selection-region") {
+        const candidates = relatedHandles.slice(1);
+        const region = candidates[0]?.selectionRegion;
+        return Boolean(region) && candidates.every((candidate) => candidate.selectionRegion === region);
+      }
+      if (argument === "viewport-offset") return viewportOffset;
       if (argument?.action === "click") {
         if (Date.now() >= argument.deadline) return false;
         await click();
@@ -43,13 +54,14 @@ function fakeHandle({
         return { applied: true, id: argument.id, value: "", priority: "" };
       }
       if (argument?.action === "restore") return true;
-      return visible;
+      return typeof visible === "function" ? visible() : visible;
     }),
     screenshot: async () => (typeof screenshot === "function" ? screenshot() : screenshot),
     $: async (selector) => one(selector),
     $$: async (selector) => many(selector),
     click,
   };
+  return handle;
 }
 
 function pngBuffer(width, height = 40, marker = 0) {
@@ -68,6 +80,31 @@ function fakeFrame({ one = () => null, many = () => [], label = "frame" } = {}) 
     label,
     $: async (selector) => one(selector),
     $$: async (selector) => many(selector),
+  };
+}
+
+function fakeClickDiscoveryPage({
+  containerBox = { x: 0, y: 0, width: 220, height: 220 },
+  targetBox = { x: 80, y: 12, width: 40, height: 40 },
+  candidateBoxes = [
+    { x: 30, y: 80, width: 40, height: 40 },
+    { x: 100, y: 80, width: 40, height: 40 },
+    { x: 30, y: 140, width: 40, height: 40 },
+    { x: 100, y: 140, width: 40, height: 40 },
+  ],
+} = {}) {
+  const target = fakeHandle({ box: targetBox });
+  const candidates = candidateBoxes.map((box) => fakeHandle({ box }));
+  const container = fakeHandle({
+    box: containerBox,
+    one: (selector) => (/ques|tip|target/i.test(selector) ? target : null),
+    many: (selector) => (/item|icon|candidate/i.test(selector) ? candidates : []),
+  });
+  const frame = fakeFrame({ one: (selector) => (selector.includes("geetest") ? container : null) });
+  return {
+    page: { mainFrame: () => frame, frames: () => [frame] },
+    target,
+    candidates,
   };
 }
 
@@ -215,6 +252,91 @@ test("3MF coordinator installs the second waiter before verifying an HTTP 418 re
   assert.equal(result.status_code, 200);
   assert.equal(result.payload.url, "https://download.example.test/verified.3mf");
   assert.equal(result.verification.completed, true);
+});
+
+test("3MF coordinator arms the second waiter before parsing the first response body", async () => {
+  const lifecycle = [];
+  const waiters = [];
+  const second = fakeAuthorizationResponse({
+    payload: { name: "verified.3mf", url: "https://download.example.test/verified.3mf" },
+  });
+  const first = fakeAuthorizationResponse({
+    status: 418,
+    payload: { captchaId: "captcha-123" },
+  });
+  first.text = async () => {
+    lifecycle.push("first-body-start");
+    assert.equal(waiters.length, 2);
+    waiters[1].resolve(second);
+    await new Promise((resolve) => setImmediate(resolve));
+    lifecycle.push("first-body-end");
+    return JSON.stringify({ captchaId: "captcha-123" });
+  };
+  const page = {
+    waitForResponse: (matcher, options = {}) => new Promise((resolve, reject) => {
+      const waiter = {
+        resolve: (response) => {
+          assert.equal(matcher(response), true);
+          resolve(response);
+        },
+      };
+      waiters.push(waiter);
+      lifecycle.push(`waiter-${waiters.length}`);
+      options.signal?.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    }),
+  };
+
+  const result = await coordinateThreeMfAuthorization(page, {
+    instanceId: "123",
+    inputAutoVerify: true,
+    findButton: async () => ({
+      click: async () => waiters[0].resolve(first),
+      dispose: async () => {},
+    }),
+    verificationAdapter: async () => ({
+      attempted: true,
+      completed: true,
+      provider: "geetest4",
+      challenge_type: "slider",
+      attempts: 1,
+      reason: "completed",
+    }),
+  });
+
+  assert.ok(lifecycle.indexOf("waiter-2") < lifecycle.indexOf("first-body-start"));
+  assert.equal(result.payload.url, "https://download.example.test/verified.3mf");
+});
+
+test("3MF coordinator aborts and settles the speculative waiter for a non-verification response", async () => {
+  const first = fakeAuthorizationResponse();
+  let waiterCalls = 0;
+  let speculativeAborted = false;
+  let speculativeSettled = false;
+  const page = {
+    waitForResponse: (_matcher, options = {}) => {
+      waiterCalls += 1;
+      if (waiterCalls === 1) return Promise.resolve(first);
+      return new Promise((resolve, reject) => {
+        options.signal?.addEventListener("abort", () => {
+          speculativeAborted = true;
+          reject(options.signal.reason);
+        }, { once: true });
+      }).finally(() => {
+        speculativeSettled = true;
+      });
+    },
+  };
+
+  const result = await coordinateThreeMfAuthorization(page, {
+    instanceId: "123",
+    inputAutoVerify: true,
+    findButton: async () => ({ click: async () => {}, dispose: async () => {} }),
+  });
+
+  assert.equal(result.status_code, 200);
+  assert.equal(waiterCalls, 2);
+  assert.equal(speculativeAborted, true);
+  assert.equal(speculativeSettled, true);
 });
 
 test("3MF coordinator verifies a captcha payload even when its status is not 418", async () => {
@@ -459,11 +581,16 @@ function clickChallenge(click, id = "challenge-a") {
   return {
     provider: "geetest4",
     challenge_type: "icon_click",
-    target: fakeHandle({ fingerprint: `${id}:target` }),
+    container: fakeHandle({ box: { x: 0, y: 0, width: 220, height: 220 } }),
+    target: fakeHandle({
+      box: { x: 80, y: 12, width: 40, height: 40 },
+      fingerprint: `${id}:target`,
+    }),
     candidates: [
-      fakeHandle({ fingerprint: `${id}:candidate-0` }),
-      fakeHandle({ click, fingerprint: `${id}:candidate-1` }),
-      fakeHandle({ fingerprint: `${id}:candidate-2` }),
+      fakeHandle({ box: { x: 30, y: 80, width: 40, height: 40 }, fingerprint: `${id}:candidate-0` }),
+      fakeHandle({ box: { x: 100, y: 80, width: 40, height: 40 }, click, fingerprint: `${id}:candidate-1` }),
+      fakeHandle({ box: { x: 30, y: 140, width: 40, height: 40 }, fingerprint: `${id}:candidate-2` }),
+      fakeHandle({ box: { x: 100, y: 140, width: 40, height: 40 }, fingerprint: `${id}:candidate-3` }),
     ],
   };
 }
@@ -480,7 +607,7 @@ test("drag trajectory reaches the target with bounded overshoot", () => {
   )));
 });
 
-test("verification diagnostics keep only bounded fields", () => {
+test("verification diagnostics keep only canonical bounded fields", () => {
   assert.deepEqual(
     sanitizeVerificationResult({
       attempted: true,
@@ -488,7 +615,7 @@ test("verification diagnostics keep only bounded fields", () => {
       provider: "geetest4",
       challenge_type: "slider",
       attempts: 9,
-      reason: "low_confidence".repeat(20),
+      reason: "confidence_too_low",
       confidence: 0.61,
       token: "secret",
       screenshot: "secret-image",
@@ -499,10 +626,11 @@ test("verification diagnostics keep only bounded fields", () => {
       provider: "geetest4",
       challenge_type: "slider",
       attempts: 2,
-      reason: "low_confidencelow_confidencelow_confidencelow_confidencelow_confidencelow_confid",
+      reason: "confidence_too_low",
       confidence: 0.61,
     },
   );
+  assert.equal(sanitizeVerificationResult({ reason: "token=secret" }).reason, "unknown");
 });
 
 test("vision request passes only the strict mode payload to Python", async () => {
@@ -536,6 +664,41 @@ test("vision request passes only the strict mode payload to Python", async () =>
     candidate_pngs: ["left", "right"],
   });
   assert.equal(result.candidate_index, 1);
+});
+
+test("slider vision request forwards only the exact composited-piece geometry", async () => {
+  let inputPayload;
+  const geometry = {
+    image_width: 600,
+    image_height: 240,
+    track_width: 300,
+    track_height: 120,
+    handle_width: 40,
+    piece_offset_x: 30,
+    piece_offset_y: 10,
+  };
+
+  await runVisionRequest({
+    mode: "slider",
+    background_png: "background",
+    piece_png: "piece",
+    geometry: { ...geometry, token: "secret-token" },
+    cookie: "secret-cookie",
+  }, {
+    spawnFn: () => fakeChild((child, input) => {
+      inputPayload = JSON.parse(input);
+      child.stdout.end('{"ok":false,"reason":"gap_not_found"}');
+      child.emit("close", 0, null);
+    }),
+  });
+
+  assert.deepEqual(inputPayload, {
+    mode: "slider",
+    background_png: "background",
+    piece_png: "piece",
+    geometry,
+  });
+  assert.doesNotMatch(JSON.stringify(inputPayload), /secret/);
 });
 
 test("vision request kills a timed out child", async () => {
@@ -622,9 +785,15 @@ test("challenge discovery checks main frame first, deduplicates frames, and find
   const visited = [];
   const seen = new Set();
   const hiddenContainer = fakeHandle({ box: { x: 0, y: 0, width: 0, height: 0 } });
-  const target = fakeHandle();
-  const candidates = [fakeHandle(), fakeHandle(), fakeHandle()];
+  const target = fakeHandle({ box: { x: 80, y: 12, width: 40, height: 40 } });
+  const candidates = [
+    fakeHandle({ box: { x: 30, y: 80, width: 40, height: 40 } }),
+    fakeHandle({ box: { x: 100, y: 80, width: 40, height: 40 } }),
+    fakeHandle({ box: { x: 30, y: 140, width: 40, height: 40 } }),
+    fakeHandle({ box: { x: 100, y: 140, width: 40, height: 40 } }),
+  ];
   const visibleContainer = fakeHandle({
+    box: { x: 0, y: 0, width: 220, height: 220 },
     one: (selector) => (/ques|tip|target/i.test(selector) ? target : null),
     many: (selector) => (/item|icon|candidate/i.test(selector) ? candidates : []),
   });
@@ -654,6 +823,119 @@ test("challenge discovery checks main frame first, deduplicates frames, and find
   assert.equal(challenge.target, target);
   assert.deepEqual(challenge.candidates, candidates);
   assert.deepEqual(visited, ["main", "child"]);
+});
+
+test("click discovery rejects candidates that do not form a coherent grid", async () => {
+  const { page } = fakeClickDiscoveryPage({
+    candidateBoxes: [
+      { x: 30, y: 80, width: 40, height: 40 },
+      { x: 100, y: 80, width: 40, height: 40 },
+      { x: 30, y: 140, width: 40, height: 40 },
+      { x: 175, y: 140, width: 40, height: 40 },
+    ],
+  });
+
+  assert.equal(await detectVerificationChallenge(page), null);
+});
+
+test("click discovery rejects uneven three-row candidate grids", async () => {
+  for (const candidateBoxes of [
+    [
+      { x: 65, y: 80, width: 40, height: 40 },
+      { x: 30, y: 140, width: 40, height: 40 },
+      { x: 100, y: 140, width: 40, height: 40 },
+      { x: 65, y: 200, width: 40, height: 40 },
+    ],
+    [
+      { x: 30, y: 80, width: 40, height: 40 },
+      { x: 100, y: 80, width: 40, height: 40 },
+      { x: 65, y: 140, width: 40, height: 40 },
+      { x: 30, y: 200, width: 40, height: 40 },
+      { x: 100, y: 200, width: 40, height: 40 },
+    ],
+  ]) {
+    const { page } = fakeClickDiscoveryPage({
+      containerBox: { x: 0, y: 0, width: 220, height: 270 },
+      candidateBoxes,
+    });
+
+    assert.equal(await detectVerificationChallenge(page), null);
+  }
+});
+
+test("click discovery rejects an uneven two-row grid whose columns do not align", async () => {
+  const { page } = fakeClickDiscoveryPage({
+    containerBox: { x: 0, y: 0, width: 240, height: 220 },
+    candidateBoxes: [
+      { x: 30, y: 80, width: 40, height: 40 },
+      { x: 100, y: 80, width: 40, height: 40 },
+      { x: 170, y: 80, width: 40, height: 40 },
+      { x: 65, y: 140, width: 40, height: 40 },
+      { x: 135, y: 140, width: 40, height: 40 },
+    ],
+  });
+
+  assert.equal(await detectVerificationChallenge(page), null);
+});
+
+test("click discovery requires one-to-one column alignment for an uneven two-row grid", async () => {
+  const { page } = fakeClickDiscoveryPage({
+    containerBox: { x: 0, y: 0, width: 240, height: 220 },
+    candidateBoxes: [
+      { x: 30, y: 80, width: 40, height: 40 },
+      { x: 100, y: 80, width: 40, height: 40 },
+      { x: 170, y: 80, width: 40, height: 40 },
+      { x: 80, y: 140, width: 40, height: 40 },
+      { x: 120, y: 140, width: 40, height: 40 },
+    ],
+  });
+
+  assert.equal(await detectVerificationChallenge(page), null);
+});
+
+test("click discovery rejects candidates collected from sibling selection regions", async () => {
+  const { page, candidates } = fakeClickDiscoveryPage();
+  candidates[0].selectionRegion = "selection-a";
+  candidates[1].selectionRegion = "selection-a";
+  candidates[2].selectionRegion = "selection-b";
+  candidates[3].selectionRegion = "selection-b";
+
+  assert.equal(await detectVerificationChallenge(page), null);
+});
+
+test("click discovery rejects candidates with incompatible dimensions", async () => {
+  const { page } = fakeClickDiscoveryPage({
+    candidateBoxes: [
+      { x: 30, y: 80, width: 40, height: 40 },
+      { x: 100, y: 80, width: 40, height: 40 },
+      { x: 30, y: 140, width: 82, height: 40 },
+      { x: 130, y: 140, width: 40, height: 40 },
+    ],
+  });
+
+  assert.equal(await detectVerificationChallenge(page), null);
+});
+
+test("click discovery rejects a target that overlaps the selection region", async () => {
+  const { page } = fakeClickDiscoveryPage({
+    targetBox: { x: 35, y: 85, width: 40, height: 40 },
+  });
+
+  assert.equal(await detectVerificationChallenge(page), null);
+});
+
+test("click discovery rejects more than six visible controls instead of truncating them", async () => {
+  const { page } = fakeClickDiscoveryPage({
+    containerBox: { x: 0, y: 0, width: 360, height: 220 },
+    candidateBoxes: Array.from({ length: 7 }, (_value, index) => ({
+      x: 20 + (index * 45),
+      y: 100,
+      width: 36,
+      height: 36,
+    })),
+  });
+
+  assert.equal(await detectVerificationChallenge(page), null);
 });
 
 test("challenge discovery finds bounded slider fallbacks and ignores hidden controls", async () => {
@@ -772,6 +1054,97 @@ test("click verification clicks only the candidate selected by vision", async ()
   assert.equal(result.attempts, 1);
 });
 
+test("click verification revalidates the layout immediately before trusted input", async () => {
+  const inputEvents = [];
+  let layoutChanged = false;
+  const page = fakeInputPage({ dispatch: async (event) => { inputEvents.push(event); } });
+  const challenge = clickChallenge(async () => {});
+  challenge.candidates[3].boundingBox = async () => (
+    layoutChanged
+      ? { x: 175, y: 140, width: 40, height: 40 }
+      : { x: 100, y: 140, width: 40, height: 40 }
+  );
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "click-layout-change",
+    visionRequest: async () => {
+      layoutChanged = true;
+      return { ok: true, candidate_index: 1, confidence: 0.91 };
+    },
+  });
+
+  assert.deepEqual(inputEvents, []);
+  assert.equal(result.reason, "click_layout_invalid");
+});
+
+test("click verification rejects a candidate hidden while vision is running", async () => {
+  const inputEvents = [];
+  let candidateVisible = true;
+  const page = fakeInputPage({ dispatch: async (event) => { inputEvents.push(event); } });
+  const challenge = clickChallenge(async () => {});
+  challenge.candidates[1] = fakeHandle({
+    box: { x: 100, y: 80, width: 40, height: 40 },
+    visible: () => candidateVisible,
+    fingerprint: "challenge-a:candidate-1",
+  });
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "click-hidden-candidate",
+    visionRequest: async () => {
+      candidateVisible = false;
+      return { ok: true, candidate_index: 1, confidence: 0.91 };
+    },
+  });
+
+  assert.deepEqual(inputEvents, []);
+  assert.equal(result.reason, "click_layout_invalid");
+});
+
+test("click verification rejects a candidate moved outside its original container", async () => {
+  const inputEvents = [];
+  let candidateInContainer = true;
+  const page = fakeInputPage({ dispatch: async (event) => { inputEvents.push(event); } });
+  const challenge = clickChallenge(async () => {});
+  const selectedCandidate = challenge.candidates[1];
+  challenge.container = fakeHandle({
+    box: { x: 0, y: 0, width: 220, height: 220 },
+    contains: (handle) => handle !== selectedCandidate || candidateInContainer,
+  });
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "click-reparented-candidate",
+    visionRequest: async () => {
+      candidateInContainer = false;
+      return { ok: true, candidate_index: 1, confidence: 0.91 };
+    },
+  });
+
+  assert.deepEqual(inputEvents, []);
+  assert.equal(result.reason, "click_layout_invalid");
+});
+
+test("click verification rejects a candidate moved to a sibling selection region", async () => {
+  const inputEvents = [];
+  const page = fakeInputPage({ dispatch: async (event) => { inputEvents.push(event); } });
+  const challenge = clickChallenge(async () => {});
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "click-sibling-selection-region",
+    visionRequest: async () => {
+      challenge.candidates[1].selectionRegion = "selection-b";
+      return { ok: true, candidate_index: 1, confidence: 0.91 };
+    },
+    timeoutMs: 100,
+  });
+
+  assert.deepEqual(inputEvents, []);
+  assert.equal(result.reason, "click_layout_invalid");
+});
+
 test("slider always releases the mouse and restores the piece after movement errors", async () => {
   const mouseEvents = [];
   const page = fakeInputPage({
@@ -786,7 +1159,7 @@ test("slider always releases the mouse and restores the piece after movement err
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
-    handle: fakeHandle({ box: { x: 10, y: 30, width: 40, height: 40 } }),
+    handle: fakeHandle({ box: { x: 20, y: 30, width: 40, height: 40 } }),
     background: fakeHandle({ box: { x: 20, y: 10, width: 300, height: 120 } }),
     piece: fakeHandle({
       box: { x: 50, y: 20, width: 30, height: 30 },
@@ -807,7 +1180,7 @@ test("slider always releases the mouse and restores the piece after movement err
   assert.equal(mouseEvents.at(-1), "up");
 });
 
-test("slider geometry uses PNG pixels while dragging in CSS pixels", async () => {
+test("slider geometry uses screenshot-rounded absolute clips at fractional coordinates and DPR 2", async () => {
   let visionPayload;
   const moves = [];
   const page = fakeInputPage({
@@ -818,12 +1191,14 @@ test("slider geometry uses PNG pixels while dragging in CSS pixels", async () =>
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
-    handle: fakeHandle({ box: { x: 10, y: 30, width: 40, height: 40 } }),
+    handle: fakeHandle({ box: { x: 50, y: 30, width: 40, height: 40 } }),
     background: fakeHandle({
-      box: { x: 20, y: 10, width: 300, height: 120 },
+      box: { x: 20.4, y: 10.4, width: 300, height: 120 },
       screenshot: pngBuffer(600, 240),
+      viewportOffset: { x: 0.3, y: 0.3 },
     }),
     piece: fakeHandle({
+      box: { x: 50.6, y: 20.6, width: 30, height: 30 },
       screenshot: pngBuffer(60, 60),
       evaluate: async (_callback, action) => (
         action?.action === "hide"
@@ -848,10 +1223,44 @@ test("slider geometry uses PNG pixels while dragging in CSS pixels", async () =>
   assert.equal(result.completed, true);
   assert.deepEqual(visionPayload.geometry, {
     image_width: 600,
+    image_height: 240,
     track_width: 300,
+    track_height: 120,
     handle_width: 40,
+    piece_offset_x: 60,
+    piece_offset_y: 20,
   });
-  assert.equal(moves.at(-1).x, 150);
+  assert.ok(Math.abs(moves.at(-1).x - 160.4) < 0.001);
+});
+
+test("slider rejects a right-edge trajectory whose overshoot leaves the track", async () => {
+  const inputEvents = [];
+  const page = fakeInputPage({ dispatch: async (event) => { inputEvents.push(event); } });
+  const challenge = {
+    provider: "geetest4",
+    challenge_type: "slider",
+    handle: fakeHandle({ box: { x: 20, y: 30, width: 40, height: 40 } }),
+    background: fakeHandle({
+      box: { x: 20, y: 10, width: 300, height: 120 },
+      screenshot: pngBuffer(600, 240),
+    }),
+    piece: fakeHandle({
+      box: { x: 50, y: 20, width: 30, height: 30 },
+      screenshot: pngBuffer(60, 60),
+    }),
+  };
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "slider-right-edge",
+    visionRequest: async () => ({ ok: true, distance_css: 260, confidence: 0.92 }),
+    random: () => 0.5,
+    sleep: async () => {},
+  });
+
+  assert.equal(result.completed, false);
+  assert.equal(result.reason, "trajectory_out_of_bounds");
+  assert.deepEqual(inputEvents, []);
 });
 
 test("timed out vision results never trigger a late click", async () => {
@@ -932,7 +1341,10 @@ test("timed out slider vision never starts a late drag", async () => {
     provider: "geetest4",
     challenge_type: "slider",
     handle: fakeHandle(),
-    background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
+    background: fakeHandle({
+      box: { x: 10, y: 20, width: 300, height: 120 },
+      screenshot: pngBuffer(300, 120),
+    }),
     piece: fakeHandle({
       evaluate: async (_callback, action) => (
         action?.action === "hide"
@@ -976,7 +1388,10 @@ test("mouse cleanup uses a monotonic hard deadline when wall time moves backward
     provider: "geetest4",
     challenge_type: "slider",
     handle: fakeHandle(),
-    background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
+    background: fakeHandle({
+      box: { x: 10, y: 20, width: 300, height: 120 },
+      screenshot: pngBuffer(300, 120),
+    }),
     piece: fakeHandle({
       evaluate: async (_callback, action) => (
         action?.action === "hide"
@@ -1170,6 +1585,131 @@ test("piece session detaches when backend node lookup fails", async () => {
   assert.equal(detached, true);
 });
 
+test("automatic verification polls for a delayed first challenge mount", async () => {
+  let detections = 0;
+  let clicks = 0;
+  const challenge = clickChallenge(async () => {});
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      if (type === "mouseReleased") clicks += 1;
+    },
+  });
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => {
+      detections += 1;
+      return detections === 1 ? null : challenge;
+    },
+    fingerprintChallenge: async () => "delayed-challenge",
+    isChallengeComplete: async () => clicks === 1,
+    visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
+    sleep: async () => {},
+    timeoutMs: 200,
+  });
+
+  assert.ok(detections >= 2);
+  assert.equal(clicks, 1);
+  assert.equal(result.completed, true);
+  assert.equal(result.attempts, 1);
+});
+
+test("automatic verification keeps polling through a null refresh window without a third interaction", async () => {
+  let clicks = 0;
+  let refreshPolls = 0;
+  const challengeA = clickChallenge(async () => {}, "challenge-a");
+  const challengeB = clickChallenge(async () => {}, "challenge-b");
+  const challengeC = clickChallenge(async () => {}, "challenge-c");
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      if (type === "mouseReleased") clicks += 1;
+    },
+  });
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => {
+      if (clicks === 0) return challengeA;
+      if (clicks === 1) {
+        refreshPolls += 1;
+        return refreshPolls === 1 ? null : challengeB;
+      }
+      return challengeC;
+    },
+    fingerprintChallenge: async (challenge) => {
+      if (challenge === challengeA) return "challenge-a";
+      if (challenge === challengeB) return "challenge-b";
+      return "challenge-c";
+    },
+    isChallengeComplete: async () => false,
+    visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
+    sleep: async () => {},
+    timeoutMs: 200,
+  });
+
+  assert.ok(refreshPolls >= 2);
+  assert.equal(clicks, 2);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.reason, "attempts_exhausted");
+});
+
+test("automatic verification finds a first challenge mounted after 2.1 seconds within the stage", {
+  timeout: 5_000,
+}, async () => {
+  let clicks = 0;
+  const mountedAt = performance.now() + 2_100;
+  const challenge = clickChallenge(async () => {}, "late-first-challenge");
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      if (type === "mouseReleased") clicks += 1;
+    },
+  });
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => (performance.now() >= mountedAt ? challenge : null),
+    fingerprintChallenge: async () => "late-first-challenge",
+    isChallengeComplete: async () => clicks === 1,
+    visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
+    timeoutMs: 4_000,
+  });
+
+  assert.equal(clicks, 1);
+  assert.equal(result.completed, true);
+  assert.equal(result.attempts, 1);
+});
+
+test("automatic verification finds a refreshed challenge after a 5.1 second null window", {
+  timeout: 9_000,
+}, async () => {
+  let clicks = 0;
+  let clickedAt = 0;
+  const challengeA = clickChallenge(async () => {}, "slow-refresh-a");
+  const challengeB = clickChallenge(async () => {}, "slow-refresh-b");
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      if (type === "mouseReleased") {
+        clicks += 1;
+        clickedAt = performance.now();
+      }
+    },
+  });
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => {
+      if (clicks === 0) return challengeA;
+      return performance.now() - clickedAt >= 5_100 ? challengeB : null;
+    },
+    fingerprintChallenge: async (challenge) => (
+      challenge === challengeA ? "slow-refresh-a" : "slow-refresh-b"
+    ),
+    isChallengeComplete: async (_page, challenge) => challenge === challengeB,
+    visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
+    timeoutMs: 7_500,
+  });
+
+  assert.equal(clicks, 1);
+  assert.equal(result.completed, true);
+  assert.equal(result.attempts, 1);
+});
+
 test("candidate selected styling does not trigger a second interaction", async () => {
   let clicks = 0;
   let selected = false;
@@ -1188,7 +1728,7 @@ test("candidate selected styling does not trigger a second interaction", async (
     isChallengeComplete: async () => false,
     visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
     sleep: async () => {},
-    postInteractionTimeoutMs: 5,
+    timeoutMs: 100,
   });
 
   assert.equal(clicks, 1);
@@ -1214,7 +1754,7 @@ test("a genuinely new click challenge permits exactly one second interaction", a
     isChallengeComplete: async () => false,
     visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
     sleep: async () => {},
-    postInteractionTimeoutMs: 5,
+    timeoutMs: 100,
   });
 
   assert.equal(clicks, 2);
@@ -1234,7 +1774,10 @@ test("slider piece movement does not trigger a second drag", async () => {
     provider: "geetest4",
     challenge_type: "slider",
     handle: fakeHandle(),
-    background: fakeHandle({ screenshot: pngBuffer(300, 120, 7) }),
+    background: fakeHandle({
+      box: { x: 10, y: 20, width: 300, height: 120 },
+      screenshot: pngBuffer(300, 120, 7),
+    }),
     piece: fakeHandle({
       screenshot: () => pngBuffer(40, 40, moved ? 2 : 1),
       evaluate: async (_callback, action) => (
@@ -1251,7 +1794,7 @@ test("slider piece movement does not trigger a second drag", async () => {
     visionRequest: async () => ({ ok: true, distance_css: 100, confidence: 0.9 }),
     random: () => 0.5,
     sleep: async () => {},
-    postInteractionTimeoutMs: 5,
+    timeoutMs: 100,
   });
 
   assert.equal(drags, 1);
@@ -1270,6 +1813,17 @@ test("automatic verification reports the total-stage timeout", async () => {
 
   assert.equal(result.reason, "timeout");
   assert.ok(Date.now() - startedAt < 100);
+});
+
+test("monotonic action deadline wins when the timeout callback cannot run", async () => {
+  const result = await attemptAutomaticVerification({}, {
+    detectChallenge: async () => null,
+    sleep: async () => {},
+    timeoutMs: 20,
+  });
+
+  assert.equal(result.completed, false);
+  assert.equal(result.reason, "timeout");
 });
 
 test("Turnstile clicks at most once per attempt without calling vision", async () => {

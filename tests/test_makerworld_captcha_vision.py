@@ -7,7 +7,13 @@ import unittest
 import cv2
 import numpy as np
 
-from app.services.makerworld_captcha_vision import _decode_png, solve_click_challenge, solve_request, solve_slider_challenge
+from app.services.makerworld_captcha_vision import (
+    _decode_png,
+    _foreground_mask,
+    solve_click_challenge,
+    solve_request,
+    solve_slider_challenge,
+)
 
 
 def png_bytes(image: np.ndarray) -> bytes:
@@ -24,6 +30,20 @@ def jpeg_bytes(image: np.ndarray) -> bytes:
     ok, encoded = cv2.imencode(".jpg", image)
     assert ok
     return encoded.tobytes()
+
+
+def slider_geometry(**overrides) -> dict[str, float]:
+    geometry = {
+        "image_width": 320,
+        "image_height": 160,
+        "track_width": 280,
+        "track_height": 140,
+        "handle_width": 40,
+        "piece_offset_x": 10,
+        "piece_offset_y": 10,
+    }
+    geometry.update(overrides)
+    return geometry
 
 
 def _scale_point(x: int, y: int, *, size: int) -> tuple[int, int]:
@@ -89,6 +109,15 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "ambiguous_candidates")
 
+    def test_foreground_mask_uses_alpha_for_a_light_piece_with_transparent_padding(self):
+        piece = np.zeros((48, 48, 4), dtype=np.uint8)
+        cv2.rectangle(piece, (8, 8), (39, 39), (250, 250, 250, 255), -1)
+
+        mask = _foreground_mask(piece)
+
+        self.assertEqual(int(mask[24, 24]), 255)
+        self.assertEqual(int(mask[2, 2]), 0)
+
     def test_solve_request_accepts_click_payload_with_base64_pngs(self):
         result = solve_request(
             {
@@ -127,7 +156,7 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
                 "mode": "slider",
                 "background_png": base64.b64encode(b"\x89PNG\r\n\x1a\ninvalid").decode("ascii"),
                 "piece_png": png_base64(symbol("triangle")),
-                "geometry": {"image_width": 320, "track_width": 280, "handle_width": 40},
+                "geometry": slider_geometry(),
             }
         )
         self.assertEqual(invalid_image_result, {"ok": False, "reason": "image_decode_failed"})
@@ -135,7 +164,7 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
     def test_solve_slider_challenge_rejects_invalid_geometry(self):
         background = png_bytes(symbol("square", size=128))
         piece = png_bytes(symbol("triangle", size=32))
-        for geometry in ({}, {"track_width": 320, "piece_width": 0}, {"track_width": "320", "piece_width": 48}):
+        for geometry in ({}, {"track_width": 0}, {"track_width": "320"}):
             with self.subTest(geometry=geometry):
                 result = solve_slider_challenge(background, piece, geometry)
                 self.assertEqual(result, {"ok": False, "reason": "geometry_invalid"})
@@ -149,12 +178,55 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
         result = solve_slider_challenge(
             png_bytes(background),
             png_bytes(piece),
-            {"image_width": 320, "track_width": 280, "handle_width": 40},
+            slider_geometry(),
         )
 
         self.assertTrue(result["ok"])
         self.assertAlmostEqual(result["distance_css"], 180, delta=6)
         self.assertGreaterEqual(result["confidence"], 0.72)
+
+    def test_slider_subtracts_the_hidden_textured_background_from_a_composited_piece(self):
+        y_coords, x_coords = np.indices((160, 320))
+        texture = (214 + ((x_coords * 3 + y_coords * 5) % 9)).astype(np.uint8)
+        background = cv2.merge((texture, texture, texture))
+        cv2.rectangle(background, (206, 54), (246, 94), (120, 120, 120), 2)
+
+        piece_x, piece_y = 24, 54
+        visible_piece = background[piece_y:piece_y + 52, piece_x:piece_x + 52].copy()
+        cv2.rectangle(visible_piece, (6, 6), (46, 46), (248, 248, 248), -1)
+
+        result = solve_slider_challenge(
+            png_bytes(background),
+            png_bytes(visible_piece),
+            slider_geometry(
+                track_width=320,
+                track_height=160,
+                piece_offset_x=piece_x,
+                piece_offset_y=piece_y,
+            ),
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertAlmostEqual(result["distance_css"], 206, delta=6)
+
+    def test_slider_rejects_an_opaque_piece_identical_to_the_hidden_background_crop(self):
+        background = np.full((160, 320, 3), 245, dtype=np.uint8)
+        cv2.rectangle(background, (30, 60), (70, 100), (70, 70, 70), -1)
+        piece_x, piece_y = 24, 54
+        piece = background[piece_y:piece_y + 52, piece_x:piece_x + 52].copy()
+
+        result = solve_slider_challenge(
+            png_bytes(background),
+            png_bytes(piece),
+            slider_geometry(
+                track_width=320,
+                track_height=160,
+                piece_offset_x=piece_x,
+                piece_offset_y=piece_y,
+            ),
+        )
+
+        self.assertEqual(result, {"ok": False, "reason": "image_foreground_missing"})
 
     def test_solve_slider_challenge_rejects_missing_or_out_of_range_required_geometry(self):
         result = solve_slider_challenge(
@@ -165,9 +237,9 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
         self.assertEqual(result, {"ok": False, "reason": "geometry_invalid"})
 
         for geometry in (
-            {"image_width": 7, "track_width": 280, "handle_width": 40},
-            {"image_width": 320, "track_width": 4097, "handle_width": 40},
-            {"image_width": 320, "track_width": 280, "handle_width": 7},
+            slider_geometry(image_width=7),
+            slider_geometry(track_width=4097),
+            slider_geometry(handle_width=7),
         ):
             with self.subTest(geometry=geometry):
                 result = solve_slider_challenge(
@@ -185,12 +257,7 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
                 result = solve_slider_challenge(
                     background,
                     piece,
-                    {
-                        "image_width": 320,
-                        "track_width": 280,
-                        "handle_width": 40,
-                        extra_key: "forbidden",
-                    },
+                    {**slider_geometry(), extra_key: "forbidden"},
                 )
                 self.assertEqual(result, {"ok": False, "reason": "geometry_invalid"})
 

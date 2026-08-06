@@ -1540,24 +1540,46 @@ class Missing3mfTest(unittest.TestCase):
     def test_auto_verification_diagnostics_preserve_known_bridge_reason_codes_only(self):
         known_reason_codes = (
             "aborted",
+            "ambiguous_candidates",
+            "ambiguous_gap",
             "attempts_exhausted",
+            "candidate_count_invalid",
             "challenge_unchanged",
             "challenge_unsupported",
             "checkbox_unavailable",
             "cleanup_failed",
+            "click_layout_invalid",
             "click_target_unavailable",
             "completed",
+            "confidence_too_low",
             "discovery_failed",
+            "distance_invalid",
             "empty_screenshot",
+            "gap_not_found",
+            "geometry_invalid",
+            "image_base64_invalid",
+            "image_decode_failed",
+            "image_dimensions_invalid",
             "image_format_invalid",
+            "image_foreground_missing",
+            "image_size_invalid",
             "image_width_invalid",
+            "input_too_large",
             "interaction_failed",
+            "json_invalid",
+            "low_confidence",
+            "mode_invalid",
             "no_challenge",
             "outcome_failed",
+            "payload_invalid",
             "piece_restore_failed",
             "piece_unavailable",
+            "request_invalid",
             "slider_geometry_invalid",
+            "solved",
             "timeout",
+            "trajectory_out_of_bounds",
+            "unsupported_fields",
             "verification_failed",
             "vision_rejected",
         )
@@ -1574,6 +1596,37 @@ class Missing3mfTest(unittest.TestCase):
                     {"reason": reason}
                 )
                 self.assertEqual(diagnostics["fields"]["reason"], "unknown")
+
+    def test_auto_verification_logs_a_real_production_solver_reason_end_to_end(self):
+        diagnostics = legacy_archiver_module._normalized_auto_verification_diagnostics(
+            {
+                "attempted": True,
+                "completed": False,
+                "provider": "geetest4",
+                "challenge_type": "slider",
+                "attempts": 1,
+                "reason": "confidence_too_low",
+                "confidence": 0.61,
+            }
+        )
+
+        with patch.object(legacy_archiver_module, "append_business_log") as business_log_mock:
+            legacy_archiver_module._log_auto_verification_result(
+                diagnostics,
+                signed_url_available=False,
+            )
+
+        business_log_mock.assert_called_once_with(
+            "archive",
+            "cloakbrowser_auto_verification_fallback",
+            "指纹浏览器未取得 3MF 授权，请在官网完成验证后点击“已验证”继续归档。",
+            level="warning",
+            provider="geetest4",
+            challenge_type="slider",
+            attempts=1,
+            reason="confidence_too_low",
+            confidence=0.61,
+        )
 
     def test_fetch_instance_3mf_keeps_manual_fallback_when_attempts_is_an_extreme_integer(self):
         session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)

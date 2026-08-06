@@ -521,18 +521,19 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
     }
     const firstOutcome = await firstResponseOutcome;
     if (!firstOutcome.response) throw authorizationWaitError(firstOutcome.error);
-    const first = await readAuthorizationResponse(firstOutcome.response);
-
-    if (!options.inputAutoVerify || !isVerificationAuthorization(first)) {
-      return { ...first, navigation_timed_out: Boolean(options.navigationTimedOut) };
-    }
-
-    const secondWaiterController = new AbortController();
-    const secondResponseOutcome = authorizationResponseOutcome(page, matcher, {
-      timeout: AUTO_VERIFY_TIMEOUT_MS,
-      signal: secondWaiterController.signal,
-    });
+    const secondWaiterController = options.inputAutoVerify ? new AbortController() : null;
+    const secondResponseOutcome = secondWaiterController
+      ? authorizationResponseOutcome(page, matcher, {
+        timeout: AUTO_VERIFY_TIMEOUT_MS,
+        signal: secondWaiterController.signal,
+      })
+      : null;
     try {
+      const first = await readAuthorizationResponse(firstOutcome.response);
+      if (!options.inputAutoVerify || !isVerificationAuthorization(first)) {
+        return { ...first, navigation_timed_out: Boolean(options.navigationTimedOut) };
+      }
+
       const verificationAdapter = options.verificationAdapter || attemptAutomaticVerification;
       let verification;
       try {
@@ -556,8 +557,8 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
         verification,
       };
     } finally {
-      secondWaiterController.abort();
-      await secondResponseOutcome;
+      secondWaiterController?.abort();
+      if (secondResponseOutcome) await secondResponseOutcome;
     }
   } finally {
     firstWaiterController.abort();

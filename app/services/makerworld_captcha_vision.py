@@ -22,7 +22,15 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 _NORMALIZED_SIZE = 96
 _SLIDER_SCALES = (0.90, 0.95, 1.00, 1.05, 1.10)
-_SLIDER_GEOMETRY_FIELDS = {"image_width", "track_width", "handle_width"}
+_SLIDER_GEOMETRY_FIELDS = {
+    "image_width",
+    "image_height",
+    "track_width",
+    "track_height",
+    "handle_width",
+    "piece_offset_x",
+    "piece_offset_y",
+}
 ALLOWED_REQUEST_FIELDS = {
     "mode",
     "target_png",
@@ -66,6 +74,10 @@ def _decode_base64_png(value: Any) -> bytes:
 
 
 def _foreground_mask(image: np.ndarray) -> np.ndarray:
+    if image.ndim == 3 and image.shape[2] == 4:
+        alpha = image[:, :, 3]
+        if not np.all(alpha == 255):
+            return _remove_border_components(np.where(alpha > 0, 255, 0).astype(np.uint8))
     if image.ndim == 2:
         gray = image
     elif image.shape[2] == 4:
@@ -73,9 +85,6 @@ def _foreground_mask(image: np.ndarray) -> np.ndarray:
     else:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, mask = cv2.threshold(gray, 235, 255, cv2.THRESH_BINARY_INV)
-    if image.ndim == 3 and image.shape[2] == 4:
-        alpha_mask = image[:, :, 3] > 0
-        mask = np.where(alpha_mask, mask, 0).astype(np.uint8)
     return _remove_border_components(mask)
 
 
@@ -166,19 +175,48 @@ def _normalized_symbol(raw: bytes) -> np.ndarray:
     return _normalize_mask(_foreground_mask(image))
 
 
-def _slider_geometry(geometry: dict[str, Any]) -> tuple[float, float, float]:
+def _slider_geometry(geometry: dict[str, Any]) -> dict[str, float]:
     if not isinstance(geometry, dict) or set(geometry) != _SLIDER_GEOMETRY_FIELDS:
         raise ValueError("geometry_invalid")
-    values: list[float] = []
-    for name in ("image_width", "track_width", "handle_width"):
+    values: dict[str, float] = {}
+    dimension_fields = (
+        "image_width",
+        "image_height",
+        "track_width",
+        "track_height",
+        "handle_width",
+    )
+    for name in dimension_fields:
         value = geometry.get(name)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 8 <= value <= 4096:
             raise ValueError("geometry_invalid")
-        values.append(float(value))
-    image_width, track_width, handle_width = values
-    if handle_width > track_width:
+        if not np.isfinite(value):
+            raise ValueError("geometry_invalid")
+        values[name] = float(value)
+    for name in ("piece_offset_x", "piece_offset_y"):
+        value = geometry.get(name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not -1 <= value <= 4096
+            or not np.isfinite(value)
+        ):
+            raise ValueError("geometry_invalid")
+        values[name] = float(value)
+
+    if values["handle_width"] > values["track_width"]:
         raise ValueError("geometry_invalid")
-    return image_width, track_width, handle_width
+    if values["piece_offset_x"] < 0 or values["piece_offset_y"] < 0:
+        raise ValueError("geometry_invalid")
+    if values["piece_offset_x"] > values["image_width"]:
+        raise ValueError("geometry_invalid")
+    if values["piece_offset_y"] > values["image_height"]:
+        raise ValueError("geometry_invalid")
+    scale_x = values["image_width"] / values["track_width"]
+    scale_y = values["image_height"] / values["track_height"]
+    if abs(scale_x - scale_y) > max(scale_x, scale_y) * 0.10:
+        raise ValueError("geometry_invalid")
+    return values
 
 
 def _grayscale(image: np.ndarray) -> np.ndarray:
@@ -187,6 +225,44 @@ def _grayscale(image: np.ndarray) -> np.ndarray:
     if image.shape[2] == 4:
         return cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+
+def _color_channels(image: np.ndarray) -> np.ndarray:
+    if image.ndim == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    return image[:, :, :3]
+
+
+def _composited_piece_mask(
+    background: np.ndarray,
+    piece: np.ndarray,
+    geometry: dict[str, float],
+) -> np.ndarray:
+    background_height, background_width = background.shape[:2]
+    piece_height, piece_width = piece.shape[:2]
+    if (
+        abs(background_width - geometry["image_width"]) > 1
+        or abs(background_height - geometry["image_height"]) > 1
+    ):
+        raise ValueError("geometry_invalid")
+    left = int(round(geometry["piece_offset_x"]))
+    top = int(round(geometry["piece_offset_y"]))
+    right = left + piece_width
+    bottom = top + piece_height
+    if left < 0 or top < 0 or right > background_width or bottom > background_height:
+        raise ValueError("geometry_invalid")
+    if piece.ndim == 3 and piece.shape[2] == 4 and not np.all(piece[:, :, 3] == 255):
+        return _foreground_mask(piece)
+    hidden_crop = background[top:bottom, left:right]
+    difference = cv2.absdiff(_color_channels(piece), _color_channels(hidden_crop))
+    difference_strength = np.max(difference, axis=2)
+    mask = np.where(difference_strength >= 12, 255, 0).astype(np.uint8)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    if cv2.countNonZero(mask) < 16:
+        raise ValueError("image_foreground_missing")
+    return _remove_border_components(mask)
 
 
 def _slider_edge_overlap(template_edges: np.ndarray, patch_edges: np.ndarray) -> float:
@@ -313,13 +389,14 @@ def solve_click_challenge(target_png: bytes, candidate_pngs: list[bytes]) -> dic
 
 def solve_slider_challenge(background_png: bytes, piece_png: bytes, geometry: dict[str, Any]) -> dict[str, Any]:
     try:
-        image_width, track_width, handle_width = _slider_geometry(geometry)
+        clean_geometry = _slider_geometry(geometry)
         background = _decode_png(background_png)
         piece = _decode_png(piece_png)
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
     try:
-        piece_edges = _crop_mask(cv2.Canny(_foreground_mask(piece), 64, 160))
+        piece_mask = _composited_piece_mask(background, piece, clean_geometry)
+        piece_edges = _crop_mask(cv2.Canny(piece_mask, 64, 160))
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
 
@@ -347,14 +424,16 @@ def solve_slider_challenge(background_png: bytes, piece_png: bytes, geometry: di
     )
     margin = _clamp_score(confidence - second_confidence)
     gap_x = gap_left + (template.shape[1] / 2.0)
-    distance_css = (gap_x * track_width / image_width) - (handle_width / 2.0)
+    distance_css = (
+        gap_x * clean_geometry["track_width"] / clean_geometry["image_width"]
+    ) - (clean_geometry["handle_width"] / 2.0)
     result = {
         "ok": False,
         "distance_css": round(distance_css, 2),
         "confidence": round(confidence, 4),
         "margin": round(margin, 4),
     }
-    if not 0 <= distance_css <= track_width - handle_width:
+    if not 0 <= distance_css <= clean_geometry["track_width"] - clean_geometry["handle_width"]:
         result["reason"] = "distance_invalid"
         return result
     if confidence < SLIDER_CONFIDENCE_MIN:
