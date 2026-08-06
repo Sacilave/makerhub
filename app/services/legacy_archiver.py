@@ -4086,6 +4086,60 @@ def _browser_three_mf_authorization_failure(
     return failure
 
 
+def _normalized_auto_verification_diagnostics(verification: object) -> dict:
+    if not isinstance(verification, dict):
+        return {"attempted": False, "completed": False, "fields": {}}
+
+    def _bounded_text(value: object, limit: int) -> str:
+        return str(value or "").strip()[:limit]
+
+    try:
+        attempts = int(verification.get("attempts") or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    try:
+        confidence = float(verification.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence != confidence or confidence in {float("inf"), float("-inf")}:
+        confidence = 0.0
+
+    return {
+        "attempted": verification.get("attempted") is True,
+        "completed": verification.get("completed") is True,
+        "fields": {
+            "provider": _bounded_text(verification.get("provider"), 64),
+            "challenge_type": _bounded_text(verification.get("challenge_type"), 64),
+            "attempts": max(0, min(attempts, 99)),
+            "reason": _bounded_text(verification.get("reason"), 160),
+            "confidence": round(max(0.0, min(confidence, 1.0)), 2),
+        },
+    }
+
+
+def _log_auto_verification_result(diagnostics: dict, *, signed_url_available: bool) -> None:
+    fields = diagnostics.get("fields") if isinstance(diagnostics.get("fields"), dict) else {}
+    try:
+        if diagnostics.get("completed") is True and signed_url_available:
+            append_business_log(
+                "archive",
+                "cloakbrowser_auto_verification_completed",
+                "指纹浏览器已完成 3MF 自动验证。",
+                level="info",
+                **fields,
+            )
+        elif diagnostics.get("attempted") is True and not signed_url_available:
+            append_business_log(
+                "archive",
+                "cloakbrowser_auto_verification_fallback",
+                "指纹浏览器未取得 3MF 授权，请在官网完成验证后点击“已验证”继续归档。",
+                level="warning",
+                **fields,
+            )
+    except Exception:
+        pass
+
+
 def browser_authorize_3mf_download(
     platform: str,
     api_url: str,
@@ -4177,8 +4231,10 @@ def fetch_instance_3mf(
                 "message": "指纹浏览器暂时无法完成 3MF 授权，将稍后自动重试。",
             }
         browser_payload = browser_result.get("payload") if isinstance(browser_result.get("payload"), dict) else {}
+        verification_diagnostics = _normalized_auto_verification_diagnostics(browser_result.get("verification"))
         name, url = _extract_instance_download(browser_payload)
         if url:
+            _log_auto_verification_result(verification_diagnostics, signed_url_available=True)
             return name, url, candidate, {"state": "available", "message": ""}
         failure = _browser_three_mf_authorization_failure(
             status_code=int(browser_result.get("status_code") or 0),
@@ -4186,6 +4242,7 @@ def fetch_instance_3mf(
             payload=browser_payload,
             source=source_hint or candidate,
         )
+        _log_auto_verification_result(verification_diagnostics, signed_url_available=False)
         return "", "", candidate, failure
     for candidate in candidates:
         candidate_source = source_hint or normalize_makerworld_source(url=candidate)

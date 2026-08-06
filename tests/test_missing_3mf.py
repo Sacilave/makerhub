@@ -1381,6 +1381,133 @@ class Missing3mfTest(unittest.TestCase):
         self.assertIn("浏览器", failure["message"])
         direct_mock.assert_not_called()
 
+    def test_fetch_instance_3mf_keeps_manual_fallback_and_redacts_auto_verification_diagnostics(self):
+        session = SimpleNamespace(
+            headers={"User-Agent": "test-agent", "Cookie": "token=session-secret"},
+            get=lambda *_args, **_kwargs: None,
+        )
+        raw_cookie = "token=account-secret; refreshToken=refresh-secret"
+        original_wait = legacy_archiver_module._wait_before_three_mf_download
+        legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
+        try:
+            with patch.object(
+                legacy_archiver_module,
+                "browser_authorize_3mf_download",
+                return_value={
+                    "status_code": 418,
+                    "payload": {"captchaId": "safe-id"},
+                    "verification": {
+                        "attempted": True,
+                        "completed": False,
+                        "provider": "geetest4",
+                        "challenge_type": "slider",
+                        "attempts": 2,
+                        "reason": "low_confidence",
+                        "confidence": 0.614,
+                        "captchaId": "verification-id",
+                        "url": "https://verification.example.test/private",
+                        "cookie": "verification-cookie",
+                        "headers": {"X-Secret": "secret"},
+                        "image": "verification-image",
+                    },
+                },
+            ), patch.object(legacy_archiver_module, "makerworld_browser_get_json") as direct_mock, \
+                    patch.object(legacy_archiver_module, "append_business_log") as business_log_mock:
+                _name, _url, _used_api_url, failure = fetch_instance_3mf(
+                    session,
+                    2864062,
+                    raw_cookie,
+                    api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                    origin="https://makerworld.com.cn",
+                    browser_authorization=True,
+                    browser_profile_id="profile-cn",
+                )
+        finally:
+            legacy_archiver_module._wait_before_three_mf_download = original_wait
+
+        self.assertEqual(failure["state"], "verification_required")
+        self.assertEqual(failure["message"], "指纹浏览器未取得 3MF 授权，请在官网完成验证后点击“已验证”继续归档。")
+        self.assertEqual(raw_cookie, "token=account-secret; refreshToken=refresh-secret")
+        direct_mock.assert_not_called()
+        business_log_mock.assert_called_once_with(
+            "archive",
+            "cloakbrowser_auto_verification_fallback",
+            "指纹浏览器未取得 3MF 授权，请在官网完成验证后点击“已验证”继续归档。",
+            level="warning",
+            provider="geetest4",
+            challenge_type="slider",
+            attempts=2,
+            reason="low_confidence",
+            confidence=0.61,
+        )
+        serialized_calls = json.dumps(business_log_mock.call_args_list, default=str, ensure_ascii=False)
+        for sensitive_value in (
+            "captchaId",
+            "safe-id",
+            "verification-id",
+            "https://",
+            "account-secret",
+            "refresh-secret",
+            "verification-cookie",
+            "base64-image-data",
+            "verification-image",
+        ):
+            self.assertNotIn(sensitive_value, serialized_calls)
+
+    def test_fetch_instance_3mf_logs_auto_verification_completion_once_after_signed_url(self):
+        session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
+        original_wait = legacy_archiver_module._wait_before_three_mf_download
+        legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
+        try:
+            with patch.object(
+                legacy_archiver_module,
+                "browser_authorize_3mf_download",
+                return_value={
+                    "status_code": 200,
+                    "payload": {
+                        "name": "browser.3mf",
+                        "url": "https://download.example.test/browser.3mf?signature=signed-secret",
+                    },
+                    "verification": {
+                        "attempted": True,
+                        "completed": True,
+                        "provider": "geetest4",
+                        "challenge_type": "slider",
+                        "attempts": 2,
+                        "reason": "solved",
+                        "confidence": 0.986,
+                    },
+                },
+            ), patch.object(legacy_archiver_module, "append_business_log") as business_log_mock:
+                name, url, _used_api_url, failure = fetch_instance_3mf(
+                    session,
+                    2864062,
+                    "token=account-secret",
+                    api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                    origin="https://makerworld.com.cn",
+                    browser_authorization=True,
+                    browser_profile_id="profile-cn",
+                )
+        finally:
+            legacy_archiver_module._wait_before_three_mf_download = original_wait
+
+        self.assertEqual(name, "browser.3mf")
+        self.assertTrue(url.startswith("https://download.example.test/browser.3mf"))
+        self.assertEqual(failure["state"], "available")
+        business_log_mock.assert_called_once_with(
+            "archive",
+            "cloakbrowser_auto_verification_completed",
+            "指纹浏览器已完成 3MF 自动验证。",
+            level="info",
+            provider="geetest4",
+            challenge_type="slider",
+            attempts=2,
+            reason="solved",
+            confidence=0.99,
+        )
+        serialized_calls = json.dumps(business_log_mock.call_args_list, default=str, ensure_ascii=False)
+        self.assertNotIn("signed-secret", serialized_calls)
+
     def test_fetch_instance_3mf_reports_browser_bridge_timeout_as_http_error(self):
         session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
         original_wait = legacy_archiver_module._wait_before_three_mf_download
