@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -81,6 +82,28 @@ VOLATILE_ASSET_QUERY_KEYS = {
     "h",
     "q",
 }
+
+SAFE_VERIFICATION_PROVIDERS = frozenset({"geetest4", "turnstile", "unknown"})
+SAFE_VERIFICATION_CHALLENGE_TYPES = frozenset({"icon_click", "slider", "checkbox", "unknown"})
+SAFE_REASON_CODES = frozenset(
+    {
+        "aborted",
+        "attempts_exhausted",
+        "challenge_unchanged",
+        "challenge_unsupported",
+        "checkbox_unavailable",
+        "completed",
+        "discovery_failed",
+        "interaction_failed",
+        "low_confidence",
+        "no_challenge",
+        "outcome_failed",
+        "slider_geometry_invalid",
+        "solved",
+        "timeout",
+        "vision_rejected",
+    }
+)
 VOLATILE_ASSET_QUERY_PREFIXES = (
     "x-amz-",
     "x-oss-",
@@ -4090,29 +4113,34 @@ def _normalized_auto_verification_diagnostics(verification: object) -> dict:
     if not isinstance(verification, dict):
         return {"attempted": False, "completed": False, "fields": {}}
 
-    def _bounded_text(value: object, limit: int) -> str:
-        return str(value or "").strip()[:limit]
+    def _safe_code(value: object, allowed: frozenset[str]) -> str:
+        if isinstance(value, str) and value in allowed:
+            return value
+        return "unknown"
 
-    try:
-        attempts = int(verification.get("attempts") or 0)
-    except (TypeError, ValueError):
-        attempts = 0
-    try:
-        confidence = float(verification.get("confidence"))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    if confidence != confidence or confidence in {float("inf"), float("-inf")}:
-        confidence = 0.0
+    def _bounded_attempts(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return 0
+        if value <= 0:
+            return 0
+        if value >= 99:
+            return 99
+        return int(value)
+
+    def _bounded_confidence(value: object) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return 0.0
+        return round(max(0.0, min(float(value), 1.0)), 2)
 
     return {
         "attempted": verification.get("attempted") is True,
         "completed": verification.get("completed") is True,
         "fields": {
-            "provider": _bounded_text(verification.get("provider"), 64),
-            "challenge_type": _bounded_text(verification.get("challenge_type"), 64),
-            "attempts": max(0, min(attempts, 99)),
-            "reason": _bounded_text(verification.get("reason"), 160),
-            "confidence": round(max(0.0, min(confidence, 1.0)), 2),
+            "provider": _safe_code(verification.get("provider"), SAFE_VERIFICATION_PROVIDERS),
+            "challenge_type": _safe_code(verification.get("challenge_type"), SAFE_VERIFICATION_CHALLENGE_TYPES),
+            "attempts": _bounded_attempts(verification.get("attempts")),
+            "reason": _safe_code(verification.get("reason"), SAFE_REASON_CODES),
+            "confidence": _bounded_confidence(verification.get("confidence")),
         },
     }
 

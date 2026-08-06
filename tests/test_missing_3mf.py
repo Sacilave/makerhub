@@ -1454,6 +1454,85 @@ class Missing3mfTest(unittest.TestCase):
         ):
             self.assertNotIn(sensitive_value, serialized_calls)
 
+    def test_auto_verification_log_replaces_untrusted_nested_diagnostics_with_safe_codes(self):
+        sensitive_value = {
+            "url": "https://verification.example.test/private",
+            "token": "provider-token",
+            "cookie": "verification-cookie",
+            "headers": {"Authorization": "Bearer header-secret"},
+            "image": "base64-image-data",
+            "captcha": "captcha-secret",
+            "payload": {"secret": "payload-secret"},
+        }
+        diagnostics = legacy_archiver_module._normalized_auto_verification_diagnostics(
+            {
+                "attempted": True,
+                "completed": False,
+                "provider": "https://verification.example.test/?token=provider-token",
+                "challenge_type": [sensitive_value],
+                "attempts": True,
+                "reason": "cookie=verification-cookie",
+                "confidence": False,
+            }
+        )
+
+        with patch.object(legacy_archiver_module, "append_business_log") as business_log_mock:
+            legacy_archiver_module._log_auto_verification_result(
+                diagnostics,
+                signed_url_available=False,
+            )
+
+        business_log_mock.assert_called_once_with(
+            "archive",
+            "cloakbrowser_auto_verification_fallback",
+            "指纹浏览器未取得 3MF 授权，请在官网完成验证后点击“已验证”继续归档。",
+            level="warning",
+            provider="unknown",
+            challenge_type="unknown",
+            attempts=0,
+            reason="unknown",
+            confidence=0.0,
+        )
+        serialized_calls = json.dumps(business_log_mock.call_args_list, default=str, ensure_ascii=False)
+        for sensitive_marker in (
+            "https://",
+            "provider-token",
+            "verification-cookie",
+            "Authorization",
+            "base64-image-data",
+            "captcha-secret",
+            "payload-secret",
+        ):
+            self.assertNotIn(sensitive_marker, serialized_calls)
+
+    def test_auto_verification_diagnostics_accept_only_native_numeric_values(self):
+        cases = (
+            (True, True, 0, 0.0),
+            (False, False, 0, 0.0),
+            ("2", "0.614", 0, 0.0),
+            (None, None, 0, 0.0),
+            (float("nan"), float("inf"), 0, 0.0),
+            (float("inf"), float("-inf"), 0, 0.0),
+            (-2, -0.1, 0, 0.0),
+            (100, 1.4, 99, 1.0),
+            (2.9, 0.614, 2, 0.61),
+        )
+
+        for attempts, confidence, expected_attempts, expected_confidence in cases:
+            with self.subTest(attempts=attempts, confidence=confidence):
+                diagnostics = legacy_archiver_module._normalized_auto_verification_diagnostics(
+                    {
+                        "provider": "geetest4",
+                        "challenge_type": "slider",
+                        "reason": "low_confidence",
+                        "attempts": attempts,
+                        "confidence": confidence,
+                    }
+                )
+
+                self.assertEqual(diagnostics["fields"]["attempts"], expected_attempts)
+                self.assertEqual(diagnostics["fields"]["confidence"], expected_confidence)
+
     def test_fetch_instance_3mf_logs_auto_verification_completion_once_after_signed_url(self):
         session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
         original_wait = legacy_archiver_module._wait_before_three_mf_download
