@@ -17,22 +17,9 @@ SLIDER_CONFIDENCE_MIN = 0.72
 SLIDER_MARGIN_MIN = 0.06
 
 _NORMALIZED_SIZE = 96
-_FORBIDDEN_PAYLOAD_KEYS = {
-    "auth",
-    "authorization",
-    "browser",
-    "browser_url",
-    "cookie",
-    "cookies",
-    "credential",
-    "credentials",
-    "headers",
-    "page_url",
-    "password",
-    "session",
-    "token",
-    "url",
-    "username",
+_REQUEST_FIELDS_BY_MODE = {
+    "click": {"mode", "target_png", "candidate_pngs"},
+    "slider": {"mode", "background_png", "piece_png", "geometry"},
 }
 
 
@@ -105,16 +92,16 @@ def _crop_mask(mask: np.ndarray) -> np.ndarray:
 def _normalize_mask(mask: np.ndarray, size: int = _NORMALIZED_SIZE) -> np.ndarray:
     cropped = _crop_mask(mask)
     height, width = cropped.shape
-    scale = min((size - 8) / max(height, width), 1.0)
+    scale = (size - 8) / max(height, width)
     scaled_width = max(1, int(round(width * scale)))
     scaled_height = max(1, int(round(height * scale)))
-    interpolation = cv2.INTER_AREA if scale <= 1.0 else cv2.INTER_LINEAR
+    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_NEAREST
     resized = cv2.resize(cropped, (scaled_width, scaled_height), interpolation=interpolation)
     canvas = np.zeros((size, size), dtype=np.uint8)
     offset_x = (size - scaled_width) // 2
     offset_y = (size - scaled_height) // 2
     canvas[offset_y:offset_y + scaled_height, offset_x:offset_x + scaled_width] = resized
-    return np.where(canvas > 0, 255, 0).astype(np.uint8)
+    return np.where(canvas > 127, 255, 0).astype(np.uint8)
 
 
 def _edge_mask(mask: np.ndarray) -> np.ndarray:
@@ -219,11 +206,13 @@ def solve_slider_challenge(background_png: bytes, piece_png: bytes, geometry: di
 def solve_request(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {"ok": False, "reason": "payload_invalid"}
-    forbidden_keys = _FORBIDDEN_PAYLOAD_KEYS.intersection(payload.keys())
-    if forbidden_keys:
-        return {"ok": False, "reason": "unsupported_fields"}
-
     mode = str(payload.get("mode") or "").strip().lower()
+    allowed_fields = _REQUEST_FIELDS_BY_MODE.get(mode)
+    if allowed_fields is None:
+        return {"ok": False, "reason": "mode_invalid"}
+    unknown_fields = set(payload.keys()) - allowed_fields
+    if unknown_fields:
+        return {"ok": False, "reason": "unsupported_fields"}
     try:
         if mode == "click":
             target_png = _decode_base64_png(payload.get("target_png"))
@@ -232,10 +221,8 @@ def solve_request(payload: dict[str, Any]) -> dict[str, Any]:
                 return {"ok": False, "reason": "candidate_count_invalid"}
             candidate_pngs = [_decode_base64_png(item) for item in candidate_values]
             return solve_click_challenge(target_png, candidate_pngs)
-        if mode == "slider":
-            background_png = _decode_base64_png(payload.get("background_png"))
-            piece_png = _decode_base64_png(payload.get("piece_png"))
-            return solve_slider_challenge(background_png, piece_png, payload.get("geometry"))
+        background_png = _decode_base64_png(payload.get("background_png"))
+        piece_png = _decode_base64_png(payload.get("piece_png"))
+        return solve_slider_challenge(background_png, piece_png, payload.get("geometry"))
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
-    return {"ok": False, "reason": "mode_invalid"}
