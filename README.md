@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.15.22`
+> 当前版本：`v0.15.23`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -114,6 +114,8 @@ services:
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
       MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
+      MAKERHUB_CLOAKBROWSER_IDLE_SECONDS: "${MAKERHUB_CLOAKBROWSER_IDLE_SECONDS:-1800}"
+      MAKERHUB_WORKER_RECYCLE_RSS_MIB: "${MAKERHUB_WORKER_RECYCLE_RSS_MIB:-2048}"
     volumes:
       - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
       - ${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data
@@ -348,6 +350,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-06 · v0.15.23
+
+- 暂停或验证受阻的归档队列改用空闲轮询，并阻止定时订阅继续扩大积压；手动同步和登录态修复仍可运行。
+- Worker 和本地整理进程会在空闲时释放大型内存缓存；Worker 完全无活跃任务且 RSS 超过阈值时自动重启回收内存。
+- CloakBrowser Manager 保持运行，国内站和国际站 profile 连续空闲 30 分钟后自动停止，下次使用时自动启动。
+
 ### 2026-08-03 · v0.15.22
 
 - 模型元数据变化或删除时只增量修复对应数据库索引，不再清空全库，首页模型总数保持稳定。
@@ -358,13 +366,13 @@ npm --prefix frontend run build
 - 修复缺失 3MF 探测遇到已下架或私有模型时归档 Worker 线程退出的问题；终止任务会正常完成并继续下一条探测。
 - Worker 启动时会立即恢复 gate 已打开的遗留暂停任务，不再受 10 分钟维护冷却影响。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-03 · v0.15.20
 
 - 修复跨版本旧批次在归档队列繁忙时仍显示“运行中 / 恢复中”的问题；周期检查会将核心状态和源端任务卡统一校正为“已暂停”并保留最新进度。
 - 旧版本遗留的“正在检测 3MF 下载权限”暂停队列会在账号 gate 已打开后自动恢复 1 条探测任务，不再永久停在排队状态。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-03 · v0.15.19
 

@@ -1594,6 +1594,12 @@ class RemoteRefreshManager:
             self._thread = threading.Thread(target=self._run_loop, name="makerhub-remote-refresh", daemon=True)
             self._thread.start()
 
+    def _has_active_work(self) -> bool:
+        if self._is_batch_running():
+            return True
+        state = self.task_store.load_remote_refresh_state()
+        return bool(state.get("running"))
+
     def state_payload(self) -> dict:
         return self._ensure_state(update_runtime_state=self.background_enabled)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -30,6 +31,8 @@ DEFAULT_TIMEOUT_SECONDS = 30
 AUTHORIZATION_TIMEOUT_SECONDS = 90
 AUTHORIZATION_BRIDGE_TIMEOUT_SECONDS = 150
 PROFILE_RECOVERY_COOLDOWN_SECONDS = 60
+CLOAKBROWSER_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_IDLE_SECONDS"
+DEFAULT_CLOAKBROWSER_IDLE_SECONDS = 30 * 60
 TRANSIENT_BRIDGE_ERROR_MARKERS = (
     "超时",
     "timeout",
@@ -385,6 +388,112 @@ def _update_profile_proxy(profile: CloakBrowserProfile, proxy: str) -> CloakBrow
 
 def _profile_resource_name(platform: str, profile_id: str = "") -> str:
     return f"cloakbrowser_platform_{normalize_platform(platform)}"
+
+
+def _profile_activity_path(platform: str) -> Path:
+    return STATE_DIR / "cloakbrowser_activity" / f"{normalize_platform(platform)}.marker"
+
+
+def touch_profile_activity(platform: str, *, now: float | None = None) -> None:
+    marker_path = _profile_activity_path(platform)
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.touch(exist_ok=True)
+        if now is not None:
+            os.utime(marker_path, (float(now), float(now)))
+    except OSError:
+        pass
+
+
+def profile_activity_at(platform: str) -> float:
+    try:
+        return float(_profile_activity_path(platform).stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def _clear_profile_activity(platform: str) -> None:
+    try:
+        _profile_activity_path(platform).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+@contextmanager
+def _profile_operation(platform: str, profile_id: str = "", *, detail: str):
+    clean_platform = normalize_platform(platform)
+    touch_profile_activity(clean_platform)
+    try:
+        with resource_slot(_profile_resource_name(clean_platform, profile_id), detail=detail):
+            touch_profile_activity(clean_platform)
+            yield
+    finally:
+        touch_profile_activity(clean_platform)
+
+
+def _cloakbrowser_idle_seconds(value: int | None = None) -> int:
+    raw = value if value is not None else os.getenv(CLOAKBROWSER_IDLE_SECONDS_ENV)
+    try:
+        return max(int(raw if raw not in (None, "") else DEFAULT_CLOAKBROWSER_IDLE_SECONDS), 0)
+    except (TypeError, ValueError):
+        return DEFAULT_CLOAKBROWSER_IDLE_SECONDS
+
+
+def _managed_profile_platform(payload: dict[str, Any]) -> str:
+    for platform in ("cn", "global"):
+        if _matches_managed_profile(payload, platform):
+            return platform
+    return ""
+
+
+def stop_idle_profiles(*, idle_seconds: int | None = None, now: float | None = None) -> dict[str, Any]:
+    timeout = _cloakbrowser_idle_seconds(idle_seconds)
+    result: dict[str, Any] = {
+        "idle_seconds": timeout,
+        "checked_count": 0,
+        "initialized_count": 0,
+        "stopped_count": 0,
+        "stopped_profiles": [],
+    }
+    if timeout <= 0 or not cloakbrowser_configured():
+        return result
+    current_time = float(now if now is not None else time.time())
+    try:
+        profiles = _request("GET", "/api/profiles")
+    except CloakBrowserError as exc:
+        result["error"] = str(exc)[:240]
+        return result
+    if not isinstance(profiles, list):
+        return result
+
+    for payload in profiles:
+        if not isinstance(payload, dict):
+            continue
+        profile = _profile_from_payload(payload)
+        platform = _managed_profile_platform(payload)
+        if profile is None or not platform or profile.status != "running":
+            continue
+        result["checked_count"] += 1
+        activity_at = profile_activity_at(platform)
+        if activity_at <= 0:
+            touch_profile_activity(platform, now=current_time)
+            result["initialized_count"] += 1
+            continue
+        if current_time - activity_at < timeout:
+            continue
+
+        with resource_slot(_profile_resource_name(platform, profile.id), detail="idle-stop"):
+            activity_at = profile_activity_at(platform)
+            if activity_at <= 0 or current_time - activity_at < timeout:
+                continue
+            current = _profile_from_payload(_request("GET", f"/api/profiles/{profile.id}"))
+            if current is None or current.status != "running":
+                continue
+            stop_profile(profile.id)
+            _clear_profile_activity(platform)
+            result["stopped_profiles"].append(profile.id)
+            result["stopped_count"] += 1
+    return result
 
 
 def _safe_bridge_env() -> dict[str, str]:
@@ -766,10 +875,7 @@ def browser_fetch(
     operation_timeout = max(min(operation_timeout, 180), 5)
     clean_profile_id = str(profile_id or "").strip()
 
-    with resource_slot(
-        _profile_resource_name(clean_platform, clean_profile_id),
-        detail="fetch",
-    ):
+    with _profile_operation(clean_platform, clean_profile_id, detail="fetch"):
         _profile, running, _launched_here = _ensure_running_profile(
             clean_platform,
             clean_profile_id,
@@ -870,7 +976,7 @@ def browser_authorize_3mf_download(
         raise CloakBrowserError("3MF 浏览器授权地址无效。")
     page_url = _browser_model_page_url(model_url, clean_platform, clean_instance_id)
 
-    with resource_slot(_profile_resource_name(clean_platform, clean_profile_id), detail="click"):
+    with _profile_operation(clean_platform, clean_profile_id, detail="click"):
         _profile, running, _launched_here = _ensure_running_profile(
             clean_platform,
             clean_profile_id,
@@ -912,7 +1018,7 @@ def synchronize_browser_session(
     stop_when_done: bool = True,
 ) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
-    with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="synchronize"):
+    with _profile_operation(clean_platform, profile_id, detail="synchronize"):
         _profile, running, launched_here = _ensure_running_profile(
             clean_platform,
             profile_id,
@@ -962,7 +1068,7 @@ def prepare_browser_login(
     proxy_config: ProxyConfig | dict[str, Any] | None = None,
 ) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
-    with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="prepare-login"):
+    with _profile_operation(clean_platform, profile_id, detail="prepare-login"):
         _profile, running, launched_here = _ensure_running_profile(
             clean_platform,
             profile_id,
@@ -994,7 +1100,7 @@ def prepare_browser_login(
 
 def collect_browser_session(platform: str, profile_id: str) -> CloakBrowserSessionResult:
     clean_platform = normalize_platform(platform)
-    with resource_slot(_profile_resource_name(clean_platform, profile_id), detail="collect"):
+    with _profile_operation(clean_platform, profile_id, detail="collect"):
         _profile, running, launched_here = _ensure_running_profile(clean_platform, profile_id)
         running, restarted, snapshot = _run_bridge_with_profile_recovery(
             clean_platform,

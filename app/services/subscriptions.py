@@ -743,6 +743,10 @@ class SubscriptionManager:
             self._thread = threading.Thread(target=self._run_loop, name="makerhub-subscriptions", daemon=True)
             self._thread.start()
 
+    def _has_active_work(self) -> bool:
+        with self._loop_lock:
+            return bool(self._running_id or self._cookie_source_sync_running)
+
     def list_payload(
         self,
         *,
@@ -2000,7 +2004,7 @@ class SubscriptionManager:
             state_payload = self.task_store.load_subscriptions_state()
             state_map = {str(item.get("id") or ""): item for item in state_payload.get("items") or []}
             now = _now()
-            due: list[tuple[float, SubscriptionRecord]] = []
+            due: list[tuple[float, bool, SubscriptionRecord]] = []
 
             for item in config.subscriptions:
                 state = state_map.get(item.id) or {}
@@ -2009,7 +2013,7 @@ class SubscriptionManager:
 
                 manual_requested_at = _parse_iso(str(state.get("manual_requested_at") or ""))
                 if manual_requested_at is not None:
-                    due.append((manual_requested_at.timestamp(), item))
+                    due.append((manual_requested_at.timestamp(), True, item))
                     continue
 
                 if not item.enabled:
@@ -2017,13 +2021,16 @@ class SubscriptionManager:
 
                 next_run_at = _parse_iso(str(state.get("next_run_at") or ""))
                 if next_run_at is None or next_run_at <= now:
-                    due.append(((next_run_at or now).timestamp(), item))
+                    due.append(((next_run_at or now).timestamp(), False, item))
 
             if not due:
                 return
 
             due.sort(key=lambda pair: pair[0])
-            target = due[0][1]
+            _due_at, manual_requested, target = due[0]
+            has_blocked_pending_tasks = getattr(self.archive_manager, "_has_blocked_pending_tasks", None)
+            if not manual_requested and callable(has_blocked_pending_tasks) and has_blocked_pending_tasks():
+                return
             self._running_id = target.id
             runner = threading.Thread(
                 target=self._run_subscription_sync,

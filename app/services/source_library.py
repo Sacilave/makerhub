@@ -2289,6 +2289,10 @@ class SourceLibraryManager:
             )
             self._thread.start()
 
+    def _has_active_work(self) -> bool:
+        with self._thread_lock:
+            return bool(self._thread and self._thread.is_alive())
+
     def _background_backfill(self) -> None:
         time.sleep(SOURCE_LIBRARY_BACKFILL_DELAY_SECONDS)
         try:

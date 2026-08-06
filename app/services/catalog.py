@@ -166,6 +166,23 @@ _DECORATED_MODELS_CACHE: dict[str, Any] = {
 }
 
 
+def release_catalog_memory() -> None:
+    with _ARCHIVE_SNAPSHOT_LOCK:
+        _ARCHIVE_SNAPSHOT_CACHE.update(
+            snapshot=None,
+            dirty=True,
+            dirty_reason="memory_release",
+            built_at=0.0,
+            marker_token="",
+        )
+    with _MODEL_DETAIL_CACHE_LOCK:
+        _MODEL_DETAIL_CACHE.clear()
+    with _SUBSCRIPTION_FLAGS_INDEX_LOCK:
+        _SUBSCRIPTION_FLAGS_INDEX_CACHE.update(signature=None, deleted_by_key={})
+    with _DECORATED_MODELS_LOCK:
+        _DECORATED_MODELS_CACHE.update(signature=None, all_models=(), visible_models=())
+
+
 def _read_archive_snapshot_marker() -> str:
     payload = load_database_json_state(_ARCHIVE_SNAPSHOT_MARKER_KEY, {})
     if isinstance(payload, dict):

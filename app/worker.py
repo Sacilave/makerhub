@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import uuid
+from typing import Callable
 
 from app.core.settings import APP_VERSION
 from app.services.self_update import (
@@ -29,9 +30,12 @@ if not WORKER_HEALTHCHECK_MODE:
         should_auto_rebuild_database_index,
     )
     from app.services.business_logs import append_business_log
+    from app.services.catalog import release_catalog_memory
+    from app.services.cloakbrowser_session import stop_idle_profiles
     from app.services.database_maintenance import run_database_maintenance_if_due
     from app.services.local_organizer import LocalOrganizerService
     from app.services.local_preview_worker import local_preview_queue_marker_mtime, run_local_preview_generation_once
+    from app.services.process_memory import process_rss_mib, release_process_memory
     from app.services.source_refresh import SourceRefreshTaskManager
     from app.services.source_library import SourceLibraryManager
     from app.services.subscriptions import SubscriptionManager
@@ -43,6 +47,69 @@ WORKER_IDLE_POLL_SECONDS = 15.0
 WORKER_HEARTBEAT_INTERVAL_SECONDS = 10.0
 LOCAL_PREVIEW_IDLE_POLL_SECONDS = 15 * 60
 ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS = 10 * 60
+WORKER_MEMORY_MAINTENANCE_INTERVAL_SECONDS = 5 * 60
+WORKER_RECYCLE_RSS_MIB_ENV = "MAKERHUB_WORKER_RECYCLE_RSS_MIB"
+DEFAULT_WORKER_RECYCLE_RSS_MIB = 2048
+CLOAKBROWSER_IDLE_CHECK_INTERVAL_SECONDS = 60
+
+
+def archive_queue_has_runnable_work(queue: dict) -> bool:
+    if int((queue or {}).get("running_count") or 0) > 0:
+        return True
+    if int((queue or {}).get("queued_count") or 0) <= 0:
+        return False
+    queued = (queue or {}).get("queued")
+    if not isinstance(queued, list) or not queued:
+        return True
+    return any(
+        str(item.get("status") or "queued").strip().lower() in {"", "queued", "pending"}
+        for item in queued
+        if isinstance(item, dict)
+    )
+
+
+def worker_recycle_rss_mib() -> int:
+    raw = str(os.environ.get(WORKER_RECYCLE_RSS_MIB_ENV) or DEFAULT_WORKER_RECYCLE_RSS_MIB).strip()
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return DEFAULT_WORKER_RECYCLE_RSS_MIB
+
+
+def worker_should_recycle(*, rss_mib: float, threshold_mib: int, activity: dict[str, bool]) -> bool:
+    return (
+        int(threshold_mib or 0) > 0
+        and float(rss_mib or 0.0) >= int(threshold_mib)
+        and not any(bool(value) for value in activity.values())
+    )
+
+
+def run_worker_memory_maintenance(
+    activity_loader: Callable[[], dict[str, bool]],
+    *,
+    threshold_mib: int | None = None,
+) -> dict:
+    result = {"recycle": False, "rss_mib": 0.0, "threshold_mib": 0, "error": ""}
+    try:
+        activity = activity_loader()
+        if any(bool(value) for value in activity.values()):
+            return result
+        release_catalog_memory()
+        release_process_memory()
+        rss_mib = process_rss_mib()
+        effective_threshold = worker_recycle_rss_mib() if threshold_mib is None else max(int(threshold_mib), 0)
+        result.update(
+            recycle=worker_should_recycle(
+                rss_mib=rss_mib,
+                threshold_mib=effective_threshold,
+                activity=activity,
+            ),
+            rss_mib=rss_mib,
+            threshold_mib=effective_threshold,
+        )
+    except Exception as exc:
+        result["error"] = str(exc)[:240]
+    return result
 
 
 def _run_database_maintenance() -> dict:
@@ -73,9 +140,7 @@ def _run_worker_heartbeat_loop(stop_event: threading.Event, start_token: str) ->
 
 
 def worker_poll_seconds(queue: dict, *, rebuild_running: bool) -> float:
-    queued_count = int((queue or {}).get("queued_count") or 0)
-    running_count = int((queue or {}).get("running_count") or 0)
-    if queued_count > 0 or running_count > 0 or rebuild_running:
+    if archive_queue_has_runnable_work(queue) or rebuild_running:
         return WORKER_POLL_SECONDS
     return WORKER_IDLE_POLL_SECONDS
 
@@ -195,8 +260,10 @@ def main() -> int:
     last_local_preview_marker_mtime = local_preview_queue_marker_mtime()
     local_preview_active = False
     last_account_cookie_poll = 0.0
+    last_cloakbrowser_idle_check = 0.0
     archive_model_index_rebuild_thread: threading.Thread | None = None
     next_poll_seconds = WORKER_POLL_SECONDS
+    last_memory_maintenance = 0.0
     try:
         while not stop_event.wait(next_poll_seconds):
             _run_database_maintenance()
@@ -211,6 +278,26 @@ def main() -> int:
                 rebuild_running=bool(archive_model_index_rebuild_status.get("running")),
             )
             now = time.monotonic()
+            if now - last_cloakbrowser_idle_check >= CLOAKBROWSER_IDLE_CHECK_INTERVAL_SECONDS:
+                last_cloakbrowser_idle_check = now
+                try:
+                    idle_result = stop_idle_profiles()
+                    if int(idle_result.get("stopped_count") or 0) > 0:
+                        append_business_log(
+                            "system",
+                            "cloakbrowser_idle_profiles_stopped",
+                            "已停止空闲的指纹浏览器 profile。",
+                            stopped_count=int(idle_result.get("stopped_count") or 0),
+                            stopped_profiles=list(idle_result.get("stopped_profiles") or []),
+                        )
+                except Exception as exc:
+                    append_business_log(
+                        "system",
+                        "cloakbrowser_idle_cleanup_failed",
+                        "指纹浏览器空闲 profile 清理失败。",
+                        level="warning",
+                        error=str(exc)[:240],
+                    )
             if now - last_account_cookie_poll >= ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS:
                 last_account_cookie_poll = now
                 try:
@@ -254,6 +341,43 @@ def main() -> int:
                         level="warning",
                         error=str(exc),
                     )
+            if now - last_memory_maintenance >= WORKER_MEMORY_MAINTENANCE_INTERVAL_SECONDS:
+                last_memory_maintenance = now
+
+                def _load_worker_activity() -> dict[str, bool]:
+                    organize_queue = task_store.load_organize_tasks()
+                    return {
+                        "archive": archive_queue_has_runnable_work(archive_queue),
+                        "subscription": subscription_manager._has_active_work(),
+                        "source_library": source_library_manager._has_active_work(),
+                        "source_refresh": remote_refresh_manager._has_active_work(),
+                        "organizer": bool(
+                            int(organize_queue.get("running_count") or 0)
+                            or int(organize_queue.get("queued_count") or 0)
+                        ),
+                        "index_rebuild": bool(archive_model_index_rebuild_status.get("running")),
+                        "preview": bool(local_preview_active),
+                    }
+
+                memory_result = run_worker_memory_maintenance(_load_worker_activity)
+                if memory_result.get("error"):
+                    append_business_log(
+                        "system",
+                        "worker_memory_maintenance_failed",
+                        "makerhub worker 空闲内存维护失败。",
+                        level="warning",
+                        error=str(memory_result.get("error") or "")[:240],
+                    )
+                if memory_result.get("recycle"):
+                    append_business_log(
+                        "system",
+                        "worker_idle_memory_recycle",
+                        "makerhub worker 空闲内存超过阈值，正在重启回收内存。",
+                        level="warning",
+                        rss_mib=float(memory_result.get("rss_mib") or 0.0),
+                        threshold_mib=int(memory_result.get("threshold_mib") or 0),
+                    )
+                    break
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=WORKER_HEARTBEAT_INTERVAL_SECONDS + 1)

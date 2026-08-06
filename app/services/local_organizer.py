@@ -26,6 +26,7 @@ from app.services.local_import_upload import (
     queue_local_path_package_import,
     run_queued_package_import_task,
 )
+from app.services.process_memory import release_process_memory
 from app.services.task_state import TaskStateStore
 
 
@@ -37,6 +38,7 @@ ORGANIZER_TASK_LIMIT = 50
 ORGANIZER_MAX_FILES_PER_CYCLE = 1
 ORGANIZER_WORKER_TIMEOUT_SECONDS = 20 * 60
 ORGANIZER_LIBRARY_INDEX_CACHE_TTL_SECONDS = 300
+ORGANIZER_MEMORY_RELEASE_INTERVAL_SECONDS = 5 * 60
 ORGANIZER_LIBRARY_INDEX_CACHE_PATH = STATE_DIR / "organizer_library_index.json"
 ORGANIZER_HASH_CHUNK_SIZE_BYTES = 512 * 1024
 ORGANIZER_HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
@@ -232,6 +234,7 @@ class LocalOrganizerService:
         self._library_index_cache_at = 0.0
         self._worker_started_at = 0.0
         self._last_worker_finished_at = 0.0
+        self._last_memory_release_at = 0.0
 
     def start(self) -> None:
         with self._start_lock:
@@ -306,7 +309,28 @@ class LocalOrganizerService:
                 self.run_once()
             except Exception as exc:
                 _append_organizer_log("loop_error", error=str(exc))
+            try:
+                self.release_idle_memory()
+            except Exception as exc:
+                _append_organizer_log("memory_release_error", error=str(exc))
             time.sleep(ORGANIZER_POLL_INTERVAL_SECONDS)
+
+    def release_idle_memory(self, *, force: bool = False) -> bool:
+        if self._worker_process and self._worker_process.poll() is None:
+            return False
+        now = time.monotonic()
+        if (
+            not force
+            and self._last_memory_release_at > 0
+            and now - self._last_memory_release_at < ORGANIZER_MEMORY_RELEASE_INTERVAL_SECONDS
+        ):
+            return False
+        self._last_memory_release_at = now
+        self._library_index_cache = None
+        self._library_index_cache_root = ""
+        self._library_index_cache_at = 0.0
+        release_process_memory()
+        return True
 
     def run_once(self) -> None:
         self._poll_worker()

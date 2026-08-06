@@ -4,6 +4,7 @@ import os
 import tempfile
 import time
 import unittest
+from contextlib import contextmanager, nullcontext
 from multiprocessing import get_context
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -38,6 +39,88 @@ def _hold_cloakbrowser_profile_slot(
 
 
 class CloakBrowserSessionTest(unittest.TestCase):
+    def test_stop_idle_profiles_only_stops_expired_running_profile(self):
+        profiles = [
+            {"id": "profile-cn", "name": "MakerHub CN", "status": "running"},
+            {"id": "profile-global", "name": "MakerHub Global", "status": "running"},
+            {"id": "profile-stopped", "name": "MakerHub CN", "status": "stopped"},
+        ]
+        now = 20_000.0
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir)), \
+                patch.dict(os.environ, {
+                    "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                }, clear=False), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_request") as request_mock, \
+                patch.object(cloakbrowser_session, "stop_profile") as stop_mock:
+            cloakbrowser_session.touch_profile_activity("cn", now=now - 1900)
+            cloakbrowser_session.touch_profile_activity("global", now=now - 60)
+            request_mock.side_effect = [
+                profiles,
+                {"id": "profile-cn", "name": "MakerHub CN", "status": "running"},
+            ]
+
+            result = cloakbrowser_session.stop_idle_profiles(idle_seconds=1800, now=now)
+
+            stopped_activity_at = cloakbrowser_session.profile_activity_at("cn")
+
+        self.assertEqual(result["stopped_count"], 1)
+        self.assertEqual(result["stopped_profiles"], ["profile-cn"])
+        self.assertEqual(stopped_activity_at, 0.0)
+        stop_mock.assert_called_once_with("profile-cn")
+
+    def test_stop_idle_profiles_initializes_missing_activity_before_considering_stop(self):
+        now = 20_000.0
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir)), \
+                patch.dict(os.environ, {
+                    "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                }, clear=False), \
+                patch.object(
+                    cloakbrowser_session,
+                    "_request",
+                    return_value=[{"id": "profile-cn", "name": "MakerHub CN", "status": "running"}],
+                ), \
+                patch.object(cloakbrowser_session, "stop_profile") as stop_mock:
+            result = cloakbrowser_session.stop_idle_profiles(idle_seconds=1800, now=now)
+
+            activity_at = cloakbrowser_session.profile_activity_at("cn")
+
+        self.assertEqual(result["initialized_count"], 1)
+        self.assertEqual(activity_at, now)
+        stop_mock.assert_not_called()
+
+    def test_stop_idle_profiles_rechecks_activity_after_waiting_for_profile_slot(self):
+        now = 20_000.0
+
+        @contextmanager
+        def busy_slot():
+            cloakbrowser_session.touch_profile_activity("cn", now=now)
+            yield
+
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir)), \
+                patch.dict(os.environ, {
+                    "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                }, clear=False), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=busy_slot()), \
+                patch.object(
+                    cloakbrowser_session,
+                    "_request",
+                    return_value=[{"id": "profile-cn", "name": "MakerHub CN", "status": "running"}],
+                ), \
+                patch.object(cloakbrowser_session, "stop_profile") as stop_mock:
+            cloakbrowser_session.touch_profile_activity("cn", now=now - 1900)
+
+            result = cloakbrowser_session.stop_idle_profiles(idle_seconds=1800, now=now)
+
+        self.assertEqual(result["stopped_count"], 0)
+        stop_mock.assert_not_called()
+
     def test_profile_resource_name_is_stable_before_and_after_profile_resolution(self):
         self.assertEqual(
             cloakbrowser_session._profile_resource_name("cn"),

@@ -42,6 +42,39 @@ class FakeTaskStore:
 
 
 class LocalOrganizerTest(unittest.TestCase):
+    def test_release_idle_memory_clears_library_index_cache(self):
+        service = local_organizer.LocalOrganizerService(
+            store=SimpleNamespace(),
+            task_store=FakeTaskStore(),
+        )
+        service._library_index_cache = {"models": {"model-1": {}}, "configs": {}}
+        service._library_index_cache_root = "/archive"
+        service._library_index_cache_at = 123.0
+
+        with patch.object(local_organizer, "release_process_memory") as release_memory:
+            released = service.release_idle_memory(force=True)
+
+        self.assertTrue(released)
+        self.assertIsNone(service._library_index_cache)
+        self.assertEqual(service._library_index_cache_root, "")
+        self.assertEqual(service._library_index_cache_at, 0.0)
+        release_memory.assert_called_once_with()
+
+    def test_release_idle_memory_keeps_cache_while_worker_is_running(self):
+        service = local_organizer.LocalOrganizerService(
+            store=SimpleNamespace(),
+            task_store=FakeTaskStore(),
+        )
+        service._library_index_cache = {"models": {"model-1": {}}, "configs": {}}
+        service._worker_process = SimpleNamespace(poll=lambda: None)
+
+        with patch.object(local_organizer, "release_process_memory") as release_memory:
+            released = service.release_idle_memory(force=True)
+
+        self.assertFalse(released)
+        self.assertIsNotNone(service._library_index_cache)
+        release_memory.assert_not_called()
+
     def test_sync_candidate_queue_moves_terminal_duplicate_source(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -17,6 +17,7 @@ from app.services.task_state import TaskStateStore
 class ArchiveManagerStub:
     def __init__(self):
         self.submitted_batches = []
+        self.blocked_pending = False
 
     def _queued_task_keys(self):
         return set()
@@ -27,6 +28,9 @@ class ArchiveManagerStub:
     def submit_discovered_batch(self, **kwargs):
         self.submitted_batches.append(kwargs)
         return {"accepted": True, "queued_count": 0}
+
+    def _has_blocked_pending_tasks(self):
+        return self.blocked_pending
 
 
 class SubscriptionManagerTest(unittest.TestCase):
@@ -238,6 +242,22 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertFalse(state["running"])
         self.assertEqual(state["status"], "success")
         self.assertEqual(state["next_run_at"], "2026-04-21T23:00:00+08:00")
+
+    def test_due_subscription_waits_while_archive_queue_has_only_blocked_tasks(self):
+        self.task_store.patch_subscription_state(
+            "sub-1",
+            status="pending",
+            running=False,
+            manual_requested_at="",
+            next_run_at=datetime.now().isoformat(),
+        )
+        self.archive_manager.blocked_pending = True
+
+        with patch.object(subscriptions.threading, "Thread") as thread_mock:
+            self.manager._maybe_launch_due_sync()
+
+        thread_mock.assert_not_called()
+        self.assertEqual(self.manager._running_id, "")
 
     def test_retry_error_subscriptions_for_platforms_only_queues_matching_errors(self):
         config = self.store.load()

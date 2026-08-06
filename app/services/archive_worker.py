@@ -3333,6 +3333,14 @@ class ArchiveTaskManager:
         self._last_pending_maintenance_at = time.monotonic()
         return queue
 
+    def _has_blocked_pending_tasks(self) -> bool:
+        queue = self.task_store.load_archive_queue()
+        return (
+            int(queue.get("running_count") or 0) <= 0
+            and int(queue.get("queued_count") or 0) > 0
+            and self._next_executable_task(queue) is None
+        )
+
     def _next_executable_task(self, queue: dict) -> Optional[dict]:
         queued = list(queue.get("queued") or [])
         for item in queued:
