@@ -1,4 +1,7 @@
 import base64
+import json
+import subprocess
+import sys
 import unittest
 
 import cv2
@@ -114,7 +117,7 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
                 "mode": "slider",
                 "background_png": base64.b64encode(b"not-a-png").decode("ascii"),
                 "piece_png": png_base64(symbol("triangle")),
-                "geometry": {"track_width": 320, "piece_width": 48},
+                "geometry": {"image_width": 320, "track_width": 280, "handle_width": 40},
             }
         )
         self.assertEqual(invalid_image_result, {"ok": False, "reason": "image_decode_failed"})
@@ -127,10 +130,75 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
                 result = solve_slider_challenge(background, piece, geometry)
                 self.assertEqual(result, {"ok": False, "reason": "geometry_invalid"})
 
-    def test_solve_slider_challenge_returns_placeholder_failure_for_valid_input(self):
+    def test_slider_returns_css_distance_after_image_scale_conversion(self):
+        background = np.full((160, 320, 3), 235, dtype=np.uint8)
+        piece = np.zeros((52, 52, 4), dtype=np.uint8)
+        cv2.rectangle(piece, (6, 6), (46, 46), (80, 80, 80, 255), -1)
+        cv2.rectangle(background, (206, 54), (246, 94), (150, 150, 150), 2)
+
+        result = solve_slider_challenge(
+            png_bytes(background),
+            png_bytes(piece),
+            {"image_width": 320, "track_width": 280, "handle_width": 40},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertAlmostEqual(result["distance_css"], 180, delta=6)
+        self.assertGreaterEqual(result["confidence"], 0.72)
+
+    def test_solve_slider_challenge_rejects_missing_or_out_of_range_required_geometry(self):
         result = solve_slider_challenge(
             png_bytes(symbol("square", size=128)),
             png_bytes(symbol("triangle", size=32)),
-            {"track_width": 320, "piece_width": 48, "piece_height": 48},
+            {"image_width": 320, "track_width": 280},
         )
-        self.assertEqual(result, {"ok": False, "reason": "slider_not_supported"})
+        self.assertEqual(result, {"ok": False, "reason": "geometry_invalid"})
+
+        for geometry in (
+            {"image_width": 7, "track_width": 280, "handle_width": 40},
+            {"image_width": 320, "track_width": 4097, "handle_width": 40},
+            {"image_width": 320, "track_width": 280, "handle_width": 7},
+        ):
+            with self.subTest(geometry=geometry):
+                result = solve_slider_challenge(
+                    png_bytes(symbol("square", size=128)),
+                    png_bytes(symbol("triangle", size=32)),
+                    geometry,
+                )
+                self.assertEqual(result, {"ok": False, "reason": "geometry_invalid"})
+
+    def test_solve_request_keeps_mode_specific_fields_restricted(self):
+        result = solve_request(
+            {
+                "mode": "click",
+                "target_png": png_base64(symbol("triangle")),
+                "candidate_pngs": [png_base64(symbol("triangle")), png_base64(symbol("circle"))],
+                "geometry": {"image_width": 320, "track_width": 280, "handle_width": 40},
+            }
+        )
+        self.assertEqual(result, {"ok": False, "reason": "unsupported_fields"})
+
+    def test_cli_rejects_secret_shaped_fields(self):
+        payload = {"mode": "slider", "cookie": "secret", "background_png": "", "piece_png": "", "geometry": {}}
+        completed = subprocess.run(
+            [sys.executable, "-m", "app.services.makerworld_captcha_vision"],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        output = json.loads(completed.stdout)
+        self.assertFalse(output["ok"])
+        self.assertEqual(output["reason"], "unsupported_fields")
+        self.assertNotIn("secret", completed.stdout + completed.stderr)
+
+    def test_cli_returns_exit_code_two_for_malformed_json(self):
+        completed = subprocess.run(
+            [sys.executable, "-m", "app.services.makerworld_captcha_vision"],
+            input="{",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(json.loads(completed.stdout), {"ok": False, "reason": "json_invalid"})
