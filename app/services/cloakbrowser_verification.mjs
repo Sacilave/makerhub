@@ -90,26 +90,37 @@ function abortable(promise, signal) {
   });
 }
 
-function cleanupOperation(promise) {
+function cleanupOperation(promise, deadline) {
+  const remaining = Math.max(0, deadline - Date.now());
+  if (remaining <= 0) return Promise.reject(new VerificationError("cleanup_failed"));
   let timer;
   return Promise.race([
     Promise.resolve(promise),
     new Promise((_resolve, reject) => {
-      timer = setTimeout(() => reject(new VerificationError("cleanup_failed")), CLEANUP_TIMEOUT_MS);
+      timer = setTimeout(() => reject(new VerificationError("cleanup_failed")), remaining);
     }),
   ]).finally(() => clearTimeout(timer));
 }
 
 function createStageSignal(timeoutMs, externalSignal) {
   const controller = new AbortController();
+  const startedAt = Date.now();
+  const cleanupBudget = Math.min(
+    CLEANUP_TIMEOUT_MS,
+    Math.max(1, Math.floor(timeoutMs * 0.25)),
+  );
+  const actionDeadline = startedAt + Math.max(1, timeoutMs - cleanupBudget);
+  const hardDeadline = startedAt + timeoutMs;
   const onExternalAbort = () => controller.abort(externalSignal.reason || new VerificationError("aborted"));
   if (externalSignal?.aborted) onExternalAbort();
   else externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
   const timer = setTimeout(() => {
     controller.abort(new VerificationError("timeout"));
-  }, timeoutMs);
+  }, Math.max(0, actionDeadline - Date.now()));
   return {
     signal: controller.signal,
+    actionDeadline,
+    hardDeadline,
     cleanup() {
       clearTimeout(timer);
       externalSignal?.removeEventListener("abort", onExternalAbort);
@@ -546,51 +557,80 @@ async function stableElementIdentity(handle, signal) {
   return identity;
 }
 
-async function hidePieceAndCaptureBackground(challenge, signal) {
-  let originalVisibility;
-  let hidden = false;
+async function hidePieceAndCaptureBackground(challenge, stage) {
+  const { signal, actionDeadline, hardDeadline } = stage;
+  const stateId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let pieceState;
   try {
     throwIfAborted(signal);
-    const hidePromise = challenge.piece.evaluate((element, action) => {
-      if (action !== "hide") return null;
+    pieceState = await abortable(challenge.piece.evaluate((element, state) => {
+      if (state?.action !== "hide" || Date.now() >= state.deadline) {
+        return { applied: false };
+      }
+      const previous = element.__makerHubVerificationPieceState;
+      if (previous) {
+        clearTimeout(previous.timer);
+        if (previous.value) {
+          element.style.setProperty("visibility", previous.value, previous.priority);
+        } else {
+          element.style.removeProperty("visibility");
+        }
+      }
       const original = {
+        id: state.id,
         value: element.style.getPropertyValue("visibility"),
         priority: element.style.getPropertyPriority("visibility"),
       };
+      const restore = () => {
+        const current = element.__makerHubVerificationPieceState;
+        if (!current || current.id !== state.id) return;
+        if (current.value) {
+          element.style.setProperty("visibility", current.value, current.priority);
+        } else {
+          element.style.removeProperty("visibility");
+        }
+        delete element.__makerHubVerificationPieceState;
+      };
       element.style.setProperty("visibility", "hidden", "important");
-      return original;
-    }, "hide");
-    try {
-      originalVisibility = await abortable(hidePromise, signal);
-    } catch (error) {
-      if (!signal?.aborted) throw error;
-      try {
-        originalVisibility = await cleanupOperation(hidePromise);
-        hidden = true;
-      } catch {
-        throw new VerificationError("piece_restore_failed");
-      }
-      throw error;
+      element.__makerHubVerificationPieceState = {
+        ...original,
+        timer: setTimeout(restore, Math.max(0, state.restoreAt - Date.now())),
+      };
+      return { applied: true, ...original };
+    }, {
+      action: "hide",
+      id: stateId,
+      deadline: actionDeadline,
+      restoreAt: actionDeadline,
+    }), signal);
+    if (!pieceState?.applied) {
+      throwIfAborted(signal);
+      throw new VerificationError("piece_hide_expired");
     }
-    hidden = true;
     return await screenshotBuffer(challenge.background, signal);
   } finally {
-    if (hidden) {
+    if (pieceState?.applied) {
       const restore = {
         action: "restore",
-        value: String(originalVisibility?.value || ""),
-        priority: String(originalVisibility?.priority || ""),
+        id: pieceState.id,
+        value: String(pieceState.value || ""),
+        priority: String(pieceState.priority || ""),
       };
       try {
         const restored = await cleanupOperation(challenge.piece.evaluate((element, state) => {
           if (state?.action !== "restore") return false;
-          if (state.value) {
-            element.style.setProperty("visibility", state.value, state.priority);
-          } else {
-            element.style.removeProperty("visibility");
+          const current = element.__makerHubVerificationPieceState;
+          if (current?.id === state.id) {
+            clearTimeout(current.timer);
+            if (state.value) {
+              element.style.setProperty("visibility", state.value, state.priority);
+            } else {
+              element.style.removeProperty("visibility");
+            }
+            delete element.__makerHubVerificationPieceState;
           }
           return true;
-        }, restore));
+        }, restore), hardDeadline);
         if (restored !== true) throw new Error("piece restore rejected");
       } catch {
         throw new VerificationError("piece_restore_failed");
@@ -599,11 +639,12 @@ async function hidePieceAndCaptureBackground(challenge, signal) {
   }
 }
 
-async function defaultFingerprintChallenge(challenge, { signal } = {}) {
+async function defaultFingerprintChallenge(challenge, stage = {}) {
+  const { signal } = stage;
   const hash = createHash("sha256");
   hash.update(`${challenge?.provider || "unknown"}:${challenge?.challenge_type || "unknown"}:`);
   if (challenge?.challenge_type === "slider") {
-    hash.update(await hidePieceAndCaptureBackground(challenge, signal));
+    hash.update(await hidePieceAndCaptureBackground(challenge, stage));
   } else {
     const handles = challenge?.challenge_type === "icon_click"
       ? [challenge.target, ...(challenge.candidates || [])]
@@ -630,7 +671,20 @@ async function defaultChallengeComplete(_page, challenge) {
   ]));
 }
 
-async function solveClickChallenge(challenge, visionRequest, signal) {
+async function guardedElementClick(handle, stage) {
+  const { signal, actionDeadline } = stage;
+  throwIfAborted(signal);
+  const clicked = await abortable(handle.evaluate((element, state) => {
+    if (state?.action !== "click" || Date.now() >= state.deadline) return false;
+    element.click();
+    return true;
+  }, { action: "click", deadline: actionDeadline }), signal);
+  throwIfAborted(signal);
+  if (clicked !== true) throw new VerificationError("click_expired");
+}
+
+async function solveClickChallenge(challenge, visionRequest, stage) {
+  const { signal } = stage;
   const targetPng = await screenshotBuffer(challenge.target, signal);
   const candidatePngs = await Promise.all(
     challenge.candidates.map((candidate) => screenshotBuffer(candidate, signal)),
@@ -644,14 +698,13 @@ async function solveClickChallenge(challenge, visionRequest, signal) {
   if (!result?.ok || !Number.isInteger(candidateIndex) || !challenge.candidates[candidateIndex]) {
     return { acted: false, reason: String(result?.reason || "vision_rejected"), confidence: result?.confidence };
   }
-  throwIfAborted(signal);
-  await abortable(challenge.candidates[candidateIndex].click(), signal);
-  throwIfAborted(signal);
+  await guardedElementClick(challenge.candidates[candidateIndex], stage);
   return { acted: true, confidence: result.confidence };
 }
 
-async function captureSliderImages(challenge, signal) {
-  const backgroundBuffer = await hidePieceAndCaptureBackground(challenge, signal);
+async function captureSliderImages(challenge, stage) {
+  const { signal } = stage;
+  const backgroundBuffer = await hidePieceAndCaptureBackground(challenge, stage);
   const pieceBuffer = await screenshotBuffer(challenge.piece, signal);
   return {
     backgroundBuffer,
@@ -659,11 +712,67 @@ async function captureSliderImages(challenge, signal) {
   };
 }
 
-async function solveSliderChallenge(page, challenge, options, visionRequest, signal) {
+async function createMouseDriver(page, stage) {
+  const { signal, actionDeadline, hardDeadline } = stage;
+  const sessionPromise = page.createCDPSession();
+  void sessionPromise.then((lateSession) => {
+    if (signal.aborted) return lateSession.detach().catch(() => undefined);
+    return undefined;
+  }, () => undefined);
+  const session = await abortable(sessionPromise, signal);
+  let x = 0;
+  let y = 0;
+  let mouseDown = false;
+
+  const send = async (params, cleanup = false) => {
+    const deadline = cleanup ? hardDeadline : actionDeadline;
+    if (Date.now() >= deadline) throw new VerificationError(cleanup ? "cleanup_failed" : "timeout");
+    const command = session.send(
+      "Input.dispatchMouseEvent",
+      params,
+      { timeout: Math.max(1, deadline - Date.now()) },
+    );
+    return cleanup
+      ? await cleanupOperation(command, deadline)
+      : await abortable(command, signal);
+  };
+
+  return {
+    async move(nextX, nextY) {
+      throwIfAborted(signal);
+      x = nextX;
+      y = nextY;
+      await send({
+        type: "mouseMoved",
+        x,
+        y,
+        buttons: mouseDown ? 1 : 0,
+        button: mouseDown ? "left" : "none",
+      });
+    },
+    async down() {
+      throwIfAborted(signal);
+      mouseDown = true;
+      await send({ type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+    },
+    async up(cleanup = false) {
+      if (!mouseDown) return;
+      await send({ type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, cleanup);
+      mouseDown = false;
+    },
+    async close() {
+      if (mouseDown) await this.up(true).catch(() => undefined);
+      await cleanupOperation(session.detach(), hardDeadline).catch(() => undefined);
+    },
+  };
+}
+
+async function solveSliderChallenge(page, challenge, options, visionRequest, stage) {
+  const { signal } = stage;
   const settled = await Promise.allSettled([
     abortable(challenge.handle.boundingBox(), signal),
     abortable(challenge.background.boundingBox(), signal),
-    captureSliderImages(challenge, signal),
+    captureSliderImages(challenge, stage),
   ]);
   const failed = settled.find((result) => result.status === "rejected");
   if (failed) throw failed.reason;
@@ -688,20 +797,18 @@ async function solveSliderChallenge(page, challenge, options, visionRequest, sig
   const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
   const startX = handleBox.x + (handleBox.width / 2);
   const startY = handleBox.y + (handleBox.height / 2);
-  let mouseDown = false;
+  const mouse = await createMouseDriver(page, stage);
   try {
-    throwIfAborted(signal);
-    await abortable(page.mouse.move(startX, startY), signal);
-    throwIfAborted(signal);
-    await abortable(page.mouse.down(), signal);
-    mouseDown = true;
+    await mouse.move(startX, startY);
+    await mouse.down();
     for (const point of buildDragTrajectory(distance, random)) {
       throwIfAborted(signal);
-      await abortable(page.mouse.move(startX + point.x, startY + point.y), signal);
+      await mouse.move(startX + point.x, startY + point.y);
       await abortable(sleep(Math.round(10 + (clampRandom(random) * 25))), signal);
     }
   } finally {
-    if (mouseDown) await cleanupOperation(page.mouse.up()).catch(() => undefined);
+    await mouse.up(signal.aborted).catch(() => undefined);
+    await mouse.close();
   }
   return { acted: true, confidence: result.confidence };
 }
@@ -726,7 +833,8 @@ async function turnstileResponseReady(page, challenge, options, signal) {
   return false;
 }
 
-async function waitForOutcome(page, challenge, fingerprint, options, signal) {
+async function waitForOutcome(page, challenge, fingerprint, options, stage) {
+  const { signal } = stage;
   const detect = options.detectChallenge || detectVerificationChallenge;
   const complete = options.isChallengeComplete || defaultChallengeComplete;
   const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
@@ -743,7 +851,7 @@ async function waitForOutcome(page, challenge, fingerprint, options, signal) {
     if (await abortable(complete(page, current), signal)) {
       return { completed: true, changed: false, challenge: current };
     }
-    const currentFingerprint = await abortable(fingerprintChallenge(current, { signal }), signal);
+    const currentFingerprint = await abortable(fingerprintChallenge(current, stage), signal);
     if (currentFingerprint !== fingerprint) {
       return { completed: false, changed: true, challenge: current };
     }
@@ -758,7 +866,8 @@ function failureReason(error, signal, fallback) {
   return String(error?.reason || fallback);
 }
 
-async function attemptWithinStage(page, options, signal) {
+async function attemptWithinStage(page, options, stage) {
+  const { signal } = stage;
   const detect = options.detectChallenge || detectVerificationChallenge;
   const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
   const visionRequest = options.visionRequest
@@ -797,27 +906,25 @@ async function attemptWithinStage(page, options, signal) {
           summary.reason = "completed";
           break;
         }
-        fingerprint = await abortable(fingerprintChallenge(challenge, { signal }), signal);
+        fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
         if (!challenge.checkbox || !await abortable(isVisible(challenge.checkbox), signal)) {
           summary.reason = "checkbox_unavailable";
           break;
         }
-        throwIfAborted(signal);
         summary.attempted = true;
         summary.attempts = attempt;
-        await abortable(challenge.checkbox.click(), signal);
-        throwIfAborted(signal);
+        await guardedElementClick(challenge.checkbox, stage);
         interaction = { acted: true };
       } else if (challenge.challenge_type === "icon_click") {
-        fingerprint = await abortable(fingerprintChallenge(challenge, { signal }), signal);
+        fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
         summary.attempted = true;
         summary.attempts = attempt;
-        interaction = await solveClickChallenge(challenge, visionRequest, signal);
+        interaction = await solveClickChallenge(challenge, visionRequest, stage);
       } else if (challenge.challenge_type === "slider") {
-        fingerprint = await abortable(fingerprintChallenge(challenge, { signal }), signal);
+        fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
         summary.attempted = true;
         summary.attempts = attempt;
-        interaction = await solveSliderChallenge(page, challenge, options, visionRequest, signal);
+        interaction = await solveSliderChallenge(page, challenge, options, visionRequest, stage);
       } else {
         interaction = { acted: false, reason: "challenge_unsupported" };
       }
@@ -835,7 +942,7 @@ async function attemptWithinStage(page, options, signal) {
 
     let outcome;
     try {
-      outcome = await waitForOutcome(page, challenge, fingerprint, options, signal);
+      outcome = await waitForOutcome(page, challenge, fingerprint, options, stage);
     } catch (error) {
       summary.reason = failureReason(error, signal, "outcome_failed");
       break;
@@ -868,7 +975,7 @@ export async function attemptAutomaticVerification(page, options = {}) {
   ));
   const stage = createStageSignal(timeoutMs, options.signal);
   try {
-    return await attemptWithinStage(page, options, stage.signal);
+    return await attemptWithinStage(page, options, stage);
   } finally {
     stage.cleanup();
   }

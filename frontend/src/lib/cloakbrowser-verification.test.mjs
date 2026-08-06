@@ -28,6 +28,15 @@ function fakeHandle({
     evaluate: evaluate || (async (_callback, argument) => {
       if (argument === "read-value") return value;
       if (argument === "fingerprint") return fingerprint;
+      if (argument?.action === "click") {
+        if (Date.now() >= argument.deadline) return false;
+        await click();
+        return true;
+      }
+      if (argument?.action === "hide") {
+        return { applied: true, id: argument.id, value: "", priority: "" };
+      }
+      if (argument?.action === "restore") return true;
       return visible;
     }),
     screenshot: async () => (typeof screenshot === "function" ? screenshot() : screenshot),
@@ -71,6 +80,23 @@ function fakeChild(onInput) {
     return true;
   };
   return child;
+}
+
+function fakeInputPage({ dispatch = async () => {}, detach = async () => {} } = {}) {
+  return {
+    mouse: {
+      move: async (x, y) => dispatch({ type: "mouseMoved", x, y }),
+      down: async () => dispatch({ type: "mousePressed" }),
+      up: async () => dispatch({ type: "mouseReleased" }),
+    },
+    createCDPSession: async () => ({
+      send: async (method, params) => {
+        assert.equal(method, "Input.dispatchMouseEvent");
+        return dispatch(params);
+      },
+      detach,
+    }),
+  };
 }
 
 function clickChallenge(click, id = "challenge-a") {
@@ -387,16 +413,15 @@ test("click verification clicks only the candidate selected by vision", async ()
 test("slider always releases the mouse and restores the piece after movement errors", async () => {
   const mouseEvents = [];
   const pieceStates = [];
-  const page = {
-    mouse: {
-      move: async () => {
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      if (type === "mouseMoved") {
         mouseEvents.push("move");
         if (mouseEvents.filter((event) => event === "move").length > 1) throw new Error("move failed");
-      },
-      down: async () => { mouseEvents.push("down"); },
-      up: async () => { mouseEvents.push("up"); },
+      } else if (type === "mousePressed") mouseEvents.push("down");
+      else if (type === "mouseReleased") mouseEvents.push("up");
     },
-  };
+  });
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
@@ -406,7 +431,14 @@ test("slider always releases the mouse and restores the piece after movement err
       box: { x: 50, y: 20, width: 30, height: 30 },
       evaluate: async (_callback, action) => {
         pieceStates.push(action?.action || action);
-        if (action === "hide") return { value: "collapse", priority: "important" };
+        if (action?.action === "hide") {
+          return {
+            applied: true,
+            id: action.id,
+            value: "collapse",
+            priority: "important",
+          };
+        }
         return true;
       },
     }),
@@ -429,13 +461,11 @@ test("slider always releases the mouse and restores the piece after movement err
 test("slider geometry uses PNG pixels while dragging in CSS pixels", async () => {
   let visionPayload;
   const moves = [];
-  const page = {
-    mouse: {
-      move: async (x, y) => { moves.push({ x, y }); },
-      down: async () => {},
-      up: async () => {},
+  const page = fakeInputPage({
+    dispatch: async ({ type, x, y }) => {
+      if (type === "mouseMoved") moves.push({ x, y });
     },
-  };
+  });
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
@@ -447,7 +477,9 @@ test("slider geometry uses PNG pixels while dragging in CSS pixels", async () =>
     piece: fakeHandle({
       screenshot: pngBuffer(60, 60),
       evaluate: async (_callback, action) => (
-        action === "hide" ? { value: "", priority: "" } : true
+        action?.action === "hide"
+          ? { applied: true, id: action.id, value: "", priority: "" }
+          : true
       ),
     }),
   };
@@ -491,16 +523,63 @@ test("timed out vision results never trigger a late click", async () => {
   assert.equal(clicks, 0);
 });
 
+test("a started hanging candidate click cannot mutate after the hard deadline", async () => {
+  let clicks = 0;
+  const challenge = clickChallenge(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    clicks += 1;
+  });
+  challenge.candidates[1].evaluate = async (_callback, argument) => {
+    if (argument === "fingerprint") return "challenge-a:candidate-1";
+    if (argument?.action === "click") {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      if (Date.now() >= argument.deadline) return false;
+      clicks += 1;
+      return true;
+    }
+    return true;
+  };
+  const result = await attemptAutomaticVerification({}, {
+    detectChallenge: async () => challenge,
+    visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
+    timeoutMs: 10,
+  });
+
+  assert.equal(result.reason, "timeout");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(clicks, 0);
+});
+
+test("a hanging screenshot cannot start vision or click after return", async () => {
+  let screenshots = 0;
+  let visionCalls = 0;
+  let clicks = 0;
+  const challenge = clickChallenge(async () => { clicks += 1; });
+  challenge.target.screenshot = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    screenshots += 1;
+    return pngBuffer(40, 40);
+  };
+  const result = await attemptAutomaticVerification({}, {
+    detectChallenge: async () => challenge,
+    visionRequest: async () => {
+      visionCalls += 1;
+      return { ok: true, candidate_index: 1, confidence: 0.9 };
+    },
+    timeoutMs: 10,
+  });
+
+  assert.equal(result.reason, "timeout");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(screenshots, 1);
+  assert.equal(visionCalls, 0);
+  assert.equal(clicks, 0);
+});
+
 test("timed out slider vision never starts a late drag", async () => {
   let resolveVision;
   let mouseEvents = 0;
-  const page = {
-    mouse: {
-      move: async () => { mouseEvents += 1; },
-      down: async () => { mouseEvents += 1; },
-      up: async () => { mouseEvents += 1; },
-    },
-  };
+  const page = fakeInputPage({ dispatch: async () => { mouseEvents += 1; } });
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
@@ -508,7 +587,9 @@ test("timed out slider vision never starts a late drag", async () => {
     background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
     piece: fakeHandle({
       evaluate: async (_callback, action) => (
-        action === "hide" ? { value: "", priority: "" } : true
+        action?.action === "hide"
+          ? { applied: true, id: action.id, value: "", priority: "" }
+          : true
       ),
     }),
   };
@@ -524,6 +605,44 @@ test("timed out slider vision never starts a late drag", async () => {
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(result.reason, "timeout");
+  assert.equal(mouseEvents, 0);
+});
+
+test("a hanging CDP mouse command is detached before it can interact late", async () => {
+  let detached = false;
+  let mouseEvents = 0;
+  const page = fakeInputPage({
+    dispatch: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      if (!detached) mouseEvents += 1;
+    },
+    detach: async () => { detached = true; },
+  });
+  const challenge = {
+    provider: "geetest4",
+    challenge_type: "slider",
+    handle: fakeHandle(),
+    background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
+    piece: fakeHandle({
+      evaluate: async (_callback, action) => (
+        action?.action === "hide"
+          ? { applied: true, id: action.id, value: "", priority: "" }
+          : true
+      ),
+    }),
+  };
+  const startedAt = Date.now();
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "slider-cdp-hang",
+    visionRequest: async () => ({ ok: true, distance_css: 100, confidence: 0.9 }),
+    timeoutMs: 20,
+  });
+
+  assert.equal(result.reason, "timeout");
+  assert.ok(Date.now() - startedAt <= 60);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(detached, true);
   assert.equal(mouseEvents, 0);
 });
 
@@ -548,7 +667,7 @@ test("total timeout aborts and kills the active Python child", async () => {
 
 test("slider timeout restores the exact piece visibility before returning", async () => {
   const pieceStates = [];
-  const page = { mouse: { move: async () => {}, down: async () => {}, up: async () => {} } };
+  const page = fakeInputPage();
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
@@ -556,11 +675,20 @@ test("slider timeout restores the exact piece visibility before returning", asyn
     background: fakeHandle({ screenshot: () => new Promise(() => {}) }),
     piece: fakeHandle({
       evaluate: async (_callback, action) => {
-        if (action === "hide") {
+        if (action?.action === "hide") {
           pieceStates.push("hide");
-          return { value: "collapse", priority: "important" };
+          return {
+            applied: true,
+            id: action.id,
+            value: "collapse",
+            priority: "important",
+          };
         }
-        pieceStates.push(action);
+        pieceStates.push({
+          action: action.action,
+          value: action.value,
+          priority: action.priority,
+        });
         return true;
       },
     }),
@@ -579,9 +707,10 @@ test("slider timeout restores the exact piece visibility before returning", asyn
   ]);
 });
 
-test("timeout during piece hide waits for the late hide and restores before returning", async () => {
-  const pieceStates = [];
-  const page = { mouse: { move: async () => {}, down: async () => {}, up: async () => {} } };
+test("piece hide completing after the cleanup budget cannot mutate visibility", async () => {
+  let visibility = "visible";
+  let mutations = 0;
+  const page = fakeInputPage();
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
@@ -590,38 +719,44 @@ test("timeout during piece hide waits for the late hide and restores before retu
     piece: fakeHandle({
       evaluate: async (_callback, action) => {
         if (action === "hide") {
-          await new Promise((resolve) => setTimeout(resolve, 20));
-          pieceStates.push("hide");
+          await new Promise((resolve) => setTimeout(resolve, 1050));
+          visibility = "hidden";
+          mutations += 1;
           return { value: "visible", priority: "important" };
         }
-        pieceStates.push(action);
+        if (action?.action === "hide") {
+          await new Promise((resolve) => setTimeout(resolve, 1050));
+          if (Date.now() >= action.deadline) return false;
+          visibility = "hidden";
+          mutations += 1;
+          return { applied: true, value: "visible", priority: "important" };
+        }
+        if (action?.action === "restore") {
+          visibility = action.value || "";
+          mutations += 1;
+        }
         return true;
       },
     }),
   };
 
+  const startedAt = Date.now();
   const result = await attemptAutomaticVerification(page, {
     detectChallenge: async () => challenge,
     fingerprintChallenge: async () => "slider-hide-timeout",
-    timeoutMs: 5,
+    timeoutMs: 20,
   });
 
   assert.equal(result.reason, "timeout");
-  assert.deepEqual(pieceStates, [
-    "hide",
-    { action: "restore", value: "visible", priority: "important" },
-  ]);
+  assert.ok(Date.now() - startedAt <= 60);
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(visibility, "visible");
+  assert.equal(mutations, 0);
 });
 
 test("piece restoration failure returns a controlled result and never drags", async () => {
   let mouseEvents = 0;
-  const page = {
-    mouse: {
-      move: async () => { mouseEvents += 1; },
-      down: async () => { mouseEvents += 1; },
-      up: async () => { mouseEvents += 1; },
-    },
-  };
+  const page = fakeInputPage({ dispatch: async () => { mouseEvents += 1; } });
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
@@ -629,7 +764,9 @@ test("piece restoration failure returns a controlled result and never drags", as
     background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
     piece: fakeHandle({
       evaluate: async (_callback, action) => {
-        if (action === "hide") return { value: "", priority: "" };
+        if (action?.action === "hide") {
+          return { applied: true, id: action.id, value: "", priority: "" };
+        }
         throw new Error("detached");
       },
     }),
@@ -690,13 +827,12 @@ test("a genuinely new click challenge permits exactly one second interaction", a
 test("slider piece movement does not trigger a second drag", async () => {
   let drags = 0;
   let moved = false;
-  const page = {
-    mouse: {
-      move: async () => {},
-      down: async () => { drags += 1; },
-      up: async () => { moved = true; },
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      if (type === "mousePressed") drags += 1;
+      if (type === "mouseReleased") moved = true;
     },
-  };
+  });
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
@@ -705,7 +841,9 @@ test("slider piece movement does not trigger a second drag", async () => {
     piece: fakeHandle({
       screenshot: () => pngBuffer(40, 40, moved ? 2 : 1),
       evaluate: async (_callback, action) => (
-        action === "hide" ? { value: "", priority: "" } : true
+        action?.action === "hide"
+          ? { applied: true, id: action.id, value: "", priority: "" }
+          : true
       ),
     }),
   };
@@ -758,6 +896,40 @@ test("Turnstile clicks at most once per attempt without calling vision", async (
   assert.equal(result.completed, true);
   assert.equal(clicks, 1);
   assert.equal(visionCalls, 0);
+});
+
+test("a started hanging Turnstile click cannot mutate after the hard deadline", async () => {
+  let clicks = 0;
+  const checkbox = fakeHandle({ fingerprint: "turnstile-checkbox" });
+  checkbox.click = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    clicks += 1;
+  };
+  checkbox.evaluate = async (_callback, argument) => {
+    if (argument === "fingerprint") return "turnstile-checkbox";
+    if (argument?.action === "click") {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      if (Date.now() >= argument.deadline) return false;
+      clicks += 1;
+      return true;
+    }
+    return true;
+  };
+  const challenge = {
+    provider: "turnstile",
+    challenge_type: "checkbox",
+    checkbox,
+    response: fakeHandle({ value: "" }),
+  };
+  const result = await attemptAutomaticVerification({}, {
+    detectChallenge: async () => challenge,
+    turnstileResponseWaitMs: 0,
+    timeoutMs: 10,
+  });
+
+  assert.equal(result.reason, "timeout");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(clicks, 0);
 });
 
 test("Turnstile passive token completion does not count as an interaction", async () => {
