@@ -16,7 +16,8 @@ function fakeHandle({
   box = { x: 10, y: 20, width: 40, height: 40 },
   visible = true,
   value = "",
-  screenshot = Buffer.from("png"),
+  screenshot = pngBuffer(40, 40),
+  fingerprint = null,
   one = () => null,
   many = () => [],
   click = async () => {},
@@ -26,13 +27,25 @@ function fakeHandle({
     boundingBox: async () => box,
     evaluate: evaluate || (async (_callback, argument) => {
       if (argument === "read-value") return value;
+      if (argument === "fingerprint") return fingerprint;
       return visible;
     }),
-    screenshot: async () => screenshot,
+    screenshot: async () => (typeof screenshot === "function" ? screenshot() : screenshot),
     $: async (selector) => one(selector),
     $$: async (selector) => many(selector),
     click,
   };
+}
+
+function pngBuffer(width, height = 40, marker = 0) {
+  const buffer = Buffer.alloc(32);
+  Buffer.from("89504e470d0a1a0a", "hex").copy(buffer, 0);
+  buffer.writeUInt32BE(13, 8);
+  buffer.write("IHDR", 12, "ascii");
+  buffer.writeUInt32BE(width, 16);
+  buffer.writeUInt32BE(height, 20);
+  buffer.writeUInt32BE(marker, 24);
+  return buffer;
 }
 
 function fakeFrame({ one = () => null, many = () => [], label = "frame" } = {}) {
@@ -60,12 +73,16 @@ function fakeChild(onInput) {
   return child;
 }
 
-function clickChallenge(click) {
+function clickChallenge(click, id = "challenge-a") {
   return {
     provider: "geetest4",
     challenge_type: "icon_click",
-    target: fakeHandle(),
-    candidates: [fakeHandle(), fakeHandle({ click }), fakeHandle()],
+    target: fakeHandle({ fingerprint: `${id}:target` }),
+    candidates: [
+      fakeHandle({ fingerprint: `${id}:candidate-0` }),
+      fakeHandle({ click, fingerprint: `${id}:candidate-1` }),
+      fakeHandle({ fingerprint: `${id}:candidate-2` }),
+    ],
   };
 }
 
@@ -156,18 +173,45 @@ test("vision request kills a timed out child", async () => {
   assert.equal(child.killed, true);
 });
 
-test("vision request caps output and does not expose stderr", async () => {
-  let overflowChild;
+test("vision request caps stdout and stderr independently", async () => {
+  let stdoutOverflowChild;
   await assert.rejects(
     runVisionRequest({ mode: "click", target_png: "a", candidate_pngs: ["b", "c"] }, {
       spawnFn: () => {
-        overflowChild = fakeChild((child) => child.stdout.write(Buffer.alloc(64 * 1024 + 1)));
-        return overflowChild;
+        stdoutOverflowChild = fakeChild((child) => child.stdout.write(Buffer.alloc(64 * 1024 + 1)));
+        return stdoutOverflowChild;
       },
     }),
     /output limit/,
   );
-  assert.equal(overflowChild.killed, true);
+  assert.equal(stdoutOverflowChild.killed, true);
+
+  let stderrOverflowChild;
+  await assert.rejects(
+    runVisionRequest({ mode: "click", target_png: "a", candidate_pngs: ["b", "c"] }, {
+      spawnFn: () => {
+        stderrOverflowChild = fakeChild((child) => child.stderr.write(Buffer.alloc(64 * 1024 + 1)));
+        return stderrOverflowChild;
+      },
+    }),
+    /output limit/,
+  );
+  assert.equal(stderrOverflowChild.killed, true);
+
+  const result = await runVisionRequest(
+    { mode: "click", target_png: "a", candidate_pngs: ["b", "c"] },
+    {
+      spawnFn: () => fakeChild((child) => {
+        child.stderr.write(Buffer.alloc(64 * 1024));
+        child.stdout.end('{"ok":true}');
+        child.emit("close", 0, null);
+      }),
+    },
+  );
+  assert.equal(result.ok, true);
+});
+
+test("vision request does not expose stderr", async () => {
 
   await assert.rejects(
     runVisionRequest({ mode: "click", target_png: "a", candidate_pngs: ["b", "c"] }, {
@@ -238,7 +282,7 @@ test("challenge discovery finds bounded slider fallbacks and ignores hidden cont
   const container = fakeHandle({
     one: (selector) => {
       if (selector.includes("slider_button") || selector.includes("geetest_btn")) return hiddenHandle;
-      if (selector.includes("[class*='slider']")) return sliderHandle;
+      if (selector.includes("[class*='slider'][class*='handle']")) return sliderHandle;
       if (selector.includes("geetest_bg")) return sliderBackground;
       if (selector.includes("geetest_slice")) return sliderPiece;
       return null;
@@ -252,6 +296,25 @@ test("challenge discovery finds bounded slider fallbacks and ignores hidden cont
   assert.equal(challenge.handle, sliderHandle);
   assert.equal(challenge.background, sliderBackground);
   assert.equal(challenge.piece, sliderPiece);
+});
+
+test("challenge discovery rejects a generic slider container as the drag handle", async () => {
+  const sliderContainer = fakeHandle({ box: { x: 10, y: 10, width: 300, height: 120 } });
+  const sliderBackground = fakeHandle({ box: { x: 10, y: 10, width: 300, height: 120 } });
+  const sliderPiece = fakeHandle();
+  const container = fakeHandle({
+    one: (selector) => {
+      if (selector === "[class*='slider']") return sliderContainer;
+      if (selector.includes("geetest_bg")) return sliderBackground;
+      if (selector.includes("geetest_slice")) return sliderPiece;
+      return null;
+    },
+  });
+  const frame = fakeFrame({ one: (selector) => (selector.includes("geetest") ? container : null) });
+
+  const challenge = await detectVerificationChallenge({ mainFrame: () => frame, frames: () => [frame] });
+
+  assert.equal(challenge, null);
 });
 
 test("challenge discovery recognizes visible Cloudflare iframe or a populated response", async () => {
@@ -342,7 +405,8 @@ test("slider always releases the mouse and restores the piece after movement err
     piece: fakeHandle({
       box: { x: 50, y: 20, width: 30, height: 30 },
       evaluate: async (_callback, action) => {
-        pieceStates.push(action);
+        pieceStates.push(action?.action || action);
+        if (action === "hide") return { value: "collapse", priority: "important" };
         return true;
       },
     }),
@@ -362,12 +426,257 @@ test("slider always releases the mouse and restores the piece after movement err
   assert.deepEqual(pieceStates, ["hide", "restore"]);
 });
 
-test("provider attempts stop at two and require a changed fingerprint", async () => {
+test("slider geometry uses PNG pixels while dragging in CSS pixels", async () => {
+  let visionPayload;
+  const moves = [];
+  const page = {
+    mouse: {
+      move: async (x, y) => { moves.push({ x, y }); },
+      down: async () => {},
+      up: async () => {},
+    },
+  };
+  const challenge = {
+    provider: "geetest4",
+    challenge_type: "slider",
+    handle: fakeHandle({ box: { x: 10, y: 30, width: 40, height: 40 } }),
+    background: fakeHandle({
+      box: { x: 20, y: 10, width: 300, height: 120 },
+      screenshot: pngBuffer(600, 240),
+    }),
+    piece: fakeHandle({
+      screenshot: pngBuffer(60, 60),
+      evaluate: async (_callback, action) => (
+        action === "hide" ? { value: "", priority: "" } : true
+      ),
+    }),
+  };
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "slider-dpr",
+    isChallengeComplete: async () => true,
+    visionRequest: async (payload) => {
+      visionPayload = payload;
+      return { ok: true, distance_css: 120, confidence: 0.92 };
+    },
+    random: () => 0.5,
+    sleep: async () => {},
+  });
+
+  assert.equal(result.completed, true);
+  assert.deepEqual(visionPayload.geometry, {
+    image_width: 600,
+    track_width: 300,
+    handle_width: 40,
+  });
+  assert.equal(moves.at(-1).x, 150);
+});
+
+test("timed out vision results never trigger a late click", async () => {
+  let resolveVision;
   let clicks = 0;
   const challenge = clickChallenge(async () => { clicks += 1; });
+  const verification = attemptAutomaticVerification({}, {
+    detectChallenge: async () => challenge,
+    visionRequest: async () => new Promise((resolve) => { resolveVision = resolve; }),
+    timeoutMs: 10,
+  });
+
+  const result = await verification;
+  resolveVision({ ok: true, candidate_index: 1, confidence: 0.9 });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(result.reason, "timeout");
+  assert.equal(clicks, 0);
+});
+
+test("timed out slider vision never starts a late drag", async () => {
+  let resolveVision;
+  let mouseEvents = 0;
+  const page = {
+    mouse: {
+      move: async () => { mouseEvents += 1; },
+      down: async () => { mouseEvents += 1; },
+      up: async () => { mouseEvents += 1; },
+    },
+  };
+  const challenge = {
+    provider: "geetest4",
+    challenge_type: "slider",
+    handle: fakeHandle(),
+    background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
+    piece: fakeHandle({
+      evaluate: async (_callback, action) => (
+        action === "hide" ? { value: "", priority: "" } : true
+      ),
+    }),
+  };
+  const verification = attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "slider-late",
+    visionRequest: async () => new Promise((resolve) => { resolveVision = resolve; }),
+    timeoutMs: 10,
+  });
+
+  const result = await verification;
+  resolveVision({ ok: true, distance_css: 100, confidence: 0.9 });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(result.reason, "timeout");
+  assert.equal(mouseEvents, 0);
+});
+
+test("total timeout aborts and kills the active Python child", async () => {
+  let child;
+  const challenge = clickChallenge(async () => {});
   const result = await attemptAutomaticVerification({}, {
     detectChallenge: async () => challenge,
-    fingerprintChallenge: async () => `fingerprint-${clicks}`,
+    visionRequest: (payload, { signal }) => runVisionRequest(payload, {
+      signal,
+      spawnFn: () => {
+        child = fakeChild(() => {});
+        return child;
+      },
+    }),
+    timeoutMs: 10,
+  });
+
+  assert.equal(result.reason, "timeout");
+  assert.equal(child.killed, true);
+});
+
+test("slider timeout restores the exact piece visibility before returning", async () => {
+  const pieceStates = [];
+  const page = { mouse: { move: async () => {}, down: async () => {}, up: async () => {} } };
+  const challenge = {
+    provider: "geetest4",
+    challenge_type: "slider",
+    handle: fakeHandle(),
+    background: fakeHandle({ screenshot: () => new Promise(() => {}) }),
+    piece: fakeHandle({
+      evaluate: async (_callback, action) => {
+        if (action === "hide") {
+          pieceStates.push("hide");
+          return { value: "collapse", priority: "important" };
+        }
+        pieceStates.push(action);
+        return true;
+      },
+    }),
+  };
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "slider-timeout",
+    timeoutMs: 10,
+  });
+
+  assert.equal(result.reason, "timeout");
+  assert.deepEqual(pieceStates, [
+    "hide",
+    { action: "restore", value: "collapse", priority: "important" },
+  ]);
+});
+
+test("timeout during piece hide waits for the late hide and restores before returning", async () => {
+  const pieceStates = [];
+  const page = { mouse: { move: async () => {}, down: async () => {}, up: async () => {} } };
+  const challenge = {
+    provider: "geetest4",
+    challenge_type: "slider",
+    handle: fakeHandle(),
+    background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
+    piece: fakeHandle({
+      evaluate: async (_callback, action) => {
+        if (action === "hide") {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          pieceStates.push("hide");
+          return { value: "visible", priority: "important" };
+        }
+        pieceStates.push(action);
+        return true;
+      },
+    }),
+  };
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "slider-hide-timeout",
+    timeoutMs: 5,
+  });
+
+  assert.equal(result.reason, "timeout");
+  assert.deepEqual(pieceStates, [
+    "hide",
+    { action: "restore", value: "visible", priority: "important" },
+  ]);
+});
+
+test("piece restoration failure returns a controlled result and never drags", async () => {
+  let mouseEvents = 0;
+  const page = {
+    mouse: {
+      move: async () => { mouseEvents += 1; },
+      down: async () => { mouseEvents += 1; },
+      up: async () => { mouseEvents += 1; },
+    },
+  };
+  const challenge = {
+    provider: "geetest4",
+    challenge_type: "slider",
+    handle: fakeHandle(),
+    background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
+    piece: fakeHandle({
+      evaluate: async (_callback, action) => {
+        if (action === "hide") return { value: "", priority: "" };
+        throw new Error("detached");
+      },
+    }),
+  };
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "slider-restore",
+    visionRequest: async () => ({ ok: true, distance_css: 100, confidence: 0.9 }),
+  });
+
+  assert.equal(result.reason, "piece_restore_failed");
+  assert.equal(mouseEvents, 0);
+});
+
+test("candidate selected styling does not trigger a second interaction", async () => {
+  let clicks = 0;
+  let selected = false;
+  const challenge = clickChallenge(async () => {
+    clicks += 1;
+    selected = true;
+  });
+  challenge.candidates[1].screenshot = async () => pngBuffer(40, 40, selected ? 2 : 1);
+  const result = await attemptAutomaticVerification({}, {
+    detectChallenge: async () => challenge,
+    isChallengeComplete: async () => false,
+    visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
+    sleep: async () => {},
+    postInteractionTimeoutMs: 5,
+  });
+
+  assert.equal(clicks, 1);
+  assert.equal(result.attempts, 1);
+  assert.equal(result.completed, false);
+});
+
+test("a genuinely new click challenge permits exactly one second interaction", async () => {
+  let active = "a";
+  let clicks = 0;
+  const challengeA = clickChallenge(async () => {
+    clicks += 1;
+    active = "b";
+  }, "challenge-a");
+  const challengeB = clickChallenge(async () => { clicks += 1; }, "challenge-b");
+
+  const result = await attemptAutomaticVerification({}, {
+    detectChallenge: async () => (active === "a" ? challengeA : challengeB),
     isChallengeComplete: async () => false,
     visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
     sleep: async () => {},
@@ -376,19 +685,42 @@ test("provider attempts stop at two and require a changed fingerprint", async ()
 
   assert.equal(clicks, 2);
   assert.equal(result.attempts, 2);
-  assert.equal(result.completed, false);
+});
 
-  clicks = 0;
-  const unchanged = await attemptAutomaticVerification({}, {
+test("slider piece movement does not trigger a second drag", async () => {
+  let drags = 0;
+  let moved = false;
+  const page = {
+    mouse: {
+      move: async () => {},
+      down: async () => { drags += 1; },
+      up: async () => { moved = true; },
+    },
+  };
+  const challenge = {
+    provider: "geetest4",
+    challenge_type: "slider",
+    handle: fakeHandle(),
+    background: fakeHandle({ screenshot: pngBuffer(300, 120, 7) }),
+    piece: fakeHandle({
+      screenshot: () => pngBuffer(40, 40, moved ? 2 : 1),
+      evaluate: async (_callback, action) => (
+        action === "hide" ? { value: "", priority: "" } : true
+      ),
+    }),
+  };
+
+  const result = await attemptAutomaticVerification(page, {
     detectChallenge: async () => challenge,
-    fingerprintChallenge: async () => "same-fingerprint",
     isChallengeComplete: async () => false,
-    visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
+    visionRequest: async () => ({ ok: true, distance_css: 100, confidence: 0.9 }),
+    random: () => 0.5,
     sleep: async () => {},
     postInteractionTimeoutMs: 5,
   });
-  assert.equal(clicks, 1);
-  assert.equal(unchanged.attempts, 1);
+
+  assert.equal(drags, 1);
+  assert.equal(result.attempts, 1);
 });
 
 test("automatic verification reports the total-stage timeout", async () => {
@@ -426,4 +758,23 @@ test("Turnstile clicks at most once per attempt without calling vision", async (
   assert.equal(result.completed, true);
   assert.equal(clicks, 1);
   assert.equal(visionCalls, 0);
+});
+
+test("Turnstile passive token completion does not count as an interaction", async () => {
+  let clicks = 0;
+  const challenge = {
+    provider: "turnstile",
+    challenge_type: "checkbox",
+    checkbox: fakeHandle({ click: async () => { clicks += 1; } }),
+    response: fakeHandle({ value: "completed-token", box: null }),
+  };
+
+  const result = await attemptAutomaticVerification({}, {
+    detectChallenge: async () => challenge,
+  });
+
+  assert.equal(result.completed, true);
+  assert.equal(result.attempted, false);
+  assert.equal(result.attempts, 0);
+  assert.equal(clicks, 0);
 });

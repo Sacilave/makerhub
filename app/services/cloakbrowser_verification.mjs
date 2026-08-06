@@ -7,6 +7,7 @@ export const AUTO_VERIFY_TIMEOUT_MS = 50_000;
 export const VISION_TIMEOUT_MS = 8_000;
 
 const MAX_VISION_OUTPUT_BYTES = 64 * 1024;
+const CLEANUP_TIMEOUT_MS = 1_000;
 const DEFAULT_OUTCOME_WAIT_MS = 4_000;
 const DEFAULT_TURNSTILE_WAIT_MS = 500;
 const POLL_INTERVAL_MS = 100;
@@ -31,7 +32,9 @@ const SLIDER_HANDLE_SELECTORS = [
   ".geetest_slider_button",
   ".geetest_btn",
   "[class*='slider_button']",
-  "[class*='slider']",
+  "[class*='slider'][class*='handle']",
+  "[role='slider']",
+  "[role='button'][class*='slider']",
 ];
 const SLIDER_BACKGROUND_SELECTORS = [
   ".geetest_bg",
@@ -58,16 +61,60 @@ function clampRandom(random) {
   return Number.isFinite(value) ? Math.max(0, Math.min(value, 1)) : 0.5;
 }
 
-function withinDeadline(promise, deadline) {
-  const remaining = deadline - Date.now();
-  if (remaining <= 0) return Promise.reject(new Error("automatic verification timed out"));
+class VerificationError extends Error {
+  constructor(reason) {
+    super(reason);
+    this.reason = reason;
+  }
+}
+
+function abortError(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new VerificationError("aborted");
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function abortable(promise, signal) {
+  if (!signal) return Promise.resolve(promise);
+  if (signal.aborted) return Promise.reject(abortError(signal));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(promise).then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+function cleanupOperation(promise) {
   let timer;
   return Promise.race([
-    promise,
+    Promise.resolve(promise),
     new Promise((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error("automatic verification timed out")), remaining);
+      timer = setTimeout(() => reject(new VerificationError("cleanup_failed")), CLEANUP_TIMEOUT_MS);
     }),
   ]).finally(() => clearTimeout(timer));
+}
+
+function createStageSignal(timeoutMs, externalSignal) {
+  const controller = new AbortController();
+  const onExternalAbort = () => controller.abort(externalSignal.reason || new VerificationError("aborted"));
+  if (externalSignal?.aborted) onExternalAbort();
+  else externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+  const timer = setTimeout(() => {
+    controller.abort(new VerificationError("timeout"));
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+    },
+  };
 }
 
 export function buildDragTrajectory(distance, random = Math.random) {
@@ -137,12 +184,14 @@ function cleanVisionPayload(payload) {
 
 export function runVisionRequest(payload, options = {}) {
   const spawnFn = options.spawnFn || spawn;
+  const signal = options.signal;
   const requestedTimeout = Number(options.timeoutMs || VISION_TIMEOUT_MS);
   const timeoutMs = Math.max(1, Math.min(
     Number.isFinite(requestedTimeout) ? requestedTimeout : VISION_TIMEOUT_MS,
     VISION_TIMEOUT_MS,
   ));
 
+  if (signal?.aborted) return Promise.reject(abortError(signal));
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -157,30 +206,41 @@ export function runVisionRequest(payload, options = {}) {
     }
 
     const stdout = [];
-    let outputBytes = 0;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let settled = false;
-    const cleanup = () => clearTimeout(timer);
+    let timer;
+    const onAbort = () => fail("vision process aborted", true);
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
     const fail = (message, kill = false) => {
       if (settled) return;
       settled = true;
       cleanup();
-      if (kill && !child.killed) child.kill("SIGKILL");
+      if (kill && !child.killed) {
+        try {
+          child.kill("SIGKILL");
+        } catch {}
+      }
       reject(new Error(message));
     };
-    const collect = (chunks, chunk) => {
+    const collect = (stream, chunks, chunk) => {
       if (settled) return;
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      outputBytes += buffer.length;
-      if (outputBytes > MAX_VISION_OUTPUT_BYTES) {
+      if (stream === "stdout") stdoutBytes += buffer.length;
+      else stderrBytes += buffer.length;
+      if (stdoutBytes > MAX_VISION_OUTPUT_BYTES || stderrBytes > MAX_VISION_OUTPUT_BYTES) {
         fail("vision process output limit exceeded", true);
         return;
       }
       if (chunks) chunks.push(buffer);
     };
-    const timer = setTimeout(() => fail("vision process timed out", true), timeoutMs);
+    timer = setTimeout(() => fail("vision process timed out", true), timeoutMs);
 
-    child.stdout.on("data", (chunk) => collect(stdout, chunk));
-    child.stderr.on("data", (chunk) => collect(null, chunk));
+    child.stdout.on("data", (chunk) => collect("stdout", stdout, chunk));
+    child.stderr.on("data", (chunk) => collect("stderr", null, chunk));
     child.on("error", () => fail("vision process unavailable"));
     child.stdin.on("error", () => fail("vision process input failed", true));
     child.on("close", (code) => {
@@ -205,7 +265,16 @@ export function runVisionRequest(payload, options = {}) {
       resolve(result);
     });
 
-    child.stdin.end(JSON.stringify(cleanVisionPayload(payload)));
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      child.stdin.end(JSON.stringify(cleanVisionPayload(payload)));
+    } catch {
+      fail("vision process input failed", true);
+    }
   });
 }
 
@@ -259,6 +328,26 @@ async function firstVisible(root, selectors) {
     if (await isVisible(handle)) return handle;
   }
   return null;
+}
+
+async function isPlausibleSliderHandle(handle, background) {
+  try {
+    const [handleBox, backgroundBox] = await Promise.all([
+      handle.boundingBox(),
+      background.boundingBox(),
+    ]);
+    if (!handleBox || !backgroundBox) return false;
+    const handleCenterY = handleBox.y + (handleBox.height / 2);
+    const maximumWidth = Math.min(96, backgroundBox.width * 0.4);
+    return handleBox.width <= maximumWidth
+      && handleBox.height <= Math.max(80, backgroundBox.height)
+      && handleBox.x <= backgroundBox.x + (backgroundBox.width * 0.35)
+      && handleBox.x + handleBox.width >= backgroundBox.x - (backgroundBox.width * 0.1)
+      && handleCenterY >= backgroundBox.y - (backgroundBox.height * 0.25)
+      && handleCenterY <= backgroundBox.y + (backgroundBox.height * 1.25);
+  } catch {
+    return false;
+  }
 }
 
 async function visibleCandidates(root) {
@@ -327,10 +416,10 @@ export async function detectVerificationChallenge(page) {
     const containers = await geetestContainers(frame);
     for (const container of containers) {
       if (!await isVisible(container)) continue;
-      const handle = await firstVisible(container, SLIDER_HANDLE_SELECTORS);
       const background = await firstVisible(container, SLIDER_BACKGROUND_SELECTORS);
       const piece = await firstVisible(container, SLIDER_PIECE_SELECTORS);
-      if (handle && background && piece) {
+      const handle = background ? await firstVisible(container, SLIDER_HANDLE_SELECTORS) : null;
+      if (handle && background && piece && await isPlausibleSliderHandle(handle, background)) {
         return {
           provider: "geetest4",
           challenge_type: "slider",
@@ -371,30 +460,163 @@ export async function detectVerificationChallenge(page) {
   return null;
 }
 
-async function screenshotBase64(handle) {
-  const buffer = await handle.screenshot({ type: "png" });
-  if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error("empty challenge screenshot");
-  return buffer.toString("base64");
+async function screenshotBuffer(handle, signal) {
+  throwIfAborted(signal);
+  const output = await abortable(handle.screenshot({ type: "png" }), signal);
+  throwIfAborted(signal);
+  const buffer = Buffer.isBuffer(output)
+    ? output
+    : output instanceof Uint8Array
+      ? Buffer.from(output)
+      : null;
+  if (!buffer?.length) throw new VerificationError("empty_screenshot");
+  return buffer;
 }
 
-async function defaultFingerprintChallenge(challenge) {
-  const hash = createHash("sha256");
-  hash.update(`${challenge?.provider || "unknown"}:${challenge?.challenge_type || "unknown"}:`);
-  const handles = challenge?.challenge_type === "icon_click"
-    ? [challenge.target, ...(challenge.candidates || [])]
-    : challenge?.challenge_type === "slider"
-      ? [challenge.background, challenge.piece]
-      : [challenge?.checkbox, challenge?.iframe].filter(Boolean);
-  for (const handle of handles) {
+function pngPixelWidth(buffer) {
+  const signature = "89504e470d0a1a0a";
+  if (
+    !Buffer.isBuffer(buffer)
+    || buffer.length < 24
+    || buffer.subarray(0, 8).toString("hex") !== signature
+    || buffer.readUInt32BE(8) !== 13
+    || buffer.subarray(12, 16).toString("ascii") !== "IHDR"
+  ) {
+    throw new VerificationError("image_format_invalid");
+  }
+  const width = buffer.readUInt32BE(16);
+  if (width < 1 || width > 32768) throw new VerificationError("image_width_invalid");
+  return width;
+}
+
+async function stableElementIdentity(handle, signal) {
+  throwIfAborted(signal);
+  let identity;
+  try {
+    identity = await abortable(handle.evaluate((element, action) => {
+      if (action !== "fingerprint") return null;
+      const media = element.matches?.("img, canvas, svg")
+        ? element
+        : element.querySelector?.("img, canvas, svg");
+      if (!media) {
+        const background = window.getComputedStyle(element).backgroundImage;
+        const fallback = {
+          kind: "element",
+          challenge: element.getAttribute?.("data-challenge") || "",
+          source: element.getAttribute?.("data-src") || element.getAttribute?.("data-original") || "",
+          background: background === "none" ? "" : background,
+          text: String(element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200),
+        };
+        return fallback.challenge || fallback.source || fallback.background || fallback.text
+          ? fallback
+          : null;
+      }
+      const tag = String(media.tagName || "").toLowerCase();
+      if (tag === "img") {
+        return {
+          kind: "img",
+          source: media.currentSrc || media.getAttribute("src") || "",
+          sourceSet: media.getAttribute("srcset") || "",
+          width: Number(media.naturalWidth || 0),
+          height: Number(media.naturalHeight || 0),
+        };
+      }
+      if (tag === "canvas") {
+        return {
+          kind: "canvas",
+          content: media.toDataURL("image/png"),
+          width: Number(media.width || 0),
+          height: Number(media.height || 0),
+        };
+      }
+      const clone = media.cloneNode(true);
+      for (const node of [clone, ...clone.querySelectorAll("*")]) {
+        node.removeAttribute("class");
+        node.removeAttribute("style");
+        node.removeAttribute("aria-selected");
+        node.removeAttribute("aria-checked");
+      }
+      return { kind: "svg", content: clone.outerHTML };
+    }, "fingerprint"), signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+  throwIfAborted(signal);
+  return identity;
+}
+
+async function hidePieceAndCaptureBackground(challenge, signal) {
+  let originalVisibility;
+  let hidden = false;
+  try {
+    throwIfAborted(signal);
+    const hidePromise = challenge.piece.evaluate((element, action) => {
+      if (action !== "hide") return null;
+      const original = {
+        value: element.style.getPropertyValue("visibility"),
+        priority: element.style.getPropertyPriority("visibility"),
+      };
+      element.style.setProperty("visibility", "hidden", "important");
+      return original;
+    }, "hide");
     try {
-      const buffer = await handle.screenshot({ type: "png" });
-      if (Buffer.isBuffer(buffer)) hash.update(buffer);
-    } catch {
-      const bounds = await handle?.boundingBox?.().catch(() => null);
-      hash.update(JSON.stringify(bounds || null));
+      originalVisibility = await abortable(hidePromise, signal);
+    } catch (error) {
+      if (!signal?.aborted) throw error;
+      try {
+        originalVisibility = await cleanupOperation(hidePromise);
+        hidden = true;
+      } catch {
+        throw new VerificationError("piece_restore_failed");
+      }
+      throw error;
+    }
+    hidden = true;
+    return await screenshotBuffer(challenge.background, signal);
+  } finally {
+    if (hidden) {
+      const restore = {
+        action: "restore",
+        value: String(originalVisibility?.value || ""),
+        priority: String(originalVisibility?.priority || ""),
+      };
+      try {
+        const restored = await cleanupOperation(challenge.piece.evaluate((element, state) => {
+          if (state?.action !== "restore") return false;
+          if (state.value) {
+            element.style.setProperty("visibility", state.value, state.priority);
+          } else {
+            element.style.removeProperty("visibility");
+          }
+          return true;
+        }, restore));
+        if (restored !== true) throw new Error("piece restore rejected");
+      } catch {
+        throw new VerificationError("piece_restore_failed");
+      }
     }
   }
-  if (challenge?.response) hash.update(await elementValue(challenge.response));
+}
+
+async function defaultFingerprintChallenge(challenge, { signal } = {}) {
+  const hash = createHash("sha256");
+  hash.update(`${challenge?.provider || "unknown"}:${challenge?.challenge_type || "unknown"}:`);
+  if (challenge?.challenge_type === "slider") {
+    hash.update(await hidePieceAndCaptureBackground(challenge, signal));
+  } else {
+    const handles = challenge?.challenge_type === "icon_click"
+      ? [challenge.target, ...(challenge.candidates || [])]
+      : [challenge?.checkbox, challenge?.iframe].filter(Boolean);
+    for (const handle of handles) {
+      const identity = await stableElementIdentity(handle, signal);
+      if (identity) hash.update(JSON.stringify(identity));
+      else hash.update(await screenshotBuffer(handle, signal));
+    }
+  }
+  if (challenge?.response) {
+    hash.update(await abortable(elementValue(challenge.response), signal));
+  }
   return hash.digest("hex");
 }
 
@@ -408,59 +630,55 @@ async function defaultChallengeComplete(_page, challenge) {
   ]));
 }
 
-async function solveClickChallenge(challenge, visionRequest) {
-  const result = await visionRequest({
+async function solveClickChallenge(challenge, visionRequest, signal) {
+  const targetPng = await screenshotBuffer(challenge.target, signal);
+  const candidatePngs = await Promise.all(
+    challenge.candidates.map((candidate) => screenshotBuffer(candidate, signal)),
+  );
+  const result = await abortable(visionRequest({
     mode: "click",
-    target_png: await screenshotBase64(challenge.target),
-    candidate_pngs: await Promise.all(challenge.candidates.map(screenshotBase64)),
-  });
+    target_png: targetPng.toString("base64"),
+    candidate_pngs: candidatePngs.map((buffer) => buffer.toString("base64")),
+  }, { signal }), signal);
   const candidateIndex = Number(result?.candidate_index);
   if (!result?.ok || !Number.isInteger(candidateIndex) || !challenge.candidates[candidateIndex]) {
     return { acted: false, reason: String(result?.reason || "vision_rejected"), confidence: result?.confidence };
   }
-  await challenge.candidates[candidateIndex].click();
+  throwIfAborted(signal);
+  await abortable(challenge.candidates[candidateIndex].click(), signal);
+  throwIfAborted(signal);
   return { acted: true, confidence: result.confidence };
 }
 
-async function captureSliderImages(challenge) {
-  let backgroundPng;
-  try {
-    await challenge.piece.evaluate((element, action) => {
-      if (action !== "hide") return;
-      element.__makerHubPreviousVisibility = element.style.visibility;
-      element.style.visibility = "hidden";
-    }, "hide");
-    backgroundPng = await screenshotBase64(challenge.background);
-  } finally {
-    await challenge.piece.evaluate((element, action) => {
-      if (action !== "restore") return;
-      element.style.visibility = element.__makerHubPreviousVisibility || "";
-      delete element.__makerHubPreviousVisibility;
-    }, "restore").catch(() => undefined);
-  }
+async function captureSliderImages(challenge, signal) {
+  const backgroundBuffer = await hidePieceAndCaptureBackground(challenge, signal);
+  const pieceBuffer = await screenshotBuffer(challenge.piece, signal);
   return {
-    backgroundPng,
-    piecePng: await screenshotBase64(challenge.piece),
+    backgroundBuffer,
+    pieceBuffer,
   };
 }
 
-async function solveSliderChallenge(page, challenge, options, visionRequest, deadline) {
-  const [handleBox, backgroundBox, images] = await withinDeadline(Promise.all([
-    challenge.handle.boundingBox(),
-    challenge.background.boundingBox(),
-    captureSliderImages(challenge),
-  ]), deadline);
+async function solveSliderChallenge(page, challenge, options, visionRequest, signal) {
+  const settled = await Promise.allSettled([
+    abortable(challenge.handle.boundingBox(), signal),
+    abortable(challenge.background.boundingBox(), signal),
+    captureSliderImages(challenge, signal),
+  ]);
+  const failed = settled.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
+  const [handleBox, backgroundBox, images] = settled.map((result) => result.value);
   if (!handleBox || !backgroundBox) return { acted: false, reason: "slider_geometry_invalid" };
-  const result = await withinDeadline(visionRequest({
+  const result = await abortable(visionRequest({
     mode: "slider",
-    background_png: images.backgroundPng,
-    piece_png: images.piecePng,
+    background_png: images.backgroundBuffer.toString("base64"),
+    piece_png: images.pieceBuffer.toString("base64"),
     geometry: {
-      image_width: backgroundBox.width,
+      image_width: pngPixelWidth(images.backgroundBuffer),
       track_width: backgroundBox.width,
       handle_width: handleBox.width,
     },
-  }), deadline);
+  }, { signal }), signal);
   const distance = Number(result?.distance_css);
   if (!result?.ok || !Number.isFinite(distance) || distance < 0) {
     return { acted: false, reason: String(result?.reason || "vision_rejected"), confidence: result?.confidence };
@@ -470,82 +688,87 @@ async function solveSliderChallenge(page, challenge, options, visionRequest, dea
   const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
   const startX = handleBox.x + (handleBox.width / 2);
   const startY = handleBox.y + (handleBox.height / 2);
+  let mouseDown = false;
   try {
-    await withinDeadline(page.mouse.move(startX, startY), deadline);
-    await withinDeadline(page.mouse.down(), deadline);
+    throwIfAborted(signal);
+    await abortable(page.mouse.move(startX, startY), signal);
+    throwIfAborted(signal);
+    await abortable(page.mouse.down(), signal);
+    mouseDown = true;
     for (const point of buildDragTrajectory(distance, random)) {
-      await withinDeadline(page.mouse.move(startX + point.x, startY + point.y), deadline);
-      await withinDeadline(sleep(Math.round(10 + (clampRandom(random) * 25))), deadline);
+      throwIfAborted(signal);
+      await abortable(page.mouse.move(startX + point.x, startY + point.y), signal);
+      await abortable(sleep(Math.round(10 + (clampRandom(random) * 25))), signal);
     }
   } finally {
-    await withinDeadline(page.mouse.up(), deadline).catch(() => undefined);
+    if (mouseDown) await cleanupOperation(page.mouse.up()).catch(() => undefined);
   }
   return { acted: true, confidence: result.confidence };
 }
 
-async function turnstileResponseReady(page, challenge, options, deadline) {
+async function turnstileResponseReady(page, challenge, options, signal) {
   const complete = options.isChallengeComplete || defaultChallengeComplete;
   const waitMs = Math.max(0, Math.min(
     Number(options.turnstileResponseWaitMs ?? DEFAULT_TURNSTILE_WAIT_MS) || 0,
-    Math.max(0, deadline - Date.now()),
+    AUTO_VERIFY_TIMEOUT_MS,
   ));
   const waitDeadline = Date.now() + waitMs;
   do {
-    if (await withinDeadline(complete(page, challenge), deadline)) return true;
+    if (await abortable(complete(page, challenge), signal)) return true;
     if (Date.now() >= waitDeadline) break;
-    await withinDeadline(
+    await abortable(
       (options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay))))(
         Math.min(POLL_INTERVAL_MS, waitDeadline - Date.now()),
       ),
-      deadline,
+      signal,
     );
   } while (Date.now() <= waitDeadline);
   return false;
 }
 
-async function waitForOutcome(page, challenge, fingerprint, options, deadline) {
+async function waitForOutcome(page, challenge, fingerprint, options, signal) {
   const detect = options.detectChallenge || detectVerificationChallenge;
   const complete = options.isChallengeComplete || defaultChallengeComplete;
   const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
   const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
   const requestedWait = Number(options.postInteractionTimeoutMs ?? DEFAULT_OUTCOME_WAIT_MS);
-  const waitDeadline = Math.min(deadline, Date.now() + Math.max(0, requestedWait || 0));
+  const waitDeadline = Date.now() + Math.max(0, requestedWait || 0);
 
   do {
-    if (await withinDeadline(complete(page, challenge), deadline)) {
+    if (await abortable(complete(page, challenge), signal)) {
       return { completed: true, changed: false, challenge };
     }
-    const current = await withinDeadline(detect(page), deadline);
+    const current = await abortable(detect(page), signal);
     if (!current) return { completed: false, changed: false, challenge: null };
-    if (await withinDeadline(complete(page, current), deadline)) {
+    if (await abortable(complete(page, current), signal)) {
       return { completed: true, changed: false, challenge: current };
     }
-    const currentFingerprint = await withinDeadline(fingerprintChallenge(current), deadline);
+    const currentFingerprint = await abortable(fingerprintChallenge(current, { signal }), signal);
     if (currentFingerprint !== fingerprint) {
       return { completed: false, changed: true, challenge: current };
     }
     if (Date.now() >= waitDeadline) break;
-    await withinDeadline(sleep(Math.min(POLL_INTERVAL_MS, waitDeadline - Date.now())), deadline);
+    await abortable(sleep(Math.min(POLL_INTERVAL_MS, waitDeadline - Date.now())), signal);
   } while (Date.now() <= waitDeadline);
   return { completed: false, changed: false, challenge };
 }
 
-export async function attemptAutomaticVerification(page, options = {}) {
-  const requestedTimeout = Number(options.timeoutMs ?? AUTO_VERIFY_TIMEOUT_MS);
-  const timeoutMs = Math.max(1, Math.min(
-    Number.isFinite(requestedTimeout) ? requestedTimeout : AUTO_VERIFY_TIMEOUT_MS,
-    AUTO_VERIFY_TIMEOUT_MS,
-  ));
-  const deadline = Date.now() + timeoutMs;
+function failureReason(error, signal, fallback) {
+  if (signal.aborted) return String(signal.reason?.reason || "aborted");
+  return String(error?.reason || fallback);
+}
+
+async function attemptWithinStage(page, options, signal) {
   const detect = options.detectChallenge || detectVerificationChallenge;
   const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
-  const visionRequest = options.visionRequest || ((payload) => runVisionRequest(payload));
+  const visionRequest = options.visionRequest
+    || ((payload, requestOptions) => runVisionRequest(payload, requestOptions));
   let challenge;
   try {
-    challenge = await withinDeadline(detect(page), deadline);
-  } catch {
+    challenge = await abortable(detect(page), signal);
+  } catch (error) {
     return sanitizeVerificationResult({
-      reason: Date.now() >= deadline ? "timeout" : "discovery_failed",
+      reason: failureReason(error, signal, "discovery_failed"),
     });
   }
   if (!challenge) {
@@ -561,42 +784,45 @@ export async function attemptAutomaticVerification(page, options = {}) {
     reason: "",
   };
   for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
-    if (Date.now() >= deadline) {
-      summary.reason = "timeout";
+    if (signal.aborted) {
+      summary.reason = failureReason(null, signal, "aborted");
       break;
     }
     let fingerprint;
-    try {
-      fingerprint = await withinDeadline(fingerprintChallenge(challenge), deadline);
-    } catch {
-      summary.reason = Date.now() >= deadline ? "timeout" : "fingerprint_failed";
-      break;
-    }
-    summary.attempted = true;
-    summary.attempts = attempt;
     let interaction;
     try {
       if (challenge.provider === "turnstile") {
-        if (await turnstileResponseReady(page, challenge, options, deadline)) {
+        if (await turnstileResponseReady(page, challenge, options, signal)) {
           summary.completed = true;
           summary.reason = "completed";
           break;
         }
-        if (!challenge.checkbox || !await withinDeadline(isVisible(challenge.checkbox), deadline)) {
+        fingerprint = await abortable(fingerprintChallenge(challenge, { signal }), signal);
+        if (!challenge.checkbox || !await abortable(isVisible(challenge.checkbox), signal)) {
           summary.reason = "checkbox_unavailable";
           break;
         }
-        await withinDeadline(challenge.checkbox.click(), deadline);
+        throwIfAborted(signal);
+        summary.attempted = true;
+        summary.attempts = attempt;
+        await abortable(challenge.checkbox.click(), signal);
+        throwIfAborted(signal);
         interaction = { acted: true };
       } else if (challenge.challenge_type === "icon_click") {
-        interaction = await withinDeadline(solveClickChallenge(challenge, visionRequest), deadline);
+        fingerprint = await abortable(fingerprintChallenge(challenge, { signal }), signal);
+        summary.attempted = true;
+        summary.attempts = attempt;
+        interaction = await solveClickChallenge(challenge, visionRequest, signal);
       } else if (challenge.challenge_type === "slider") {
-        interaction = await solveSliderChallenge(page, challenge, options, visionRequest, deadline);
+        fingerprint = await abortable(fingerprintChallenge(challenge, { signal }), signal);
+        summary.attempted = true;
+        summary.attempts = attempt;
+        interaction = await solveSliderChallenge(page, challenge, options, visionRequest, signal);
       } else {
         interaction = { acted: false, reason: "challenge_unsupported" };
       }
-    } catch {
-      summary.reason = Date.now() >= deadline ? "timeout" : "interaction_failed";
+    } catch (error) {
+      summary.reason = failureReason(error, signal, "interaction_failed");
       break;
     }
     if (Number.isFinite(Number(interaction?.confidence))) {
@@ -609,9 +835,9 @@ export async function attemptAutomaticVerification(page, options = {}) {
 
     let outcome;
     try {
-      outcome = await waitForOutcome(page, challenge, fingerprint, options, deadline);
-    } catch {
-      summary.reason = Date.now() >= deadline ? "timeout" : "outcome_failed";
+      outcome = await waitForOutcome(page, challenge, fingerprint, options, signal);
+    } catch (error) {
+      summary.reason = failureReason(error, signal, "outcome_failed");
       break;
     }
     if (outcome.completed) {
@@ -632,4 +858,18 @@ export async function attemptAutomaticVerification(page, options = {}) {
     summary.challenge_type = challenge.challenge_type;
   }
   return sanitizeVerificationResult(summary);
+}
+
+export async function attemptAutomaticVerification(page, options = {}) {
+  const requestedTimeout = Number(options.timeoutMs ?? AUTO_VERIFY_TIMEOUT_MS);
+  const timeoutMs = Math.max(1, Math.min(
+    Number.isFinite(requestedTimeout) ? requestedTimeout : AUTO_VERIFY_TIMEOUT_MS,
+    AUTO_VERIFY_TIMEOUT_MS,
+  ));
+  const stage = createStageSignal(timeoutMs, options.signal);
+  try {
+    return await attemptWithinStage(page, options, stage.signal);
+  } finally {
+    stage.cleanup();
+  }
 }
