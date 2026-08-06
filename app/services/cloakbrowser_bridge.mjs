@@ -443,7 +443,18 @@ function authorizationResponseMatches(response, instanceId) {
 }
 
 export async function readAuthorizationResponse(response) {
-  const text = (await response.text()).slice(0, 16384);
+  let text;
+  try {
+    text = String(await response.text()).slice(0, 16384);
+  } catch {
+    throw new Error("authorization response body unavailable");
+  }
+  let statusCode;
+  try {
+    statusCode = Number(response.status() || 0);
+  } catch {
+    throw new Error("authorization response metadata unavailable");
+  }
   let payload = null;
   try {
     payload = text ? JSON.parse(text) : null;
@@ -451,7 +462,7 @@ export async function readAuthorizationResponse(response) {
     payload = null;
   }
   return {
-    status_code: Number(response.status() || 0),
+    status_code: statusCode,
     payload: sanitizedAuthorizationPayload(payload, text),
     text: payload ? "" : text.slice(0, 1024),
   };
@@ -471,63 +482,87 @@ async function settlePageGeneratedAuthorization(responseOutcome, originalRespons
   }
 }
 
+function authorizationResponseOutcome(page, matcher, options) {
+  try {
+    return Promise.resolve(page.waitForResponse(matcher, options)).then(
+      (response) => ({ response, error: null }),
+      (error) => ({ response: null, error }),
+    );
+  } catch (error) {
+    return Promise.resolve({ response: null, error });
+  }
+}
+
+function authorizationWaitError(error) {
+  const timedOut = error?.name === "TimeoutError" || /timed?\s*out/i.test(String(error?.message || ""));
+  return new Error(timedOut
+    ? "3MF authorization response timed out"
+    : "3MF authorization response unavailable");
+}
+
 export async function coordinateThreeMfAuthorization(page, options = {}) {
   const authorizationTimeout = Math.max(Number(options.authorizationTimeout || 90000), 1);
   const navigationTimeout = Math.max(Number(options.navigationTimeout || 30000), 1);
   const matcher = (response) => authorizationResponseMatches(response, options.instanceId);
-  const firstResponsePromise = page.waitForResponse(matcher, { timeout: authorizationTimeout });
-  const findButton = options.findButton || findThreeMfDownloadButton;
-  const button = await findButton(page, navigationTimeout);
+  const firstWaiterController = new AbortController();
+  const firstResponseOutcome = authorizationResponseOutcome(page, matcher, {
+    timeout: authorizationTimeout,
+    signal: firstWaiterController.signal,
+  });
   try {
-    await button.click({ delay: 20 });
-  } finally {
-    await button.dispose();
-  }
-  const first = await readAuthorizationResponse(await firstResponsePromise);
+    const findButton = options.findButton || findThreeMfDownloadButton;
+    const button = await findButton(page, navigationTimeout);
+    try {
+      await button.click({ delay: 20 });
+    } finally {
+      try {
+        await button.dispose();
+      } catch {}
+    }
+    const firstOutcome = await firstResponseOutcome;
+    if (!firstOutcome.response) throw authorizationWaitError(firstOutcome.error);
+    const first = await readAuthorizationResponse(firstOutcome.response);
 
-  if (!options.inputAutoVerify || !isVerificationAuthorization(first)) {
-    return { ...first, navigation_timed_out: Boolean(options.navigationTimedOut) };
-  }
+    if (!options.inputAutoVerify || !isVerificationAuthorization(first)) {
+      return { ...first, navigation_timed_out: Boolean(options.navigationTimedOut) };
+    }
 
-  const waiterController = new AbortController();
-  const secondResponseOutcome = page.waitForResponse(matcher, {
-    timeout: AUTO_VERIFY_TIMEOUT_MS,
-    signal: waiterController.signal,
-  }).then(
-    (response) => ({ response }),
-    () => ({ response: null }),
-  );
-  const verificationAdapter = options.verificationAdapter || attemptAutomaticVerification;
-  let verification;
-  try {
-    verification = sanitizeVerificationResult(await verificationAdapter(page, {
-      timeoutMs: AUTO_VERIFY_TIMEOUT_MS,
-    }));
-  } catch {
-    verification = sanitizeVerificationResult({
-      attempted: true,
-      completed: false,
-      reason: "verification_failed",
+    const secondWaiterController = new AbortController();
+    const secondResponseOutcome = authorizationResponseOutcome(page, matcher, {
+      timeout: AUTO_VERIFY_TIMEOUT_MS,
+      signal: secondWaiterController.signal,
     });
-  }
+    try {
+      const verificationAdapter = options.verificationAdapter || attemptAutomaticVerification;
+      let verification;
+      try {
+        verification = sanitizeVerificationResult(await verificationAdapter(page, {
+          timeoutMs: AUTO_VERIFY_TIMEOUT_MS,
+        }));
+      } catch {
+        verification = sanitizeVerificationResult({
+          attempted: true,
+          completed: false,
+          reason: "verification_failed",
+        });
+      }
 
-  if (!verification.completed) {
-    waiterController.abort();
-    await secondResponseOutcome;
-    return {
-      ...first,
-      navigation_timed_out: Boolean(options.navigationTimedOut),
-      verification,
-    };
+      const finalResponse = verification.completed
+        ? await settlePageGeneratedAuthorization(secondResponseOutcome, first)
+        : first;
+      return {
+        ...finalResponse,
+        navigation_timed_out: Boolean(options.navigationTimedOut),
+        verification,
+      };
+    } finally {
+      secondWaiterController.abort();
+      await secondResponseOutcome;
+    }
+  } finally {
+    firstWaiterController.abort();
+    await firstResponseOutcome;
   }
-
-  const finalResponse = await settlePageGeneratedAuthorization(secondResponseOutcome, first);
-  waiterController.abort();
-  return {
-    ...finalResponse,
-    navigation_timed_out: Boolean(options.navigationTimedOut),
-    verification,
-  };
 }
 
 async function findThreeMfDownloadButton(page, timeoutMs) {

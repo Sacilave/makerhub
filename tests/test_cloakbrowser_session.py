@@ -1015,7 +1015,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(bridge_payload["navigation_timeout_ms"], 30000)
         self.assertEqual(bridge_payload["authorization_timeout_ms"], 90000)
         self.assertFalse(bridge_payload["auto_verify_3mf"])
-        self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 150)
+        self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 210)
         resource_slot_mock.assert_called_once_with("cloakbrowser_platform_cn", detail="click")
 
     def test_browser_3mf_authorization_reads_auto_verify_flag_per_operation(self):

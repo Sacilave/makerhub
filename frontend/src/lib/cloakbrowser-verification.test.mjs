@@ -12,6 +12,7 @@ import {
 } from "../../../app/services/cloakbrowser_verification.mjs";
 import {
   coordinateThreeMfAuthorization,
+  readAuthorizationResponse,
 } from "../../../app/services/cloakbrowser_bridge.mjs";
 
 
@@ -90,11 +91,16 @@ function fakeChild(onInput) {
 function fakeAuthorizationResponse({
   status = 200,
   payload = { name: "part.3mf", url: "https://download.example.test/part.3mf" },
+  rawText,
+  textError,
   url = "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
 } = {}) {
   return {
     status: () => status,
-    text: async () => JSON.stringify(payload),
+    text: async () => {
+      if (textError) throw textError;
+      return rawText ?? JSON.stringify(payload);
+    },
     url: () => url,
   };
 }
@@ -114,7 +120,11 @@ function fakeAuthorizationPage(responses, lifecycle = []) {
       assert.equal(typeof matcher, "function");
       if (!response) {
         return new Promise((resolve, reject) => {
-          options.signal?.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+          const timer = setTimeout(() => reject(new Error("response timeout")), 5);
+          options.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(options.signal.reason);
+          }, { once: true });
         });
       }
       assert.equal(matcher(response), true);
@@ -276,6 +286,130 @@ test("3MF coordinator returns the original response when verification times out"
     reason: "timeout",
     confidence: 0.4,
   });
+});
+
+test("3MF coordinator settles the first waiter when button lookup outlives its timeout", async () => {
+  let waiterSignal;
+  let waiterSettled = false;
+  const page = {
+    waitForResponse: (_matcher, options = {}) => {
+      waiterSignal = options.signal;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          waiterSettled = true;
+          reject(new Error("first response timeout"));
+        }, 5);
+        options.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          waiterSettled = true;
+          reject(options.signal.reason);
+        }, { once: true });
+      });
+    },
+  };
+
+  await assert.rejects(
+    coordinateThreeMfAuthorization(page, {
+      instanceId: "123",
+      authorizationTimeout: 5,
+      findButton: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        throw new Error("button lookup failed");
+      },
+    }),
+    /button lookup failed/,
+  );
+  assert.equal(waiterSignal?.aborted, true);
+  assert.equal(waiterSettled, true);
+});
+
+test("3MF coordinator preserves a click failure when dispose also fails", async () => {
+  const first = fakeAuthorizationResponse();
+  const page = fakeAuthorizationPage([first]);
+  let clicks = 0;
+  let disposals = 0;
+
+  await assert.rejects(
+    coordinateThreeMfAuthorization(page, {
+      instanceId: "123",
+      findButton: async () => ({
+        click: async () => {
+          clicks += 1;
+          throw new Error("click failed");
+        },
+        dispose: async () => {
+          disposals += 1;
+          throw new Error("dispose failed");
+        },
+      }),
+    }),
+    /click failed/,
+  );
+  assert.equal(clicks, 1);
+  assert.equal(disposals, 1);
+});
+
+test("3MF coordinator ignores dispose failure after a successful click", async () => {
+  const first = fakeAuthorizationResponse();
+  const page = fakeAuthorizationPage([first]);
+
+  const result = await coordinateThreeMfAuthorization(page, {
+    instanceId: "123",
+    findButton: async () => ({
+      click: async () => {},
+      dispose: async () => {
+        throw new Error("dispose failed with secret-token");
+      },
+    }),
+  });
+
+  assert.equal(result.status_code, 200);
+  assert.equal(result.payload.url, "https://download.example.test/part.3mf");
+});
+
+test("3MF coordinator returns the first response when a completed verification has no second response", async () => {
+  const first = fakeAuthorizationResponse({ status: 418, payload: { captchaId: "captcha-123" } });
+
+  const { result } = await runAuthorizationCoordinator({ first });
+
+  assert.equal(result.status_code, 418);
+  assert.equal(result.payload.captchaId, "captcha-123");
+  assert.equal(result.verification.completed, true);
+});
+
+test("authorization response parsing bounds invalid JSON", async () => {
+  const result = await readAuthorizationResponse(fakeAuthorizationResponse({
+    status: 502,
+    rawText: `<html>${"x".repeat(2000)}`,
+  }));
+
+  assert.equal(result.status_code, 502);
+  assert.equal(result.text.length, 1024);
+  assert.equal(result.payload.message.length, 1024);
+  assert.equal(result.payload.code, "");
+  assert.equal(result.payload.captchaId, "");
+});
+
+test("authorization response parsing does not expose text rejection details", async () => {
+  await assert.rejects(
+    readAuthorizationResponse(fakeAuthorizationResponse({
+      textError: new Error("secret-cookie-from-response"),
+    })),
+    (error) => error.message === "authorization response body unavailable",
+  );
+});
+
+test("3MF coordinator falls back when the second response cannot be parsed", async () => {
+  const first = fakeAuthorizationResponse({ status: 418, payload: { captchaId: "captcha-123" } });
+  const second = fakeAuthorizationResponse({
+    textError: new Error("second-response-secret"),
+  });
+
+  const { result } = await runAuthorizationCoordinator({ first, second });
+
+  assert.equal(result.status_code, 418);
+  assert.equal(result.payload.captchaId, "captcha-123");
+  assert.equal(result.verification.completed, true);
 });
 
 function fakeInputPage({
