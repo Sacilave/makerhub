@@ -323,6 +323,7 @@ class AutomaticVerificationReleaseContractTest(unittest.TestCase):
     def test_v016_rollout_keeps_automatic_verification_opt_in_and_smokes_opencv(self):
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         compose_text = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")
+        compose = yaml.safe_load(compose_text)
         smoke_command = _step(_load_workflow()["jobs"]["verify"], "Smoke test image")["run"]
         version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         package = json.loads((ROOT_DIR / "frontend" / "package.json").read_text(encoding="utf-8"))
@@ -339,6 +340,12 @@ class AutomaticVerificationReleaseContractTest(unittest.TestCase):
             ),
             2,
         )
+        for service_name in ("makerhub-app", "makerhub-worker"):
+            with self.subTest(service=service_name):
+                self.assertEqual(
+                    compose["services"][service_name]["environment"]["MAKERHUB_AUTO_VERIFY_3MF"],
+                    "${MAKERHUB_AUTO_VERIFY_3MF:-false}",
+                )
         self.assertIn("import cv2", smoke_command)
         self.assertIn("version('opencv-python-headless')", smoke_command)
         self.assertIn("solve_click_challenge", smoke_command)
