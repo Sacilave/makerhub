@@ -18,9 +18,11 @@ CLICK_MARGIN_MIN = 0.08
 SLIDER_CONFIDENCE_MIN = 0.72
 SLIDER_MARGIN_MIN = 0.06
 MAX_STDIN_BYTES = 24 * 1024 * 1024
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 _NORMALIZED_SIZE = 96
 _SLIDER_SCALES = (0.90, 0.95, 1.00, 1.05, 1.10)
+_SLIDER_GEOMETRY_FIELDS = {"image_width", "track_width", "handle_width"}
 ALLOWED_REQUEST_FIELDS = {
     "mode",
     "target_png",
@@ -38,6 +40,8 @@ _REQUEST_FIELDS_BY_MODE = {
 def _decode_png(raw: bytes) -> np.ndarray:
     if not raw or len(raw) > MAX_IMAGE_BYTES:
         raise ValueError("image_size_invalid")
+    if not raw.startswith(_PNG_SIGNATURE):
+        raise ValueError("image_format_invalid")
     image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     if image is None or image.ndim not in {2, 3}:
         raise ValueError("image_decode_failed")
@@ -163,7 +167,7 @@ def _normalized_symbol(raw: bytes) -> np.ndarray:
 
 
 def _slider_geometry(geometry: dict[str, Any]) -> tuple[float, float, float]:
-    if not isinstance(geometry, dict):
+    if not isinstance(geometry, dict) or set(geometry) != _SLIDER_GEOMETRY_FIELDS:
         raise ValueError("geometry_invalid")
     values: list[float] = []
     for name in ("image_width", "track_width", "handle_width"):
@@ -395,7 +399,7 @@ def main() -> int:
     raw_input = sys.stdin.buffer.read(MAX_STDIN_BYTES + 1)
     if len(raw_input) > MAX_STDIN_BYTES:
         print(json.dumps({"ok": False, "reason": "input_too_large"}, separators=(",", ":")))
-        return 2
+        return 0
     try:
         payload = json.loads(raw_input)
     except (UnicodeDecodeError, json.JSONDecodeError):

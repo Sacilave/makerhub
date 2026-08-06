@@ -7,7 +7,7 @@ import unittest
 import cv2
 import numpy as np
 
-from app.services.makerworld_captcha_vision import solve_click_challenge, solve_request, solve_slider_challenge
+from app.services.makerworld_captcha_vision import _decode_png, solve_click_challenge, solve_request, solve_slider_challenge
 
 
 def png_bytes(image: np.ndarray) -> bytes:
@@ -18,6 +18,12 @@ def png_bytes(image: np.ndarray) -> bytes:
 
 def png_base64(image: np.ndarray) -> str:
     return base64.b64encode(png_bytes(image)).decode("ascii")
+
+
+def jpeg_bytes(image: np.ndarray) -> bytes:
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    return encoded.tobytes()
 
 
 def _scale_point(x: int, y: int, *, size: int) -> tuple[int, int]:
@@ -48,6 +54,10 @@ def symbol(kind: str, *, size: int = 96) -> np.ndarray:
 
 
 class MakerWorldCaptchaVisionTest(unittest.TestCase):
+    def test_decode_png_rejects_other_decodable_image_formats(self):
+        with self.assertRaisesRegex(ValueError, "^image_format_invalid$"):
+            _decode_png(jpeg_bytes(np.full((32, 32, 3), 180, dtype=np.uint8)))
+
     def test_click_selects_scaled_shape_with_confident_margin(self):
         result = solve_click_challenge(
             png_bytes(symbol("triangle", size=72)),
@@ -115,7 +125,7 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
         invalid_image_result = solve_request(
             {
                 "mode": "slider",
-                "background_png": base64.b64encode(b"not-a-png").decode("ascii"),
+                "background_png": base64.b64encode(b"\x89PNG\r\n\x1a\ninvalid").decode("ascii"),
                 "piece_png": png_base64(symbol("triangle")),
                 "geometry": {"image_width": 320, "track_width": 280, "handle_width": 40},
             }
@@ -167,6 +177,23 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
                 )
                 self.assertEqual(result, {"ok": False, "reason": "geometry_invalid"})
 
+    def test_solve_slider_challenge_rejects_unknown_geometry_fields(self):
+        background = png_bytes(symbol("square", size=128))
+        piece = png_bytes(symbol("triangle", size=32))
+        for extra_key in ("cookie", "token", "url", "unexpected"):
+            with self.subTest(extra_key=extra_key):
+                result = solve_slider_challenge(
+                    background,
+                    piece,
+                    {
+                        "image_width": 320,
+                        "track_width": 280,
+                        "handle_width": 40,
+                        extra_key: "forbidden",
+                    },
+                )
+                self.assertEqual(result, {"ok": False, "reason": "geometry_invalid"})
+
     def test_solve_request_keeps_mode_specific_fields_restricted(self):
         result = solve_request(
             {
@@ -202,3 +229,14 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2)
         self.assertEqual(json.loads(completed.stdout), {"ok": False, "reason": "json_invalid"})
+
+    def test_cli_returns_exit_code_zero_for_valid_json_larger_than_stdin_limit(self):
+        payload = b'{"mode":"click"}' + (b" " * (24 * 1024 * 1024))
+        completed = subprocess.run(
+            [sys.executable, "-m", "app.services.makerworld_captcha_vision"],
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(json.loads(completed.stdout), {"ok": False, "reason": "input_too_large"})
