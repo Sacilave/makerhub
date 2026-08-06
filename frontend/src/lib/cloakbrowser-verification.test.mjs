@@ -21,10 +21,12 @@ function fakeHandle({
   one = () => null,
   many = () => [],
   click = async () => {},
+  backendNodeId = 1,
   evaluate,
 } = {}) {
   return {
     boundingBox: async () => box,
+    backendNodeId: async () => backendNodeId,
     evaluate: evaluate || (async (_callback, argument) => {
       if (argument === "read-value") return value;
       if (argument === "fingerprint") return fingerprint;
@@ -82,20 +84,46 @@ function fakeChild(onInput) {
   return child;
 }
 
-function fakeInputPage({ dispatch = async () => {}, detach = async () => {} } = {}) {
+function fakeInputPage({
+  dispatch = async () => {},
+  protocol,
+  detach = async () => {},
+} = {}) {
+  let style = null;
+  let nextSessionId = 0;
+  const sendProtocol = protocol || (async (method, params) => {
+    if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+    if (method === "DOM.pushNodesByBackendIdsToFrontend") return { nodeIds: [1] };
+    if (method === "DOM.getAttributes") {
+      return { attributes: style === null ? [] : ["style", style] };
+    }
+    if (method === "DOM.setAttributeValue") {
+      style = params.value;
+      return {};
+    }
+    if (method === "DOM.removeAttribute") {
+      style = null;
+      return {};
+    }
+    throw new Error(`unexpected protocol method: ${method}`);
+  });
   return {
     mouse: {
       move: async (x, y) => dispatch({ type: "mouseMoved", x, y }),
       down: async () => dispatch({ type: "mousePressed" }),
       up: async () => dispatch({ type: "mouseReleased" }),
     },
-    createCDPSession: async () => ({
-      send: async (method, params) => {
-        assert.equal(method, "Input.dispatchMouseEvent");
-        return dispatch(params);
-      },
-      detach,
-    }),
+    createCDPSession: async () => {
+      const sessionId = nextSessionId;
+      nextSessionId += 1;
+      return {
+        send: async (method, params, options) => {
+          if (method === "Input.dispatchMouseEvent") return dispatch(params, options);
+          return sendProtocol(method, params, options);
+        },
+        detach: () => detach(sessionId),
+      };
+    },
   };
 }
 
@@ -393,26 +421,31 @@ test("Turnstile discovery does not select an unrelated page checkbox", async () 
 });
 
 test("click verification clicks only the candidate selected by vision", async () => {
-  const clicks = [0, 0, 0];
-  const challenge = clickChallenge(async () => { clicks[1] += 1; });
-  challenge.candidates[0].click = async () => { clicks[0] += 1; };
-  challenge.candidates[2].click = async () => { clicks[2] += 1; };
+  let syntheticClicks = 0;
+  const inputEvents = [];
+  const page = fakeInputPage({ dispatch: async (event) => { inputEvents.push(event); } });
+  const challenge = clickChallenge(async () => { syntheticClicks += 1; });
 
-  const result = await attemptAutomaticVerification({}, {
+  const result = await attemptAutomaticVerification(page, {
     detectChallenge: async () => challenge,
     fingerprintChallenge: async () => "fingerprint-a",
     isChallengeComplete: async () => true,
     visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.91 }),
   });
 
-  assert.deepEqual(clicks, [0, 1, 0]);
+  assert.equal(syntheticClicks, 0);
+  assert.deepEqual(inputEvents.map(({ type }) => type), [
+    "mouseMoved",
+    "mousePressed",
+    "mouseReleased",
+  ]);
+  assert.equal(inputEvents.every(({ pointerType }) => pointerType === "mouse"), true);
   assert.equal(result.completed, true);
   assert.equal(result.attempts, 1);
 });
 
 test("slider always releases the mouse and restores the piece after movement errors", async () => {
   const mouseEvents = [];
-  const pieceStates = [];
   const page = fakeInputPage({
     dispatch: async ({ type }) => {
       if (type === "mouseMoved") {
@@ -429,18 +462,7 @@ test("slider always releases the mouse and restores the piece after movement err
     background: fakeHandle({ box: { x: 20, y: 10, width: 300, height: 120 } }),
     piece: fakeHandle({
       box: { x: 50, y: 20, width: 30, height: 30 },
-      evaluate: async (_callback, action) => {
-        pieceStates.push(action?.action || action);
-        if (action?.action === "hide") {
-          return {
-            applied: true,
-            id: action.id,
-            value: "collapse",
-            priority: "important",
-          };
-        }
-        return true;
-      },
+      evaluate: async () => { throw new Error("page callback must not run"); },
     }),
   };
 
@@ -455,7 +477,6 @@ test("slider always releases the mouse and restores the piece after movement err
   assert.equal(result.completed, false);
   assert.equal(mouseEvents.includes("down"), true);
   assert.equal(mouseEvents.at(-1), "up");
-  assert.deepEqual(pieceStates, ["hide", "restore"]);
 });
 
 test("slider geometry uses PNG pixels while dragging in CSS pixels", async () => {
@@ -523,31 +544,30 @@ test("timed out vision results never trigger a late click", async () => {
   assert.equal(clicks, 0);
 });
 
-test("a started hanging candidate click cannot mutate after the hard deadline", async () => {
-  let clicks = 0;
-  const challenge = clickChallenge(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    clicks += 1;
+test("a timed out trusted candidate click queues only release before detach", async () => {
+  const lifecycle = [];
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      lifecycle.push(type);
+      if (type === "mousePressed") return new Promise(() => {});
+      return undefined;
+    },
+    detach: async () => { lifecycle.push("detach"); },
   });
-  challenge.candidates[1].evaluate = async (_callback, argument) => {
-    if (argument === "fingerprint") return "challenge-a:candidate-1";
-    if (argument?.action === "click") {
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      if (Date.now() >= argument.deadline) return false;
-      clicks += 1;
-      return true;
-    }
-    return true;
-  };
-  const result = await attemptAutomaticVerification({}, {
+  const challenge = clickChallenge(async () => {
+    throw new Error("synthetic click must not run");
+  });
+  const result = await attemptAutomaticVerification(page, {
     detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "candidate-timeout",
     visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
-    timeoutMs: 10,
+    timeoutMs: 20,
   });
 
   assert.equal(result.reason, "timeout");
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(clicks, 0);
+  assert.deepEqual(lifecycle, ["mouseMoved", "mousePressed", "mouseReleased", "detach"]);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(lifecycle, ["mouseMoved", "mousePressed", "mouseReleased", "detach"]);
 });
 
 test("a hanging screenshot cannot start vision or click after return", async () => {
@@ -608,15 +628,21 @@ test("timed out slider vision never starts a late drag", async () => {
   assert.equal(mouseEvents, 0);
 });
 
-test("a hanging CDP mouse command is detached before it can interact late", async () => {
-  let detached = false;
-  let mouseEvents = 0;
+test("mouse cleanup uses a monotonic hard deadline when wall time moves backwards", async () => {
+  const originalDateNow = Date.now;
+  let wallClockOffset = 0;
+  const lifecycle = [];
   const page = fakeInputPage({
-    dispatch: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      if (!detached) mouseEvents += 1;
+    dispatch: async ({ type }) => {
+      lifecycle.push(type);
+      if (type === "mousePressed") {
+        wallClockOffset = -100;
+        return new Promise(() => {});
+      }
+      if (type === "mouseReleased") return new Promise(() => {});
+      return undefined;
     },
-    detach: async () => { detached = true; },
+    detach: async (sessionId) => { lifecycle.push(`detach-${sessionId}`); },
   });
   const challenge = {
     provider: "geetest4",
@@ -631,19 +657,29 @@ test("a hanging CDP mouse command is detached before it can interact late", asyn
       ),
     }),
   };
-  const startedAt = Date.now();
-  const result = await attemptAutomaticVerification(page, {
-    detectChallenge: async () => challenge,
-    fingerprintChallenge: async () => "slider-cdp-hang",
-    visionRequest: async () => ({ ok: true, distance_css: 100, confidence: 0.9 }),
-    timeoutMs: 20,
-  });
+  const startedAt = performance.now();
+  Date.now = () => originalDateNow() + wallClockOffset;
+  let result;
+  try {
+    result = await attemptAutomaticVerification(page, {
+      detectChallenge: async () => challenge,
+      fingerprintChallenge: async () => "slider-cdp-hang",
+      visionRequest: async () => ({ ok: true, distance_css: 100, confidence: 0.9 }),
+      timeoutMs: 20,
+    });
+  } finally {
+    Date.now = originalDateNow;
+  }
 
   assert.equal(result.reason, "timeout");
-  assert.ok(Date.now() - startedAt <= 60);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(detached, true);
-  assert.equal(mouseEvents, 0);
+  assert.ok(performance.now() - startedAt < 80);
+  assert.deepEqual(lifecycle, [
+    "detach-0",
+    "mouseMoved",
+    "mousePressed",
+    "mouseReleased",
+    "detach-1",
+  ]);
 });
 
 test("total timeout aborts and kills the active Python child", async () => {
@@ -666,32 +702,26 @@ test("total timeout aborts and kills the active Python child", async () => {
 });
 
 test("slider timeout restores the exact piece visibility before returning", async () => {
-  const pieceStates = [];
-  const page = fakeInputPage();
+  const originalStyle = "visibility:collapse!important";
+  let style = originalStyle;
+  const page = fakeInputPage({
+    protocol: async (method, params) => {
+      if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+      if (method === "DOM.pushNodesByBackendIdsToFrontend") return { nodeIds: [1] };
+      if (method === "DOM.getAttributes") return { attributes: ["style", style] };
+      if (method === "DOM.setAttributeValue") {
+        style = params.value;
+        return {};
+      }
+      throw new Error(`unexpected protocol method: ${method}`);
+    },
+  });
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
     handle: fakeHandle(),
     background: fakeHandle({ screenshot: () => new Promise(() => {}) }),
-    piece: fakeHandle({
-      evaluate: async (_callback, action) => {
-        if (action?.action === "hide") {
-          pieceStates.push("hide");
-          return {
-            applied: true,
-            id: action.id,
-            value: "collapse",
-            priority: "important",
-          };
-        }
-        pieceStates.push({
-          action: action.action,
-          value: action.value,
-          priority: action.priority,
-        });
-        return true;
-      },
-    }),
+    piece: fakeHandle({ evaluate: async () => { throw new Error("page callback must not run"); } }),
   };
 
   const result = await attemptAutomaticVerification(page, {
@@ -701,46 +731,44 @@ test("slider timeout restores the exact piece visibility before returning", asyn
   });
 
   assert.equal(result.reason, "timeout");
-  assert.deepEqual(pieceStates, [
-    "hide",
-    { action: "restore", value: "collapse", priority: "important" },
-  ]);
+  assert.equal(style, originalStyle);
 });
 
-test("piece hide completing after the cleanup budget cannot mutate visibility", async () => {
-  let visibility = "visible";
-  let mutations = 0;
-  const page = fakeInputPage();
+test("piece visibility is restored through ordered CDP DOM commands without page callbacks", async () => {
+  const originalStyle = "visibility:collapse!important;color:red";
+  let style = originalStyle;
+  const lifecycle = [];
+  const page = fakeInputPage({
+    protocol: async (method, params) => {
+      lifecycle.push(method);
+      if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+      if (method === "DOM.pushNodesByBackendIdsToFrontend") return { nodeIds: [7] };
+      if (method === "DOM.getAttributes") return { attributes: ["class", "piece", "style", style] };
+      if (method === "DOM.setAttributeValue") {
+        assert.equal(params.nodeId, 7);
+        assert.equal(params.name, "style");
+        style = params.value;
+        return {};
+      }
+      if (method === "DOM.removeAttribute") {
+        style = null;
+        return {};
+      }
+      throw new Error(`unexpected protocol method: ${method}`);
+    },
+    detach: async () => { lifecycle.push("detach"); },
+  });
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
     handle: fakeHandle(),
-    background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
+    background: fakeHandle({ screenshot: () => new Promise(() => {}) }),
     piece: fakeHandle({
-      evaluate: async (_callback, action) => {
-        if (action === "hide") {
-          await new Promise((resolve) => setTimeout(resolve, 1050));
-          visibility = "hidden";
-          mutations += 1;
-          return { value: "visible", priority: "important" };
-        }
-        if (action?.action === "hide") {
-          await new Promise((resolve) => setTimeout(resolve, 1050));
-          if (Date.now() >= action.deadline) return false;
-          visibility = "hidden";
-          mutations += 1;
-          return { applied: true, value: "visible", priority: "important" };
-        }
-        if (action?.action === "restore") {
-          visibility = action.value || "";
-          mutations += 1;
-        }
-        return true;
-      },
+      backendNodeId: 42,
+      evaluate: async () => { throw new Error("page callback must not run"); },
     }),
   };
 
-  const startedAt = Date.now();
   const result = await attemptAutomaticVerification(page, {
     detectChallenge: async () => challenge,
     fingerprintChallenge: async () => "slider-hide-timeout",
@@ -748,28 +776,38 @@ test("piece hide completing after the cleanup budget cannot mutate visibility", 
   });
 
   assert.equal(result.reason, "timeout");
-  assert.ok(Date.now() - startedAt <= 60);
-  await new Promise((resolve) => setTimeout(resolve, 1100));
-  assert.equal(visibility, "visible");
-  assert.equal(mutations, 0);
+  assert.equal(style, originalStyle);
+  assert.deepEqual(lifecycle, [
+    "DOM.getDocument",
+    "DOM.pushNodesByBackendIdsToFrontend",
+    "DOM.getAttributes",
+    "DOM.setAttributeValue",
+    "DOM.setAttributeValue",
+    "detach",
+  ]);
 });
 
 test("piece restoration failure returns a controlled result and never drags", async () => {
   let mouseEvents = 0;
-  const page = fakeInputPage({ dispatch: async () => { mouseEvents += 1; } });
+  let detached = false;
+  const page = fakeInputPage({
+    dispatch: async () => { mouseEvents += 1; },
+    protocol: async (method) => {
+      if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+      if (method === "DOM.pushNodesByBackendIdsToFrontend") return { nodeIds: [1] };
+      if (method === "DOM.getAttributes") return { attributes: [] };
+      if (method === "DOM.setAttributeValue") return {};
+      if (method === "DOM.removeAttribute") throw new Error("detached");
+      throw new Error(`unexpected protocol method: ${method}`);
+    },
+    detach: async () => { detached = true; },
+  });
   const challenge = {
     provider: "geetest4",
     challenge_type: "slider",
     handle: fakeHandle(),
     background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
-    piece: fakeHandle({
-      evaluate: async (_callback, action) => {
-        if (action?.action === "hide") {
-          return { applied: true, id: action.id, value: "", priority: "" };
-        }
-        throw new Error("detached");
-      },
-    }),
+    piece: fakeHandle({ evaluate: async () => { throw new Error("page callback must not run"); } }),
   };
 
   const result = await attemptAutomaticVerification(page, {
@@ -780,17 +818,44 @@ test("piece restoration failure returns a controlled result and never drags", as
 
   assert.equal(result.reason, "piece_restore_failed");
   assert.equal(mouseEvents, 0);
+  assert.equal(detached, true);
+});
+
+test("piece session detaches when backend node lookup fails", async () => {
+  let detached = false;
+  const page = fakeInputPage({ detach: async () => { detached = true; } });
+  const challenge = {
+    provider: "geetest4",
+    challenge_type: "slider",
+    handle: fakeHandle(),
+    background: fakeHandle({ screenshot: pngBuffer(300, 120) }),
+    piece: fakeHandle(),
+  };
+  challenge.piece.backendNodeId = async () => { throw new Error("detached node"); };
+
+  const result = await attemptAutomaticVerification(page, {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "slider-node-failure",
+  });
+
+  assert.equal(result.reason, "interaction_failed");
+  assert.equal(detached, true);
 });
 
 test("candidate selected styling does not trigger a second interaction", async () => {
   let clicks = 0;
   let selected = false;
-  const challenge = clickChallenge(async () => {
-    clicks += 1;
-    selected = true;
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      if (type === "mouseReleased") {
+        clicks += 1;
+        selected = true;
+      }
+    },
   });
+  const challenge = clickChallenge(async () => { throw new Error("synthetic click must not run"); });
   challenge.candidates[1].screenshot = async () => pngBuffer(40, 40, selected ? 2 : 1);
-  const result = await attemptAutomaticVerification({}, {
+  const result = await attemptAutomaticVerification(page, {
     detectChallenge: async () => challenge,
     isChallengeComplete: async () => false,
     visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
@@ -806,13 +871,17 @@ test("candidate selected styling does not trigger a second interaction", async (
 test("a genuinely new click challenge permits exactly one second interaction", async () => {
   let active = "a";
   let clicks = 0;
-  const challengeA = clickChallenge(async () => {
-    clicks += 1;
-    active = "b";
-  }, "challenge-a");
-  const challengeB = clickChallenge(async () => { clicks += 1; }, "challenge-b");
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      if (type !== "mouseReleased") return;
+      clicks += 1;
+      if (clicks === 1) active = "b";
+    },
+  });
+  const challengeA = clickChallenge(async () => { throw new Error("synthetic click must not run"); }, "challenge-a");
+  const challengeB = clickChallenge(async () => { throw new Error("synthetic click must not run"); }, "challenge-b");
 
-  const result = await attemptAutomaticVerification({}, {
+  const result = await attemptAutomaticVerification(page, {
     detectChallenge: async () => (active === "a" ? challengeA : challengeB),
     isChallengeComplete: async () => false,
     visionRequest: async () => ({ ok: true, candidate_index: 1, confidence: 0.9 }),
@@ -876,60 +945,65 @@ test("automatic verification reports the total-stage timeout", async () => {
 });
 
 test("Turnstile clicks at most once per attempt without calling vision", async () => {
-  let clicks = 0;
+  let syntheticClicks = 0;
   let visionCalls = 0;
+  const inputEvents = [];
+  const page = fakeInputPage({ dispatch: async (event) => { inputEvents.push(event); } });
   const challenge = {
     provider: "turnstile",
     challenge_type: "checkbox",
-    checkbox: fakeHandle({ click: async () => { clicks += 1; } }),
+    checkbox: fakeHandle({ click: async () => { syntheticClicks += 1; } }),
     response: fakeHandle({ value: "" }),
   };
 
-  const result = await attemptAutomaticVerification({}, {
+  const result = await attemptAutomaticVerification(page, {
     detectChallenge: async () => challenge,
-    fingerprintChallenge: async () => `turnstile-${clicks}`,
-    isChallengeComplete: async () => clicks > 0,
+    fingerprintChallenge: async () => "turnstile-checkbox",
+    isChallengeComplete: async () => inputEvents.some(({ type }) => type === "mouseReleased"),
     visionRequest: async () => { visionCalls += 1; },
     turnstileResponseWaitMs: 0,
   });
 
   assert.equal(result.completed, true);
-  assert.equal(clicks, 1);
+  assert.equal(syntheticClicks, 0);
+  assert.deepEqual(inputEvents.map(({ type }) => type), [
+    "mouseMoved",
+    "mousePressed",
+    "mouseReleased",
+  ]);
+  assert.equal(inputEvents.every(({ pointerType }) => pointerType === "mouse"), true);
   assert.equal(visionCalls, 0);
 });
 
-test("a started hanging Turnstile click cannot mutate after the hard deadline", async () => {
-  let clicks = 0;
-  const checkbox = fakeHandle({ fingerprint: "turnstile-checkbox" });
-  checkbox.click = async () => {
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    clicks += 1;
-  };
-  checkbox.evaluate = async (_callback, argument) => {
-    if (argument === "fingerprint") return "turnstile-checkbox";
-    if (argument?.action === "click") {
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      if (Date.now() >= argument.deadline) return false;
-      clicks += 1;
-      return true;
-    }
-    return true;
-  };
+test("Turnstile cutoff sends no new press after a hanging pointer move", async () => {
+  const lifecycle = [];
+  const page = fakeInputPage({
+    dispatch: async ({ type }) => {
+      lifecycle.push(type);
+      if (type === "mouseMoved") return new Promise(() => {});
+      return undefined;
+    },
+    detach: async () => { lifecycle.push("detach"); },
+  });
   const challenge = {
     provider: "turnstile",
     challenge_type: "checkbox",
-    checkbox,
+    checkbox: fakeHandle({
+      fingerprint: "turnstile-checkbox",
+      click: async () => { throw new Error("synthetic click must not run"); },
+    }),
     response: fakeHandle({ value: "" }),
   };
-  const result = await attemptAutomaticVerification({}, {
+  const result = await attemptAutomaticVerification(page, {
     detectChallenge: async () => challenge,
     turnstileResponseWaitMs: 0,
     timeoutMs: 10,
   });
 
   assert.equal(result.reason, "timeout");
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(clicks, 0);
+  assert.deepEqual(lifecycle, ["mouseMoved", "detach"]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(lifecycle, ["mouseMoved", "detach"]);
 });
 
 test("Turnstile passive token completion does not count as an interaction", async () => {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { performance } from "node:perf_hooks";
 
 
 export const MAX_PROVIDER_ATTEMPTS = 2;
@@ -90,39 +91,51 @@ function abortable(promise, signal) {
   });
 }
 
-function cleanupOperation(promise, deadline) {
-  const remaining = Math.max(0, deadline - Date.now());
-  if (remaining <= 0) return Promise.reject(new VerificationError("cleanup_failed"));
-  let timer;
-  return Promise.race([
-    Promise.resolve(promise),
-    new Promise((_resolve, reject) => {
-      timer = setTimeout(() => reject(new VerificationError("cleanup_failed")), remaining);
-    }),
-  ]).finally(() => clearTimeout(timer));
+function cleanupOperation(promise, stage) {
+  if (stage.remainingHard() <= 0 || stage.hardSignal.aborted) {
+    Promise.resolve(promise).catch(() => undefined);
+    return Promise.reject(new VerificationError("cleanup_failed"));
+  }
+  return abortable(promise, stage.hardSignal).catch((error) => {
+    if (stage.hardSignal.aborted) throw new VerificationError("cleanup_failed");
+    throw error;
+  });
 }
 
 function createStageSignal(timeoutMs, externalSignal) {
-  const controller = new AbortController();
-  const startedAt = Date.now();
+  const actionController = new AbortController();
+  const hardController = new AbortController();
+  const startedAt = performance.now();
   const cleanupBudget = Math.min(
     CLEANUP_TIMEOUT_MS,
     Math.max(1, Math.floor(timeoutMs * 0.25)),
   );
   const actionDeadline = startedAt + Math.max(1, timeoutMs - cleanupBudget);
   const hardDeadline = startedAt + timeoutMs;
-  const onExternalAbort = () => controller.abort(externalSignal.reason || new VerificationError("aborted"));
+  const remaining = (deadline) => Math.max(0, deadline - performance.now());
+  const onExternalAbort = () => {
+    const reason = externalSignal.reason || new VerificationError("aborted");
+    actionController.abort(reason);
+    hardController.abort(reason);
+  };
   if (externalSignal?.aborted) onExternalAbort();
   else externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
-  const timer = setTimeout(() => {
-    controller.abort(new VerificationError("timeout"));
-  }, Math.max(0, actionDeadline - Date.now()));
+  const actionTimer = setTimeout(() => {
+    actionController.abort(new VerificationError("timeout"));
+  }, remaining(actionDeadline));
+  const hardTimer = setTimeout(() => {
+    hardController.abort(new VerificationError("timeout"));
+  }, remaining(hardDeadline));
   return {
-    signal: controller.signal,
+    signal: actionController.signal,
+    hardSignal: hardController.signal,
     actionDeadline,
     hardDeadline,
+    remainingAction: () => remaining(actionDeadline),
+    remainingHard: () => remaining(hardDeadline),
     cleanup() {
-      clearTimeout(timer);
+      clearTimeout(actionTimer);
+      clearTimeout(hardTimer);
       externalSignal?.removeEventListener("abort", onExternalAbort);
     },
   };
@@ -558,83 +571,72 @@ async function stableElementIdentity(handle, signal) {
 }
 
 async function hidePieceAndCaptureBackground(challenge, stage) {
-  const { signal, actionDeadline, hardDeadline } = stage;
-  const stateId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  let pieceState;
-  try {
-    throwIfAborted(signal);
-    pieceState = await abortable(challenge.piece.evaluate((element, state) => {
-      if (state?.action !== "hide" || Date.now() >= state.deadline) {
-        return { applied: false };
-      }
-      const previous = element.__makerHubVerificationPieceState;
-      if (previous) {
-        clearTimeout(previous.timer);
-        if (previous.value) {
-          element.style.setProperty("visibility", previous.value, previous.priority);
-        } else {
-          element.style.removeProperty("visibility");
-        }
-      }
-      const original = {
-        id: state.id,
-        value: element.style.getPropertyValue("visibility"),
-        priority: element.style.getPropertyPriority("visibility"),
-      };
-      const restore = () => {
-        const current = element.__makerHubVerificationPieceState;
-        if (!current || current.id !== state.id) return;
-        if (current.value) {
-          element.style.setProperty("visibility", current.value, current.priority);
-        } else {
-          element.style.removeProperty("visibility");
-        }
-        delete element.__makerHubVerificationPieceState;
-      };
-      element.style.setProperty("visibility", "hidden", "important");
-      element.__makerHubVerificationPieceState = {
-        ...original,
-        timer: setTimeout(restore, Math.max(0, state.restoreAt - Date.now())),
-      };
-      return { applied: true, ...original };
-    }, {
-      action: "hide",
-      id: stateId,
-      deadline: actionDeadline,
-      restoreAt: actionDeadline,
-    }), signal);
-    if (!pieceState?.applied) {
+  const { signal } = stage;
+  const sessionPromise = stage.page.createCDPSession();
+  void sessionPromise.then((lateSession) => {
+    if (signal.aborted) return lateSession.detach().catch(() => undefined);
+    return undefined;
+  }, () => undefined);
+  const session = await abortable(sessionPromise, signal);
+  let backendNodeId;
+  let nodeId;
+  let originalStyle;
+  let hadStyle = false;
+  let hideIssued = false;
+
+  const send = (method, params, cleanup = false) => {
+    const remaining = cleanup ? stage.remainingHard() : stage.remainingAction();
+    if (!cleanup) {
       throwIfAborted(signal);
-      throw new VerificationError("piece_hide_expired");
+      if (remaining <= 0) throw new VerificationError("timeout");
     }
+    const command = session.send(method, params, { timeout: Math.max(1, remaining) });
+    return cleanup ? cleanupOperation(command, stage) : abortable(command, signal);
+  };
+
+  try {
+    backendNodeId = await abortable(challenge.piece.backendNodeId(), signal);
+    await send("DOM.getDocument", { depth: 0, pierce: true });
+    const pushed = await send("DOM.pushNodesByBackendIdsToFrontend", {
+      backendNodeIds: [backendNodeId],
+    });
+    [nodeId] = pushed?.nodeIds || [];
+    if (!nodeId) throw new VerificationError("piece_unavailable");
+    const attributeResult = await send("DOM.getAttributes", { nodeId });
+    const attributes = attributeResult?.attributes || [];
+    for (let index = 0; index < attributes.length; index += 2) {
+      if (String(attributes[index]).toLowerCase() === "style") {
+        hadStyle = true;
+        originalStyle = String(attributes[index + 1] || "");
+        break;
+      }
+    }
+    const separator = originalStyle && !originalStyle.trimEnd().endsWith(";") ? ";" : "";
+    hideIssued = true;
+    await send("DOM.setAttributeValue", {
+      nodeId,
+      name: "style",
+      value: `${originalStyle || ""}${separator}visibility:hidden!important;`,
+    });
     return await screenshotBuffer(challenge.background, signal);
   } finally {
-    if (pieceState?.applied) {
-      const restore = {
-        action: "restore",
-        id: pieceState.id,
-        value: String(pieceState.value || ""),
-        priority: String(pieceState.priority || ""),
-      };
-      try {
-        const restored = await cleanupOperation(challenge.piece.evaluate((element, state) => {
-          if (state?.action !== "restore") return false;
-          const current = element.__makerHubVerificationPieceState;
-          if (current?.id === state.id) {
-            clearTimeout(current.timer);
-            if (state.value) {
-              element.style.setProperty("visibility", state.value, state.priority);
-            } else {
-              element.style.removeProperty("visibility");
-            }
-            delete element.__makerHubVerificationPieceState;
-          }
-          return true;
-        }, restore), hardDeadline);
-        if (restored !== true) throw new Error("piece restore rejected");
-      } catch {
-        throw new VerificationError("piece_restore_failed");
+    try {
+      if (hideIssued && nodeId) {
+        if (hadStyle) {
+          await send("DOM.setAttributeValue", {
+            nodeId,
+            name: "style",
+            value: originalStyle,
+          }, true);
+        } else {
+          await send("DOM.removeAttribute", { nodeId, name: "style" }, true);
+        }
       }
+    } catch {
+      throw new VerificationError("piece_restore_failed");
+    } finally {
+      const detachPromise = session.detach();
+      await cleanupOperation(detachPromise, stage).catch(() => undefined);
     }
   }
 }
@@ -671,19 +673,7 @@ async function defaultChallengeComplete(_page, challenge) {
   ]));
 }
 
-async function guardedElementClick(handle, stage) {
-  const { signal, actionDeadline } = stage;
-  throwIfAborted(signal);
-  const clicked = await abortable(handle.evaluate((element, state) => {
-    if (state?.action !== "click" || Date.now() >= state.deadline) return false;
-    element.click();
-    return true;
-  }, { action: "click", deadline: actionDeadline }), signal);
-  throwIfAborted(signal);
-  if (clicked !== true) throw new VerificationError("click_expired");
-}
-
-async function solveClickChallenge(challenge, visionRequest, stage) {
+async function solveClickChallenge(page, challenge, visionRequest, stage) {
   const { signal } = stage;
   const targetPng = await screenshotBuffer(challenge.target, signal);
   const candidatePngs = await Promise.all(
@@ -698,7 +688,7 @@ async function solveClickChallenge(challenge, visionRequest, stage) {
   if (!result?.ok || !Number.isInteger(candidateIndex) || !challenge.candidates[candidateIndex]) {
     return { acted: false, reason: String(result?.reason || "vision_rejected"), confidence: result?.confidence };
   }
-  await guardedElementClick(challenge.candidates[candidateIndex], stage);
+  await trustedElementClick(page, challenge.candidates[candidateIndex], stage);
   return { acted: true, confidence: result.confidence };
 }
 
@@ -713,7 +703,7 @@ async function captureSliderImages(challenge, stage) {
 }
 
 async function createMouseDriver(page, stage) {
-  const { signal, actionDeadline, hardDeadline } = stage;
+  const { signal } = stage;
   const sessionPromise = page.createCDPSession();
   void sessionPromise.then((lateSession) => {
     if (signal.aborted) return lateSession.detach().catch(() => undefined);
@@ -723,21 +713,27 @@ async function createMouseDriver(page, stage) {
   let x = 0;
   let y = 0;
   let mouseDown = false;
+  const inFlight = new Set();
 
   const send = async (params, cleanup = false) => {
-    const deadline = cleanup ? hardDeadline : actionDeadline;
-    if (Date.now() >= deadline) throw new VerificationError(cleanup ? "cleanup_failed" : "timeout");
+    const remaining = cleanup ? stage.remainingHard() : stage.remainingAction();
+    if (!cleanup) {
+      throwIfAborted(signal);
+      if (remaining <= 0) throw new VerificationError("timeout");
+    }
     const command = session.send(
       "Input.dispatchMouseEvent",
-      params,
-      { timeout: Math.max(1, deadline - Date.now()) },
+      { pointerType: "mouse", ...params },
+      { timeout: Math.max(1, remaining) },
     );
+    inFlight.add(command);
+    void command.finally(() => inFlight.delete(command)).catch(() => undefined);
     return cleanup
-      ? await cleanupOperation(command, deadline)
+      ? await cleanupOperation(command, stage)
       : await abortable(command, signal);
   };
 
-  return {
+  const mouse = {
     async move(nextX, nextY) {
       throwIfAborted(signal);
       x = nextX;
@@ -757,14 +753,34 @@ async function createMouseDriver(page, stage) {
     },
     async up(cleanup = false) {
       if (!mouseDown) return;
-      await send({ type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, cleanup);
       mouseDown = false;
+      await send({ type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, cleanup);
     },
     async close() {
-      if (mouseDown) await this.up(true).catch(() => undefined);
-      await cleanupOperation(session.detach(), hardDeadline).catch(() => undefined);
+      if (mouseDown) await mouse.up(true).catch(() => undefined);
+      if (inFlight.size > 0) {
+        await cleanupOperation(Promise.allSettled([...inFlight]), stage).catch(() => undefined);
+      }
+      await cleanupOperation(session.detach(), stage).catch(() => undefined);
     },
   };
+  return mouse;
+}
+
+async function trustedElementClick(page, handle, stage) {
+  const { signal } = stage;
+  const box = await abortable(handle.boundingBox(), signal);
+  if (!box || box.width <= 0 || box.height <= 0) {
+    throw new VerificationError("click_target_unavailable");
+  }
+  const mouse = await createMouseDriver(page, stage);
+  try {
+    await mouse.move(box.x + (box.width / 2), box.y + (box.height / 2));
+    await mouse.down();
+    await mouse.up();
+  } finally {
+    await mouse.close();
+  }
 }
 
 async function solveSliderChallenge(page, challenge, options, visionRequest, stage) {
@@ -819,17 +835,17 @@ async function turnstileResponseReady(page, challenge, options, signal) {
     Number(options.turnstileResponseWaitMs ?? DEFAULT_TURNSTILE_WAIT_MS) || 0,
     AUTO_VERIFY_TIMEOUT_MS,
   ));
-  const waitDeadline = Date.now() + waitMs;
+  const waitDeadline = performance.now() + waitMs;
   do {
     if (await abortable(complete(page, challenge), signal)) return true;
-    if (Date.now() >= waitDeadline) break;
+    if (performance.now() >= waitDeadline) break;
     await abortable(
       (options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay))))(
-        Math.min(POLL_INTERVAL_MS, waitDeadline - Date.now()),
+        Math.min(POLL_INTERVAL_MS, waitDeadline - performance.now()),
       ),
       signal,
     );
-  } while (Date.now() <= waitDeadline);
+  } while (performance.now() <= waitDeadline);
   return false;
 }
 
@@ -840,7 +856,7 @@ async function waitForOutcome(page, challenge, fingerprint, options, stage) {
   const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
   const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
   const requestedWait = Number(options.postInteractionTimeoutMs ?? DEFAULT_OUTCOME_WAIT_MS);
-  const waitDeadline = Date.now() + Math.max(0, requestedWait || 0);
+  const waitDeadline = performance.now() + Math.max(0, requestedWait || 0);
 
   do {
     if (await abortable(complete(page, challenge), signal)) {
@@ -855,9 +871,9 @@ async function waitForOutcome(page, challenge, fingerprint, options, stage) {
     if (currentFingerprint !== fingerprint) {
       return { completed: false, changed: true, challenge: current };
     }
-    if (Date.now() >= waitDeadline) break;
-    await abortable(sleep(Math.min(POLL_INTERVAL_MS, waitDeadline - Date.now())), signal);
-  } while (Date.now() <= waitDeadline);
+    if (performance.now() >= waitDeadline) break;
+    await abortable(sleep(Math.min(POLL_INTERVAL_MS, waitDeadline - performance.now())), signal);
+  } while (performance.now() <= waitDeadline);
   return { completed: false, changed: false, challenge };
 }
 
@@ -913,13 +929,13 @@ async function attemptWithinStage(page, options, stage) {
         }
         summary.attempted = true;
         summary.attempts = attempt;
-        await guardedElementClick(challenge.checkbox, stage);
+        await trustedElementClick(page, challenge.checkbox, stage);
         interaction = { acted: true };
       } else if (challenge.challenge_type === "icon_click") {
         fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
         summary.attempted = true;
         summary.attempts = attempt;
-        interaction = await solveClickChallenge(challenge, visionRequest, stage);
+        interaction = await solveClickChallenge(page, challenge, visionRequest, stage);
       } else if (challenge.challenge_type === "slider") {
         fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
         summary.attempted = true;
@@ -974,6 +990,7 @@ export async function attemptAutomaticVerification(page, options = {}) {
     AUTO_VERIFY_TIMEOUT_MS,
   ));
   const stage = createStageSignal(timeoutMs, options.signal);
+  stage.page = page;
   try {
     return await attemptWithinStage(page, options, stage);
   } finally {
