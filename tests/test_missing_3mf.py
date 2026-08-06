@@ -1516,6 +1516,10 @@ class Missing3mfTest(unittest.TestCase):
             (-2, -0.1, 0, 0.0),
             (100, 1.4, 99, 1.0),
             (2.9, 0.614, 2, 0.61),
+            (-(10**400), 0.25, 0, 0.25),
+            (10**400, 0.25, 99, 0.25),
+            (0, -(10**400), 0, 0.0),
+            (0, 10**400, 0, 1.0),
         )
 
         for attempts, confidence, expected_attempts, expected_confidence in cases:
@@ -1532,6 +1536,83 @@ class Missing3mfTest(unittest.TestCase):
 
                 self.assertEqual(diagnostics["fields"]["attempts"], expected_attempts)
                 self.assertEqual(diagnostics["fields"]["confidence"], expected_confidence)
+
+    def test_auto_verification_diagnostics_preserve_known_bridge_reason_codes_only(self):
+        known_reason_codes = (
+            "aborted",
+            "attempts_exhausted",
+            "challenge_unchanged",
+            "challenge_unsupported",
+            "checkbox_unavailable",
+            "cleanup_failed",
+            "click_target_unavailable",
+            "completed",
+            "discovery_failed",
+            "empty_screenshot",
+            "image_format_invalid",
+            "image_width_invalid",
+            "interaction_failed",
+            "no_challenge",
+            "outcome_failed",
+            "piece_restore_failed",
+            "piece_unavailable",
+            "slider_geometry_invalid",
+            "timeout",
+            "verification_failed",
+            "vision_rejected",
+        )
+        for reason in known_reason_codes:
+            with self.subTest(reason=reason):
+                diagnostics = legacy_archiver_module._normalized_auto_verification_diagnostics(
+                    {"reason": reason}
+                )
+                self.assertEqual(diagnostics["fields"]["reason"], reason)
+
+        for reason in ("https://example.test/?token=secret", "token=secret", {"reason": "payload-secret"}):
+            with self.subTest(reason=reason):
+                diagnostics = legacy_archiver_module._normalized_auto_verification_diagnostics(
+                    {"reason": reason}
+                )
+                self.assertEqual(diagnostics["fields"]["reason"], "unknown")
+
+    def test_fetch_instance_3mf_keeps_manual_fallback_when_attempts_is_an_extreme_integer(self):
+        session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
+        original_wait = legacy_archiver_module._wait_before_three_mf_download
+        legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
+        try:
+            with patch.object(
+                legacy_archiver_module,
+                "browser_authorize_3mf_download",
+                return_value={
+                    "status_code": 418,
+                    "payload": {"captchaId": "safe-id"},
+                    "verification": {
+                        "attempted": True,
+                        "completed": False,
+                        "provider": "geetest4",
+                        "challenge_type": "slider",
+                        "attempts": 10**400,
+                        "reason": "verification_failed",
+                        "confidence": 0.5,
+                    },
+                },
+            ), patch.object(legacy_archiver_module, "append_business_log") as business_log_mock:
+                _name, _url, _used_api_url, failure = fetch_instance_3mf(
+                    session,
+                    2864062,
+                    "token=account-secret",
+                    api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                    origin="https://makerworld.com.cn",
+                    browser_authorization=True,
+                    browser_profile_id="profile-cn",
+                )
+        finally:
+            legacy_archiver_module._wait_before_three_mf_download = original_wait
+
+        self.assertEqual(failure["state"], "verification_required")
+        self.assertEqual(failure["message"], "指纹浏览器未取得 3MF 授权，请在官网完成验证后点击“已验证”继续归档。")
+        self.assertEqual(business_log_mock.call_args.kwargs["attempts"], 99)
+        self.assertEqual(business_log_mock.call_args.kwargs["reason"], "verification_failed")
 
     def test_fetch_instance_3mf_logs_auto_verification_completion_once_after_signed_url(self):
         session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)

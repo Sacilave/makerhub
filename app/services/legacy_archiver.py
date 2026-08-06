@@ -92,15 +92,23 @@ SAFE_REASON_CODES = frozenset(
         "challenge_unchanged",
         "challenge_unsupported",
         "checkbox_unavailable",
+        "cleanup_failed",
+        "click_target_unavailable",
         "completed",
         "discovery_failed",
+        "empty_screenshot",
+        "image_format_invalid",
+        "image_width_invalid",
         "interaction_failed",
         "low_confidence",
         "no_challenge",
         "outcome_failed",
+        "piece_restore_failed",
+        "piece_unavailable",
         "slider_geometry_invalid",
         "solved",
         "timeout",
+        "verification_failed",
         "vision_rejected",
     }
 )
@@ -4119,7 +4127,11 @@ def _normalized_auto_verification_diagnostics(verification: object) -> dict:
         return "unknown"
 
     def _bounded_attempts(value: object) -> int:
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int):
+            return max(0, min(value, 99))
+        if not isinstance(value, float) or not math.isfinite(value):
             return 0
         if value <= 0:
             return 0
@@ -4128,7 +4140,11 @@ def _normalized_auto_verification_diagnostics(verification: object) -> dict:
         return int(value)
 
     def _bounded_confidence(value: object) -> float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if isinstance(value, bool):
+            return 0.0
+        if isinstance(value, int):
+            return float(max(0, min(value, 1)))
+        if not isinstance(value, float) or not math.isfinite(value):
             return 0.0
         return round(max(0.0, min(float(value), 1.0)), 2)
 
