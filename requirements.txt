@@ -10,3 +10,4 @@ croniter==6.2.2
 pillow==12.2.0
 psycopg[binary]==3.3.4
 psycopg_pool==3.3.0
+opencv-python-headless==4.13.0.92
