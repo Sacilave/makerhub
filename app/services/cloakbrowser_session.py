@@ -197,6 +197,13 @@ def _timeout_seconds() -> int:
     return max(min(value, 120), 5)
 
 
+def _env_bool(env_name: str, default: bool) -> bool:
+    raw = str(os.getenv(env_name, "")).strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on", "enabled"}
+
+
 def _auth_token() -> str:
     token = str(os.getenv("MAKERHUB_CLOAKBROWSER_AUTH_TOKEN") or "").strip()
     if not token:
@@ -854,6 +861,7 @@ def _bridge_payload(
         "platform": normalize_platform(platform) if platform else "",
         "navigation_timeout_ms": max(_timeout_seconds() * 1000, 15000),
         "authorization_timeout_ms": AUTHORIZATION_TIMEOUT_SECONDS * 1000,
+        "auto_verify_3mf": _env_bool("MAKERHUB_AUTO_VERIFY_3MF", False),
     }
 
 
@@ -1001,10 +1009,24 @@ def browser_authorize_3mf_download(
     except (TypeError, ValueError):
         status_code = 0
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
     return {
         "status_code": max(status_code, 0),
         "payload": payload,
         "text": str(result.get("text") or "")[:4096],
+        "verification": {
+            key: verification[key]
+            for key in (
+                "attempted",
+                "completed",
+                "provider",
+                "challenge_type",
+                "attempts",
+                "reason",
+                "confidence",
+            )
+            if key in verification
+        },
     }
 
 

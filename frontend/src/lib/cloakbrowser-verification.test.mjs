@@ -10,6 +10,9 @@ import {
   runVisionRequest,
   sanitizeVerificationResult,
 } from "../../../app/services/cloakbrowser_verification.mjs";
+import {
+  coordinateThreeMfAuthorization,
+} from "../../../app/services/cloakbrowser_bridge.mjs";
 
 
 function fakeHandle({
@@ -83,6 +86,197 @@ function fakeChild(onInput) {
   };
   return child;
 }
+
+function fakeAuthorizationResponse({
+  status = 200,
+  payload = { name: "part.3mf", url: "https://download.example.test/part.3mf" },
+  url = "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
+} = {}) {
+  return {
+    status: () => status,
+    text: async () => JSON.stringify(payload),
+    url: () => url,
+  };
+}
+
+function fakeAuthorizationPage(responses, lifecycle = []) {
+  const queue = [...responses];
+  const forbidden = (name) => async () => {
+    throw new Error(`${name} must not be called`);
+  };
+  return {
+    fetch: forbidden("fetch"),
+    goto: forbidden("goto"),
+    reload: forbidden("reload"),
+    waitForResponse: (matcher, options = {}) => {
+      lifecycle.push("waiter");
+      const response = queue.shift();
+      assert.equal(typeof matcher, "function");
+      if (!response) {
+        return new Promise((resolve, reject) => {
+          options.signal?.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+        });
+      }
+      assert.equal(matcher(response), true);
+      return Promise.resolve(response);
+    },
+  };
+}
+
+async function runAuthorizationCoordinator({
+  first = fakeAuthorizationResponse(),
+  second,
+  inputAutoVerify = true,
+  lifecycle = [],
+  verificationAdapter = async () => ({
+    attempted: true,
+    completed: true,
+    provider: "geetest4",
+    challenge_type: "slider",
+    attempts: 1,
+    reason: "completed",
+  }),
+} = {}) {
+  let clicks = 0;
+  let disposals = 0;
+  const page = fakeAuthorizationPage([first, second].filter(Boolean), lifecycle);
+  const result = await coordinateThreeMfAuthorization(page, {
+    instanceId: "123",
+    authorizationTimeout: 100,
+    inputAutoVerify,
+    findButton: async () => {
+      lifecycle.push("find-button");
+      return {
+        click: async () => {
+          clicks += 1;
+          lifecycle.push("click");
+        },
+        dispose: async () => {
+          disposals += 1;
+          lifecycle.push("dispose");
+        },
+      };
+    },
+    verificationAdapter: async (...args) => {
+      lifecycle.push("verification-input");
+      return verificationAdapter(...args);
+    },
+  });
+  return { result, clicks, disposals };
+}
+
+test("3MF coordinator returns a signed HTTP 200 response without verification", async () => {
+  let verificationCalls = 0;
+  const { result, clicks, disposals } = await runAuthorizationCoordinator({
+    verificationAdapter: async () => {
+      verificationCalls += 1;
+      return { completed: true };
+    },
+  });
+
+  assert.equal(result.status_code, 200);
+  assert.equal(result.payload.url, "https://download.example.test/part.3mf");
+  assert.equal(verificationCalls, 0);
+  assert.equal(clicks, 1);
+  assert.equal(disposals, 1);
+});
+
+test("3MF coordinator installs the second waiter before verifying an HTTP 418 response", async () => {
+  const lifecycle = [];
+  const first = fakeAuthorizationResponse({
+    status: 418,
+    payload: { captchaId: "captcha-123", message: "verify" },
+  });
+  const second = fakeAuthorizationResponse({
+    payload: { name: "verified.3mf", url: "https://download.example.test/verified.3mf" },
+  });
+
+  const { result, clicks } = await runAuthorizationCoordinator({ first, second, lifecycle });
+
+  assert.equal(clicks, 1);
+  assert.deepEqual(lifecycle, [
+    "waiter",
+    "find-button",
+    "click",
+    "dispose",
+    "waiter",
+    "verification-input",
+  ]);
+  assert.equal(result.status_code, 200);
+  assert.equal(result.payload.url, "https://download.example.test/verified.3mf");
+  assert.equal(result.verification.completed, true);
+});
+
+test("3MF coordinator verifies a captcha payload even when its status is not 418", async () => {
+  let verificationCalls = 0;
+  const first = fakeAuthorizationResponse({
+    status: 400,
+    payload: { captchaId: "captcha-from-payload" },
+  });
+  const second = fakeAuthorizationResponse();
+
+  await runAuthorizationCoordinator({
+    first,
+    second,
+    verificationAdapter: async () => {
+      verificationCalls += 1;
+      return { attempted: true, completed: true, provider: "geetest4" };
+    },
+  });
+
+  assert.equal(verificationCalls, 1);
+});
+
+test("3MF coordinator settles an unused waiter and sanitizes adapter failure", async () => {
+  const first = fakeAuthorizationResponse({ status: 418, payload: { captchaId: "captcha-123" } });
+  const { result, clicks } = await runAuthorizationCoordinator({
+    first,
+    verificationAdapter: async () => {
+      throw new Error("secret-cookie-and-token");
+    },
+  });
+
+  assert.equal(clicks, 1);
+  assert.equal(result.status_code, 418);
+  assert.equal(result.payload.captchaId, "captcha-123");
+  assert.deepEqual(result.verification, {
+    attempted: true,
+    completed: false,
+    provider: "unknown",
+    challenge_type: "unknown",
+    attempts: 0,
+    reason: "verification_failed",
+  });
+});
+
+test("3MF coordinator returns the original response when verification times out", async () => {
+  const first = fakeAuthorizationResponse({ status: 418, payload: { captchaId: "captcha-123" } });
+  const { result } = await runAuthorizationCoordinator({
+    first,
+    verificationAdapter: async () => ({
+      attempted: true,
+      completed: false,
+      provider: "geetest4",
+      challenge_type: "slider",
+      attempts: 1,
+      reason: "timeout",
+      confidence: 0.4,
+      token: "must-not-leak",
+    }),
+  });
+
+  assert.equal(result.status_code, 418);
+  assert.equal(result.payload.captchaId, "captcha-123");
+  assert.deepEqual(result.verification, {
+    attempted: true,
+    completed: false,
+    provider: "geetest4",
+    challenge_type: "slider",
+    attempts: 1,
+    reason: "timeout",
+    confidence: 0.4,
+  });
+});
 
 function fakeInputPage({
   dispatch = async () => {},

@@ -955,6 +955,16 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "ok": True,
             "status_code": 200,
             "payload": {"name": "part.3mf", "url": "https://download.example.test/part.3mf"},
+            "verification": {
+                "attempted": True,
+                "completed": True,
+                "provider": "geetest4",
+                "challenge_type": "slider",
+                "attempts": 1,
+                "reason": "completed",
+                "confidence": 0.92,
+                "token": "must-not-leak",
+            },
         }
 
         with patch.object(cloakbrowser_session, "resource_slot", create=True) as resource_slot_mock, \
@@ -968,7 +978,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
                         "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
                         "MAKERHUB_CLOAKBROWSER_TIMEOUT": "30",
                     },
-                    clear=False,
+                    clear=True,
                 ):
             result = cloakbrowser_session.browser_authorize_3mf_download(
                 "cn",
@@ -980,6 +990,18 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         self.assertEqual(result["status_code"], 200)
         self.assertEqual(result["payload"]["name"], "part.3mf")
+        self.assertEqual(
+            result["verification"],
+            {
+                "attempted": True,
+                "completed": True,
+                "provider": "geetest4",
+                "challenge_type": "slider",
+                "attempts": 1,
+                "reason": "completed",
+                "confidence": 0.92,
+            },
+        )
         bridge_payload = bridge_mock.call_args.args[0]
         self.assertEqual(bridge_payload["action"], "click")
         self.assertEqual(bridge_payload["platform"], "cn")
@@ -992,8 +1014,52 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertNotIn("raw_cookie", bridge_payload)
         self.assertEqual(bridge_payload["navigation_timeout_ms"], 30000)
         self.assertEqual(bridge_payload["authorization_timeout_ms"], 90000)
+        self.assertFalse(bridge_payload["auto_verify_3mf"])
         self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 150)
         resource_slot_mock.assert_called_once_with("cloakbrowser_platform_cn", detail="click")
+
+    def test_browser_3mf_authorization_reads_auto_verify_flag_per_operation(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        bridge_result = {
+            "ok": True,
+            "status_code": 418,
+            "payload": {"captchaId": "captcha-123"},
+        }
+        values = (
+            ("true", True),
+            ("false", False),
+            ("0", False),
+            ("off", False),
+            (None, False),
+        )
+
+        with patch.object(cloakbrowser_session, "resource_slot", create=True), \
+                patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+                patch.object(cloakbrowser_session, "launch_profile", return_value=(profile, False)), \
+                patch.object(cloakbrowser_session, "_run_bridge", return_value=bridge_result) as bridge_mock:
+            for value, expected in values:
+                env = {
+                    "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                }
+                if value is not None:
+                    env["MAKERHUB_AUTO_VERIFY_3MF"] = value
+                with self.subTest(value=value), patch.dict(os.environ, env, clear=True):
+                    cloakbrowser_session.browser_authorize_3mf_download(
+                        "cn",
+                        "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
+                        profile_id="profile-cn",
+                        model_url="https://makerworld.com.cn/zh/models/456",
+                        instance_id="123",
+                    )
+                    self.assertIs(
+                        bridge_mock.call_args.args[0]["auto_verify_3mf"],
+                        expected,
+                    )
 
     def test_browser_3mf_authorization_protocol_timeout_does_not_restart_profile(self):
         profile = cloakbrowser_session.CloakBrowserProfile(

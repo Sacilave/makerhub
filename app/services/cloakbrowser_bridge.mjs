@@ -11,6 +11,11 @@ import {
   makerWorldHomeUrl,
   normalizePlatform,
 } from "./cloakbrowser_login.mjs";
+import {
+  attemptAutomaticVerification,
+  AUTO_VERIFY_TIMEOUT_MS,
+  sanitizeVerificationResult,
+} from "./cloakbrowser_verification.mjs";
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -437,6 +442,94 @@ function authorizationResponseMatches(response, instanceId) {
   return !instanceId || matched?.[1] === String(instanceId);
 }
 
+export async function readAuthorizationResponse(response) {
+  const text = (await response.text()).slice(0, 16384);
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = null;
+  }
+  return {
+    status_code: Number(response.status() || 0),
+    payload: sanitizedAuthorizationPayload(payload, text),
+    text: payload ? "" : text.slice(0, 1024),
+  };
+}
+
+function isVerificationAuthorization(response) {
+  return response.status_code === 418 || Boolean(response.payload?.captchaId);
+}
+
+async function settlePageGeneratedAuthorization(responseOutcome, originalResponse) {
+  const outcome = await responseOutcome;
+  if (!outcome.response) return originalResponse;
+  try {
+    return await readAuthorizationResponse(outcome.response);
+  } catch {
+    return originalResponse;
+  }
+}
+
+export async function coordinateThreeMfAuthorization(page, options = {}) {
+  const authorizationTimeout = Math.max(Number(options.authorizationTimeout || 90000), 1);
+  const navigationTimeout = Math.max(Number(options.navigationTimeout || 30000), 1);
+  const matcher = (response) => authorizationResponseMatches(response, options.instanceId);
+  const firstResponsePromise = page.waitForResponse(matcher, { timeout: authorizationTimeout });
+  const findButton = options.findButton || findThreeMfDownloadButton;
+  const button = await findButton(page, navigationTimeout);
+  try {
+    await button.click({ delay: 20 });
+  } finally {
+    await button.dispose();
+  }
+  const first = await readAuthorizationResponse(await firstResponsePromise);
+
+  if (!options.inputAutoVerify || !isVerificationAuthorization(first)) {
+    return { ...first, navigation_timed_out: Boolean(options.navigationTimedOut) };
+  }
+
+  const waiterController = new AbortController();
+  const secondResponseOutcome = page.waitForResponse(matcher, {
+    timeout: AUTO_VERIFY_TIMEOUT_MS,
+    signal: waiterController.signal,
+  }).then(
+    (response) => ({ response }),
+    () => ({ response: null }),
+  );
+  const verificationAdapter = options.verificationAdapter || attemptAutomaticVerification;
+  let verification;
+  try {
+    verification = sanitizeVerificationResult(await verificationAdapter(page, {
+      timeoutMs: AUTO_VERIFY_TIMEOUT_MS,
+    }));
+  } catch {
+    verification = sanitizeVerificationResult({
+      attempted: true,
+      completed: false,
+      reason: "verification_failed",
+    });
+  }
+
+  if (!verification.completed) {
+    waiterController.abort();
+    await secondResponseOutcome;
+    return {
+      ...first,
+      navigation_timed_out: Boolean(options.navigationTimedOut),
+      verification,
+    };
+  }
+
+  const finalResponse = await settlePageGeneratedAuthorization(secondResponseOutcome, first);
+  waiterController.abort();
+  return {
+    ...finalResponse,
+    navigation_timed_out: Boolean(options.navigationTimedOut),
+    verification,
+  };
+}
+
 async function findThreeMfDownloadButton(page, timeoutMs) {
   const deadline = Date.now() + Math.max(Number(timeoutMs || 30000), 15000);
   while (Date.now() < deadline) {
@@ -470,6 +563,7 @@ async function clickAuthorization(
   instanceId,
   navigationTimeoutMs,
   authorizationTimeoutMs,
+  inputAutoVerify,
 ) {
   if (!isThreeMfAuthorizationUrl(targetUrl)) throw new Error("invalid 3MF authorization URL");
   if (!isMakerWorldModelUrl(modelUrl, platform)) throw new Error("invalid MakerWorld model page URL");
@@ -483,27 +577,18 @@ async function clickAuthorization(
       if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
       navigationTimedOut = true;
     }
-    const responsePromise = page.waitForResponse(
-      (response) => authorizationResponseMatches(response, instanceId),
-      { timeout: authorizationTimeout },
-    );
-    const button = await findThreeMfDownloadButton(page, navigationTimeout);
-    await button.click({ delay: 20 });
-    await button.dispose();
-    const response = await responsePromise;
-    const text = (await response.text()).slice(0, 16384);
-    let payload = null;
-    try {
-      payload = text ? JSON.parse(text) : null;
-    } catch {
-      payload = null;
-    }
-    return {
-      status_code: Number(response.status() || 0),
-      payload: sanitizedAuthorizationPayload(payload, text),
-      text: payload ? "" : text.slice(0, 1024),
-      navigation_timed_out: navigationTimedOut,
-    };
+    const authorization = await coordinateThreeMfAuthorization(page, {
+      instanceId,
+      navigationTimeout,
+      authorizationTimeout,
+      navigationTimedOut,
+      inputAutoVerify,
+      findButton: async () => {
+        const button = await findThreeMfDownloadButton(page, navigationTimeout);
+        return button;
+      },
+    });
+    return { ...authorization, navigation_timed_out: navigationTimedOut };
   });
 }
 
@@ -550,6 +635,7 @@ async function main() {
         String(input.instance_id || ""),
         input.navigation_timeout_ms,
         input.authorization_timeout_ms,
+        input.auto_verify_3mf === true,
       );
       process.stdout.write(JSON.stringify({ ok: true, ...authorization }));
       return;
@@ -611,7 +697,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write((error instanceof Error ? error.message : String(error || "CDP bridge failed")) + "\n");
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write((error instanceof Error ? error.message : String(error || "CDP bridge failed")) + "\n");
+    process.exit(1);
+  });
+}
