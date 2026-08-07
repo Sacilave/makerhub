@@ -89,6 +89,19 @@ _ORGANIZER_TERMINAL_LOG_CACHE = {
     "size": 0,
     "events": [],
 }
+
+
+def _is_daily_limit_paused_archive_task(item: dict[str, Any]) -> bool:
+    status = str(item.get("status") or "").strip().lower()
+    blocked_reason = str(item.get("blocked_reason") or "").strip().lower()
+    if status != "paused" or blocked_reason == "manual":
+        return False
+    if blocked_reason == "daily_limit":
+        return True
+    message = str(item.get("message") or "").strip()
+    return "每日下载上限" in message and "自动重试暂停至" in message
+
+
 ORGANIZER_STATUS_LOG_LOOKBACK_BYTES = 2 * 1024 * 1024
 # 仅保留显式临时注册；九个模块路径始终在查询时解析。
 _JSON_STATE_KEYS: dict[Path, str] = {}
@@ -2461,6 +2474,7 @@ class TaskStateStore:
         selector=None,
         *,
         limit: Optional[int] = None,
+        include_daily_limit: bool = False,
         message: str = ARCHIVE_VERIFICATION_RESUMED_MESSAGE,
         meta_updates: Optional[dict[str, Any]] = None,
     ) -> dict:
@@ -2480,8 +2494,10 @@ class TaskStateStore:
                 status = str(normalized.get("status") or "").strip().lower()
                 blocked_reason = str(normalized.get("blocked_reason") or "").strip().lower()
                 message = str(normalized.get("message") or "").strip()
+                daily_limit_paused = _is_daily_limit_paused_archive_task(normalized)
                 verification_paused = (
                     status == "paused"
+                    and not daily_limit_paused
                     and (
                         blocked_reason == "needs_verification"
                         or (
@@ -2495,8 +2511,9 @@ class TaskStateStore:
                         )
                     )
                 )
+                resumable = verification_paused or (include_daily_limit and daily_limit_paused)
                 within_limit = resume_limit is None or resumed_count < resume_limit
-                if verification_paused and within_limit and (selector is None or selector(normalized)):
+                if resumable and within_limit and (selector is None or selector(normalized)):
                     normalized["status"] = "queued"
                     normalized["message"] = clean_message
                     normalized["updated_at"] = now

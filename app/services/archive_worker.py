@@ -46,7 +46,7 @@ from app.services.process_jobs import run_archive_model_job, run_discover_batch_
 from app.services.proxy_policy import temporary_proxy_env
 from app.services.resource_limiter import resource_slot
 from app.services.source_library import refresh_source_preview_snapshots, source_identity_key
-from app.services.task_state import TaskStateStore
+from app.services.task_state import TaskStateStore, _is_daily_limit_paused_archive_task
 from app.services.state_events import publish_state_event
 from app.services.three_mf import (
     describe_three_mf_failure,
@@ -2809,6 +2809,7 @@ class ArchiveTaskManager:
         queue = resume_tasks(
             selector=_matches,
             limit=THREE_MF_RECOVERY_PROBE_BATCH_SIZE,
+            include_daily_limit=True,
             message="验证已完成，正在探测 3MF 下载权限",
             meta_updates={"browser_session_recovery": True},
         )
@@ -3258,6 +3259,7 @@ class ArchiveTaskManager:
             return queue
         gate_by_platform = self._verification_resume_gate_snapshot(queue)
         queue = self._resume_legacy_browser_session_tasks_when_gate_open(queue, gate_by_platform)
+        queue = self._resume_expired_daily_limit_tasks_when_gate_open(queue, gate_by_platform)
         self._schedule_browser_recovery_for_legacy_cookie_invalid_gates(queue, gate_by_platform)
         return queue
 
@@ -3466,6 +3468,49 @@ class ArchiveTaskManager:
                 "浏览器登录态已恢复，已放行一个遗留 3MF 探测任务。",
                 resumed_count=int(resumed_queue.get("resumed_count") or 0),
             )
+        return resumed_queue
+
+    def _resume_expired_daily_limit_tasks_when_gate_open(
+        self,
+        queue: dict,
+        gate_by_platform: dict[str, dict[str, Any]],
+    ) -> dict:
+        resume_tasks = getattr(self.task_store, "resume_verification_paused_archive_tasks", None)
+        if not callable(resume_tasks):
+            return queue
+
+        resumed_queue = queue
+        for platform in ("cn", "global"):
+            if not bool((gate_by_platform.get(platform) or {}).get("open")):
+                continue
+
+            def _matches(item: dict, expected_platform: str = platform) -> bool:
+                if not _is_three_mf_only_task(item) or not _is_daily_limit_paused_archive_task(item):
+                    return False
+                item_platform, _url, _meta = self._task_platform_and_url(item)
+                return item_platform == expected_platform
+
+            if not any(
+                isinstance(item, dict) and _matches(item)
+                for item in resumed_queue.get("queued") or []
+            ):
+                continue
+            resumed_queue = resume_tasks(
+                selector=_matches,
+                limit=THREE_MF_RECOVERY_PROBE_BATCH_SIZE,
+                include_daily_limit=True,
+                message="每日上限已过期，正在探测 3MF 下载权限",
+                meta_updates={"browser_session_recovery": True},
+            )
+            resumed_count = int(resumed_queue.get("resumed_count") or 0)
+            if resumed_count > 0:
+                append_business_log(
+                    "missing_3mf",
+                    "expired_daily_limit_probe_resumed",
+                    "每日下载上限已过期，已放行一个 3MF 探测任务。",
+                    platform=platform,
+                    resumed_count=resumed_count,
+                )
         return resumed_queue
 
     def _schedule_browser_recovery_for_legacy_cookie_invalid_gates(

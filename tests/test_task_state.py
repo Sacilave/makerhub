@@ -1559,6 +1559,91 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(queue["queued"][2]["status"], "paused")
         self.assertEqual(queue["queued"][2]["message"], "用户手动暂停。")
 
+    def test_resume_verification_paused_archive_tasks_limits_expired_daily_limit_recovery(self):
+        daily_limit_message = (
+            "国区返回了每日下载上限，今日暂停自动重试，"
+            "自动重试暂停至 2026-08-05 00:00。"
+        )
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "daily-limit-cn-1",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "status": "paused",
+                        "message": daily_limit_message,
+                        "meta": {"source": "cn", "missing_3mf_retry": True},
+                    },
+                    {
+                        "id": "daily-limit-cn-2",
+                        "url": "https://makerworld.com.cn/zh/models/456",
+                        "status": "paused",
+                        "blocked_reason": "needs_verification",
+                        "message": daily_limit_message,
+                        "meta": {"source": "cn", "missing_3mf_retry": True},
+                    },
+                    {
+                        "id": "manual-pause",
+                        "url": "https://makerworld.com.cn/zh/models/789",
+                        "status": "paused",
+                        "blocked_reason": "manual",
+                        "message": daily_limit_message,
+                        "meta": {"source": "cn", "missing_3mf_retry": True},
+                    },
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            queue = store.resume_verification_paused_archive_tasks(
+                include_daily_limit=True,
+                limit=1,
+                message="每日上限已过期，正在探测 3MF 下载权限",
+                meta_updates={"browser_session_recovery": True},
+            )
+
+        self.assertEqual(queue["resumed_count"], 1)
+        self.assertEqual([item["id"] for item in queue["resumed_items"]], ["daily-limit-cn-1"])
+        self.assertEqual(queue["queued"][0]["status"], "queued")
+        self.assertTrue(queue["queued"][0]["meta"]["browser_session_recovery"])
+        self.assertEqual(queue["queued"][1]["status"], "paused")
+        self.assertEqual(queue["queued"][2]["status"], "paused")
+        self.assertEqual(queue["queued"][2]["blocked_reason"], "manual")
+
+    def test_resume_verification_paused_archive_tasks_keeps_daily_limit_paused_by_default(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "daily-limit-cn",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "status": "paused",
+                        "blocked_reason": "needs_verification",
+                        "message": (
+                            "国区返回了每日下载上限，今日暂停自动重试，"
+                            "自动重试暂停至 2026-08-05 00:00。"
+                        ),
+                        "meta": {"source": "cn", "missing_3mf_retry": True},
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            queue = store.resume_verification_paused_archive_tasks()
+
+        self.assertEqual(queue["resumed_count"], 0)
+        self.assertEqual(queue["queued"][0]["status"], "paused")
+        self.assertEqual(queue["queued"][0]["blocked_reason"], "needs_verification")
+
     def test_pause_verification_archive_tasks_updates_matching_queue_atomically(self):
         state = {
             "archive_queue": {

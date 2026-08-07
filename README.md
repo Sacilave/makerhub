@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.0`
+> 当前版本：`v0.16.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-07 · v0.16.1
+
+- 过期的 3MF 每日下载上限任务会在平台 gate 恢复后自动继续，不再永久停在“已暂停”。
+- 国内站和国际站每次各只放行 1 个真实 3MF 探测，成功后再逐个继续；当前限额、真实验证和手动暂停不会被误恢复。
+
 ### 2026-08-07 · v0.16.0
 
 - 新增可选的 3MF 自动验证：国内站尝试图标点击和滑块，国际站 Turnstile 等待浏览器原生响应后最多点击一个可见复选框；`MAKERHUB_AUTO_VERIFY_3MF` 默认关闭。
@@ -365,13 +370,13 @@ npm --prefix frontend run build
 - Worker 和本地整理进程会在空闲时释放大型内存缓存；Worker 完全无活跃任务且 RSS 超过阈值时自动重启回收内存。
 - CloakBrowser Manager 保持运行，国内站和国际站 profile 连续空闲 30 分钟后自动停止，下次使用时自动启动。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-03 · v0.15.22
 
 - 模型元数据变化或删除时只增量修复对应数据库索引，不再清空全库，首页模型总数保持稳定。
 - 修复失败按文件签名短暂防抖，文件修正后可立即重试，避免页面轮询反复提交相同任务。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-03 · v0.15.21
 

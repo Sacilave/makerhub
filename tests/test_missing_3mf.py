@@ -766,6 +766,7 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(resumed_queue["queued"][1]["status"], "paused")
         self.assertEqual(ensured, [True])
         self.assertEqual(resume_mock.call_args.kwargs["limit"], 1)
+        self.assertTrue(resume_mock.call_args.kwargs["include_daily_limit"])
         self.assertEqual(resume_mock.call_args.kwargs["meta_updates"], {"browser_session_recovery": True})
         self.assertEqual(len(retrying_calls), 1)
         self.assertEqual(retrying_calls[0][1]["status"], "queued")

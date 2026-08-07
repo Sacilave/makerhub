@@ -958,6 +958,134 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         schedule_mock.assert_not_called()
         log_mock.assert_called_once()
 
+    def test_ensure_worker_for_pending_resumes_one_expired_daily_limit_probe_per_open_platform(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        daily_limit_message = (
+            "返回了每日下载上限，今日暂停自动重试，"
+            "自动重试暂停至 2026-08-05 00:00。"
+        )
+        queued_items = [
+            {
+                "id": f"daily-limit-{platform}-{index}",
+                "status": "paused",
+                "url": (
+                    f"https://makerworld.com.cn/zh/models/{index}"
+                    if platform == "cn"
+                    else f"https://makerworld.com/en/models/{index}"
+                ),
+                "message": daily_limit_message,
+                "meta": {"missing_3mf_retry": True, "source": platform},
+            }
+            for platform in ("cn", "global")
+            for index in (1, 2)
+        ]
+        queued_items.append(
+            {
+                "id": "verification-required-cn",
+                "status": "paused",
+                "blocked_reason": "needs_verification",
+                "url": "https://makerworld.com.cn/zh/models/999",
+                "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                "meta": {"missing_3mf_retry": True, "source": "cn"},
+            }
+        )
+        queue = {
+            "active": [],
+            "queued": queued_items,
+            "recent_failures": [],
+            "running_count": 0,
+            "queued_count": len(queued_items),
+        }
+        current_queue = queue
+
+        def resume_paused(*, selector=None, limit=None, include_daily_limit=False, message="", meta_updates=None):
+            nonlocal current_queue
+            self.assertTrue(include_daily_limit)
+            resumed_items = []
+            next_items = []
+            for original in current_queue["queued"]:
+                item = {**original, "meta": dict(original.get("meta") or {})}
+                is_daily_limit = (
+                    item.get("status") == "paused"
+                    and "每日下载上限" in str(item.get("message") or "")
+                    and "自动重试暂停至" in str(item.get("message") or "")
+                )
+                within_limit = limit is None or len(resumed_items) < limit
+                if is_daily_limit and within_limit and (selector is None or selector(item)):
+                    item["status"] = "queued"
+                    item["message"] = message
+                    item["meta"].update(meta_updates or {})
+                    resumed_items.append(item)
+                next_items.append(item)
+            current_queue = {
+                **current_queue,
+                "queued": next_items,
+                "resumed_count": len(resumed_items),
+                "resumed_items": resumed_items,
+            }
+            return current_queue
+
+        resume_mock = Mock(side_effect=resume_paused)
+        manager.task_store = SimpleNamespace(resume_verification_paused_archive_tasks=resume_mock)
+
+        with patch.object(manager, "_repair_queue_before_worker_start", return_value=queue), \
+                patch.object(manager, "_ensure_worker") as ensure_worker_mock, \
+                patch.object(
+                    archive_worker_module,
+                    "three_mf_gate_for_url",
+                    side_effect=lambda url, meta: {
+                        "open": True,
+                        "state": "open",
+                        "platform": meta.get("source"),
+                    },
+                ), \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.ensure_worker_for_pending()
+
+        self.assertEqual(resume_mock.call_count, 2)
+        self.assertTrue(all(call.kwargs["include_daily_limit"] for call in resume_mock.call_args_list))
+        self.assertTrue(all(call.kwargs["limit"] == 1 for call in resume_mock.call_args_list))
+        self.assertEqual(
+            [item["id"] for item in result["queued"] if item.get("status") == "queued"],
+            ["daily-limit-cn-1", "daily-limit-global-1"],
+        )
+        self.assertEqual(result["queued"][-1]["status"], "paused")
+        ensure_worker_mock.assert_called_once()
+
+    def test_ensure_worker_for_pending_keeps_daily_limit_tasks_paused_while_gate_is_closed(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        paused_item = {
+            "id": "daily-limit-cn",
+            "status": "paused",
+            "url": "https://makerworld.com.cn/zh/models/123",
+            "message": (
+                "国区返回了每日下载上限，今日暂停自动重试，"
+                "自动重试暂停至 2099-08-05 00:00。"
+            ),
+            "meta": {"missing_3mf_retry": True, "source": "cn"},
+        }
+        queue = {
+            "active": [],
+            "queued": [paused_item],
+            "recent_failures": [],
+            "running_count": 0,
+            "queued_count": 1,
+        }
+        resume_mock = Mock()
+        manager.task_store = SimpleNamespace(resume_verification_paused_archive_tasks=resume_mock)
+
+        with patch.object(manager, "_repair_queue_before_worker_start", return_value=queue), \
+                patch.object(manager, "_ensure_worker"), \
+                patch.object(
+                    archive_worker_module,
+                    "three_mf_gate_for_url",
+                    return_value={"open": False, "state": "daily_limit", "platform": "cn"},
+                ):
+            result = manager.ensure_worker_for_pending()
+
+        self.assertEqual(result, queue)
+        resume_mock.assert_not_called()
+
     def test_resume_pending_tasks_resumes_legacy_browser_session_task_when_gate_open(self):
         manager = ArchiveTaskManager(background_enabled=True)
         paused_item = {
