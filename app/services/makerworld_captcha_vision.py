@@ -17,6 +17,11 @@ CLICK_CONFIDENCE_MIN = 0.70
 CLICK_MARGIN_MIN = 0.08
 SLIDER_CONFIDENCE_MIN = 0.72
 SLIDER_MARGIN_MIN = 0.06
+COORDINATE_TARGET_MIN = 2
+COORDINATE_TARGET_MAX = 5
+COORDINATE_CONFIDENCE_MIN = 0.68
+COORDINATE_MARGIN_MIN = 0.06
+COORDINATE_SCALES = (0.80, 0.90, 1.00, 1.10, 1.20, 1.35)
 MAX_STDIN_BYTES = 24 * 1024 * 1024
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -35,12 +40,14 @@ ALLOWED_REQUEST_FIELDS = {
     "mode",
     "target_png",
     "candidate_pngs",
+    "targets_png",
     "background_png",
     "piece_png",
     "geometry",
 }
 _REQUEST_FIELDS_BY_MODE = {
     "click": {"mode", "target_png", "candidate_pngs"},
+    "coordinate_click": {"mode", "targets_png", "background_png"},
     "slider": {"mode", "background_png", "piece_png", "geometry"},
 }
 
@@ -168,6 +175,158 @@ def _hu_similarity(left: np.ndarray, right: np.ndarray) -> float:
 
 def _clamp_score(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
+
+
+def _contiguous_true_runs(values: np.ndarray) -> list[tuple[int, int]]:
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, occupied in enumerate(values):
+        if occupied and start is None:
+            start = index
+        elif not occupied and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, len(values)))
+    return runs
+
+
+def _segment_target_symbols(targets: np.ndarray) -> list[np.ndarray]:
+    mask = _foreground_mask(targets)
+    joined = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_CLOSE,
+        np.ones((3, 5), dtype=np.uint8),
+    )
+    occupied = np.any(joined > 0, axis=0)
+    runs = _contiguous_true_runs(occupied)
+    runs = [(left, right) for left, right in runs if right - left >= 6]
+    if not COORDINATE_TARGET_MIN <= len(runs) <= COORDINATE_TARGET_MAX:
+        raise ValueError("target_count_invalid")
+    return [targets[:, left:right] for left, right in runs]
+
+
+def _coordinate_template(target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    mask = _foreground_mask(target)
+    points = cv2.findNonZero(mask)
+    if points is None:
+        raise ValueError("image_foreground_missing")
+    left, top, width, height = cv2.boundingRect(points)
+    grayscale = _grayscale(target)[top:top + height, left:left + width]
+    return grayscale, cv2.Canny(grayscale, 64, 160)
+
+
+def _coordinate_score_response(
+    background_gray: np.ndarray,
+    background_edges: np.ndarray,
+    template_gray: np.ndarray,
+    template_edges: np.ndarray,
+) -> np.ndarray:
+    grayscale_response = cv2.matchTemplate(background_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+    edge_response = cv2.matchTemplate(background_edges, template_edges, cv2.TM_CCOEFF_NORMED)
+    return np.clip(
+        (0.75 * np.maximum(grayscale_response, 0.0))
+        + (0.25 * np.maximum(edge_response, 0.0)),
+        0.0,
+        1.0,
+    )
+
+
+def _coordinate_locations_excluded(
+    response: np.ndarray,
+    template_width: int,
+    template_height: int,
+    excluded: list[tuple[int, int, int]],
+) -> np.ndarray:
+    blocked = np.zeros(response.shape, dtype=bool)
+    if not excluded:
+        return blocked
+    y_positions, x_positions = np.ogrid[:response.shape[0], :response.shape[1]]
+    center_x = x_positions + (template_width / 2.0)
+    center_y = y_positions + (template_height / 2.0)
+    radius = max(template_width, template_height) / 2.0
+    for excluded_x, excluded_y, excluded_radius in excluded:
+        blocked |= (
+            ((center_x - excluded_x) ** 2) + ((center_y - excluded_y) ** 2)
+            <= (radius + excluded_radius) ** 2
+        )
+    return blocked
+
+
+def _coordinate_match(
+    target: np.ndarray,
+    background: np.ndarray,
+    excluded: list[tuple[int, int, int]],
+) -> dict[str, float] | None:
+    try:
+        target_gray, target_edges = _coordinate_template(target)
+    except ValueError:
+        return None
+    background_gray = _grayscale(background)
+    background_edges = cv2.Canny(background_gray, 64, 160)
+    responses: list[tuple[np.ndarray, int, int]] = []
+    winner: tuple[float, int, int, int, int] | None = None
+    for scale in COORDINATE_SCALES:
+        template_gray = cv2.resize(
+            target_gray,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_AREA if scale <= 1.0 else cv2.INTER_CUBIC,
+        )
+        template_edges = cv2.resize(
+            target_edges,
+            (template_gray.shape[1], template_gray.shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        template_height, template_width = template_gray.shape
+        if template_height > background_gray.shape[0] or template_width > background_gray.shape[1]:
+            continue
+        response = _coordinate_score_response(
+            background_gray,
+            background_edges,
+            template_gray,
+            template_edges,
+        )
+        blocked = _coordinate_locations_excluded(response, template_width, template_height, excluded)
+        response = response.copy()
+        response[blocked] = -1.0
+        responses.append((response, template_width, template_height))
+        _, score, _, location = cv2.minMaxLoc(response)
+        if score < 0:
+            continue
+        candidate = (float(score), location[0], location[1], template_width, template_height)
+        if winner is None or candidate[0] > winner[0]:
+            winner = candidate
+    if winner is None:
+        return None
+
+    best_score, best_left, best_top, best_width, best_height = winner
+    best_center_x = best_left + (best_width / 2.0)
+    best_center_y = best_top + (best_height / 2.0)
+    suppression_radius = max(best_width, best_height) / 2.0
+    second_score = -1.0
+    for response, template_width, template_height in responses:
+        suppressed = response.copy()
+        y_positions, x_positions = np.ogrid[:suppressed.shape[0], :suppressed.shape[1]]
+        center_x = x_positions + (template_width / 2.0)
+        center_y = y_positions + (template_height / 2.0)
+        suppressed[
+            ((center_x - best_center_x) ** 2) + ((center_y - best_center_y) ** 2)
+            <= (suppression_radius + (max(template_width, template_height) / 2.0)) ** 2
+        ] = -1.0
+        _, score, _, _ = cv2.minMaxLoc(suppressed)
+        second_score = max(second_score, float(score))
+    if second_score < 0:
+        return None
+    radius = int(round(max(best_width, best_height) / 2.0))
+    return {
+        "pixel_x": best_center_x,
+        "pixel_y": best_center_y,
+        "radius": float(radius),
+        "confidence": _clamp_score(best_score),
+        "margin": _clamp_score(best_score - second_score),
+    }
 
 
 def _normalized_symbol(raw: bytes) -> np.ndarray:
@@ -387,6 +546,61 @@ def solve_click_challenge(target_png: bytes, candidate_pngs: list[bytes]) -> dic
     return result
 
 
+def solve_coordinate_click_challenge(
+    targets_png: bytes,
+    background_png: bytes,
+) -> dict[str, Any]:
+    try:
+        targets = _decode_png(targets_png)
+        background = _decode_png(background_png)
+        symbols = _segment_target_symbols(targets)
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+    matches: list[dict[str, float]] = []
+    excluded: list[tuple[int, int, int]] = []
+    for symbol_image in symbols:
+        match = _coordinate_match(symbol_image, background, excluded)
+        if match is None:
+            return {"ok": False, "reason": "coordinate_not_found"}
+        if match["confidence"] < COORDINATE_CONFIDENCE_MIN:
+            return {"ok": False, "reason": "confidence_too_low", "confidence": match["confidence"]}
+        if match["margin"] < COORDINATE_MARGIN_MIN:
+            return {"ok": False, "reason": "coordinate_ambiguous", "confidence": match["confidence"]}
+        matches.append(match)
+        excluded.append((int(match["pixel_x"]), int(match["pixel_y"]), int(match["radius"])))
+
+    height, width = background.shape[:2]
+    points = [
+        {
+            "x": round(match["pixel_x"] / width, 6),
+            "y": round(match["pixel_y"] / height, 6),
+            "confidence": round(match["confidence"], 4),
+        }
+        for match in matches
+    ]
+    if any(
+        not np.isfinite(point[axis]) or not 0 <= point[axis] <= 1
+        for point in points
+        for axis in ("x", "y")
+    ):
+        return {"ok": False, "reason": "coordinate_invalid"}
+    if any(
+        ((left["x"] - right["x"]) * width) ** 2
+        + ((left["y"] - right["y"]) * height) ** 2
+        < 16
+        for index, left in enumerate(points)
+        for right in points[index + 1:]
+    ):
+        return {"ok": False, "reason": "coordinate_invalid"}
+    return {
+        "ok": True,
+        "points": points,
+        "confidence": min(point["confidence"] for point in points),
+        "margin": round(min(match["margin"] for match in matches), 4),
+    }
+
+
 def solve_slider_challenge(background_png: bytes, piece_png: bytes, geometry: dict[str, Any]) -> dict[str, Any]:
     try:
         clean_geometry = _slider_geometry(geometry)
@@ -467,6 +681,10 @@ def solve_request(payload: dict[str, Any]) -> dict[str, Any]:
                 return {"ok": False, "reason": "candidate_count_invalid"}
             candidate_pngs = [_decode_base64_png(item) for item in candidate_values]
             return solve_click_challenge(target_png, candidate_pngs)
+        if mode == "coordinate_click":
+            targets_png = _decode_base64_png(payload.get("targets_png"))
+            background_png = _decode_base64_png(payload.get("background_png"))
+            return solve_coordinate_click_challenge(targets_png, background_png)
         background_png = _decode_base64_png(payload.get("background_png"))
         piece_png = _decode_base64_png(payload.get("piece_png"))
         return solve_slider_challenge(background_png, piece_png, payload.get("geometry"))

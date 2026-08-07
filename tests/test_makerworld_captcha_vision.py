@@ -11,6 +11,7 @@ from app.services.makerworld_captcha_vision import (
     _decode_png,
     _foreground_mask,
     solve_click_challenge,
+    solve_coordinate_click_challenge,
     solve_request,
     solve_slider_challenge,
 )
@@ -73,7 +74,121 @@ def symbol(kind: str, *, size: int = 96) -> np.ndarray:
     return image
 
 
+def coordinate_fixture(
+    kinds: tuple[str, ...] = ("triangle", "cross", "circle"),
+    centers: tuple[tuple[int, int], ...] = ((286, 58), (82, 174), (226, 142)),
+) -> tuple[np.ndarray, np.ndarray, list[tuple[float, float]]]:
+    target_x = tuple(8 + (72 * index) for index in range(len(kinds)))
+    targets = np.full((64, max(224, target_x[-1] + 64), 4), 255, dtype=np.uint8)
+    background = np.full((240, 360, 3), 238, dtype=np.uint8)
+    for kind, left, center in zip(kinds, target_x, centers, strict=True):
+        target = cv2.resize(symbol(kind), (56, 56), interpolation=cv2.INTER_AREA)
+        targets[4:60, left:left + 56] = target
+        item = cv2.resize(symbol(kind)[:, :, :3], (72, 72), interpolation=cv2.INTER_AREA)
+        x = center[0] - 36
+        y = center[1] - 36
+        background[y:y + 72, x:x + 72] = item
+    expected = [(x / 360, y / 240) for x, y in centers]
+    return targets, background, expected
+
+
 class MakerWorldCaptchaVisionTest(unittest.TestCase):
+    def test_coordinate_click_returns_points_in_target_order(self):
+        targets, background, expected = coordinate_fixture()
+
+        result = solve_coordinate_click_challenge(png_bytes(targets), png_bytes(background))
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(result["points"]), 3)
+        for point, (expected_x, expected_y) in zip(result["points"], expected, strict=True):
+            self.assertAlmostEqual(point["x"], expected_x, delta=0.04)
+            self.assertAlmostEqual(point["y"], expected_y, delta=0.04)
+
+    def test_coordinate_click_accepts_two_targets(self):
+        targets, background, expected = coordinate_fixture(
+            ("triangle", "circle"),
+            ((286, 58), (82, 174)),
+        )
+
+        result = solve_coordinate_click_challenge(png_bytes(targets), png_bytes(background))
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(result["points"]), 2)
+        for point, (expected_x, expected_y) in zip(result["points"], expected, strict=True):
+            self.assertAlmostEqual(point["x"], expected_x, delta=0.04)
+            self.assertAlmostEqual(point["y"], expected_y, delta=0.04)
+
+    def test_coordinate_click_rejects_six_inferred_targets(self):
+        targets, background, _ = coordinate_fixture(
+            ("triangle", "cross", "circle", "square", "triangle", "cross"),
+            ((45, 120), (100, 120), (155, 120), (210, 120), (265, 120), (315, 120)),
+        )
+
+        result = solve_coordinate_click_challenge(png_bytes(targets), png_bytes(background))
+
+        self.assertEqual(result, {"ok": False, "reason": "target_count_invalid"})
+
+    def test_coordinate_click_rejects_a_duplicated_best_location(self):
+        targets, background, _ = coordinate_fixture(
+            ("triangle", "triangle"),
+            ((286, 58), (82, 174)),
+        )
+        background[:, :] = 238
+        item = cv2.resize(symbol("triangle")[:, :, :3], (72, 72), interpolation=cv2.INTER_AREA)
+        background[22:94, 250:322] = item
+
+        result = solve_coordinate_click_challenge(png_bytes(targets), png_bytes(background))
+
+        self.assertFalse(result["ok"])
+        self.assertIn(result["reason"], {"coordinate_not_found", "confidence_too_low", "coordinate_ambiguous", "coordinate_invalid"})
+
+    def test_coordinate_click_rejects_equally_strong_background_matches(self):
+        targets, background, _ = coordinate_fixture(
+            ("triangle", "cross"),
+            ((286, 58), (82, 174)),
+        )
+        item = cv2.resize(symbol("triangle")[:, :, :3], (72, 72), interpolation=cv2.INTER_AREA)
+        background[138:210, 46:118] = item
+
+        result = solve_coordinate_click_challenge(png_bytes(targets), png_bytes(background))
+
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["reason"], "coordinate_ambiguous")
+
+    def test_coordinate_click_rejects_malformed_pngs(self):
+        valid_targets, valid_background, _ = coordinate_fixture()
+        for targets_png, background_png in ((b"invalid", png_bytes(valid_background)), (png_bytes(valid_targets), b"invalid")):
+            with self.subTest(targets_png=targets_png, background_png=background_png):
+                result = solve_coordinate_click_challenge(targets_png, background_png)
+                self.assertEqual(result, {"ok": False, "reason": "image_format_invalid"})
+
+    def test_solve_request_accepts_coordinate_click_payload(self):
+        targets, background, _ = coordinate_fixture()
+
+        result = solve_request(
+            {
+                "mode": "coordinate_click",
+                "targets_png": png_base64(targets),
+                "background_png": png_base64(background),
+            }
+        )
+
+        self.assertTrue(result["ok"], result)
+
+    def test_solve_request_rejects_coordinate_click_sensitive_fields(self):
+        targets, background, _ = coordinate_fixture()
+        for extra_key in ("cookie", "url"):
+            with self.subTest(extra_key=extra_key):
+                result = solve_request(
+                    {
+                        "mode": "coordinate_click",
+                        "targets_png": png_base64(targets),
+                        "background_png": png_base64(background),
+                        extra_key: "forbidden",
+                    }
+                )
+                self.assertEqual(result, {"ok": False, "reason": "unsupported_fields"})
+
     def test_decode_png_rejects_other_decodable_image_formats(self):
         with self.assertRaisesRegex(ValueError, "^image_format_invalid$"):
             _decode_png(jpeg_bytes(np.full((32, 32, 3), 180, dtype=np.uint8)))
