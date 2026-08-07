@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.1`
+> 当前版本：`v0.16.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-07 · v0.16.2
+
+- 修复 MakerWorld 国区真实坐标点选验证码被误判为滑块的问题。
+- 本地 OpenCV 会识别目标序列和背景中的多个位置，并按目标顺序点击后确认；验证码截图不会上传或持久化。
+- 识别结果不完整、置信度不足或页面发生变化时立即转人工验证，不会盲点、重复确认或把账号误报为退出登录。
+
 ### 2026-08-07 · v0.16.1
 
 - 过期的 3MF 每日下载上限任务会在平台 gate 恢复后自动继续，不再永久停在“已暂停”。
@@ -364,14 +370,14 @@ npm --prefix frontend run build
 - 单个挑战最多 2 次，只有挑战内容变化后才会再次尝试；每个归档任务只点击一次 3MF 授权，未完成时保留人工回退。
 - 容器包含 OpenCV 本地视觉依赖，带来一定镜像体积代价，但不上传或持久化验证图片、令牌和登录信息。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-06 · v0.15.23
 
 - 暂停或验证受阻的归档队列改用空闲轮询，并阻止定时订阅继续扩大积压；手动同步和登录态修复仍可运行。
 - Worker 和本地整理进程会在空闲时释放大型内存缓存；Worker 完全无活跃任务且 RSS 超过阈值时自动重启回收内存。
 - CloakBrowser Manager 保持运行，国内站和国际站 profile 连续空闲 30 分钟后自动停止，下次使用时自动启动。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-03 · v0.15.22
 

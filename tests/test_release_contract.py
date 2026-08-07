@@ -351,26 +351,16 @@ class AutomaticVerificationReleaseContractTest(unittest.TestCase):
         self.assertIn("solve_click_challenge", smoke_command)
         self.assertNotIn("browser", smoke_command.lower())
 
-        self.assertEqual(version, "0.16.1")
+        self.assertEqual(version, "0.16.2")
         self.assertEqual(package["version"], version)
         self.assertEqual(package_lock["version"], version)
         self.assertEqual(package_lock["packages"][""]["version"], version)
-        self.assertIn("> 当前版本：`v0.16.1`", readme)
-        self.assertIn("### 2026-08-07 · v0.16.1", readme)
-        self.assertIn("## 2026-08-07 · v0.16.1", changelog)
+        self.assertIn("> 当前版本：`v0.16.2`", readme)
+        self.assertIn("### 2026-08-07 · v0.16.2", readme)
+        self.assertIn("## 2026-08-07 · v0.16.2", changelog)
 
         release_notes = "\n".join((readme, changelog))
-        for expected in (
-            "图标点击",
-            "滑块",
-            "Turnstile",
-            "默认关闭",
-            "最多 2 次",
-            "只点击一次 3MF",
-            "人工回退",
-            "OpenCV",
-            "镜像体积",
-        ):
+        for expected in ("坐标点选", "按目标顺序", "转人工"):
             with self.subTest(expected=expected):
                 self.assertIn(expected, release_notes)
 
