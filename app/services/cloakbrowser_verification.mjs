@@ -18,6 +18,7 @@ const SAFE_REASON_CODES = new Set([
   "ambiguous_gap",
   "attempts_exhausted",
   "candidate_count_invalid",
+  "challenge_changed",
   "challenge_unchanged",
   "challenge_unsupported",
   "checkbox_unavailable",
@@ -25,7 +26,11 @@ const SAFE_REASON_CODES = new Set([
   "click_layout_invalid",
   "click_target_unavailable",
   "completed",
+  "confirmation_unavailable",
   "confidence_too_low",
+  "coordinate_ambiguous",
+  "coordinate_invalid",
+  "coordinate_not_found",
   "discovery_failed",
   "distance_invalid",
   "empty_screenshot",
@@ -34,6 +39,7 @@ const SAFE_REASON_CODES = new Set([
   "image_base64_invalid",
   "image_decode_failed",
   "image_dimensions_invalid",
+  "image_depth_invalid",
   "image_foreground_missing",
   "image_format_invalid",
   "image_size_invalid",
@@ -51,6 +57,8 @@ const SAFE_REASON_CODES = new Set([
   "request_invalid",
   "slider_geometry_invalid",
   "solved",
+  "target_count_invalid",
+  "target_segmentation_failed",
   "timeout",
   "trajectory_out_of_bounds",
   "unknown",
@@ -74,6 +82,24 @@ const CLICK_CANDIDATE_SELECTORS = [
   ".geetest_icon_item",
   "[class*='geetest_item']",
   "[class*='candidate']",
+];
+const COORDINATE_TARGET_SELECTORS = [
+  ".geetest_ques_tips",
+  ".geetest_ques_back",
+  ".geetest_question",
+  "[class*='geetest'][class*='ques']",
+];
+const COORDINATE_BACKGROUND_SELECTORS = [
+  ".geetest_bg",
+  ".geetest_canvas_bg",
+  ".geetest_window",
+  "[class*='geetest'][class*='bg']",
+];
+const COORDINATE_CONFIRM_SELECTORS = [
+  ".geetest_commit_tip",
+  ".geetest_submit",
+  "[class*='geetest'][class*='commit']",
+  "[class*='geetest'][class*='submit']",
 ];
 const SLIDER_HANDLE_SELECTORS = [
   ".geetest_slider_button",
@@ -214,7 +240,7 @@ export function buildDragTrajectory(distance, random = Math.random) {
 
 export function sanitizeVerificationResult(value = {}) {
   const provider = ["geetest4", "turnstile"].includes(value.provider) ? value.provider : "unknown";
-  const challengeType = ["icon_click", "slider", "checkbox"].includes(value.challenge_type)
+  const challengeType = ["coordinate_click", "icon_click", "slider", "checkbox"].includes(value.challenge_type)
     ? value.challenge_type
     : "unknown";
   const rawAttempts = Number(value.attempts || 0);
@@ -258,6 +284,13 @@ function cleanVisionPayload(payload) {
         piece_offset_x: geometry.piece_offset_x,
         piece_offset_y: geometry.piece_offset_y,
       },
+    };
+  }
+  if (String(payload?.mode || "").trim().toLowerCase() === "coordinate_click") {
+    return {
+      mode: "coordinate_click",
+      targets_png: payload?.targets_png,
+      background_png: payload?.background_png,
     };
   }
   return { mode: "" };
@@ -634,6 +667,61 @@ async function validateClickLayout(challenge, signal) {
   return true;
 }
 
+async function coordinateClickLayoutSnapshot(challenge, signal) {
+  const handles = [
+    challenge?.container,
+    challenge?.targets,
+    challenge?.background,
+    challenge?.confirm,
+  ];
+  if (handles.some((handle) => !handle)) return null;
+
+  let visible;
+  let belongsToContainer;
+  let boxes;
+  try {
+    [visible, belongsToContainer, boxes] = await Promise.all([
+      Promise.all(handles.map((handle) => abortable(isVisible(handle), signal))),
+      Promise.all(handles.slice(1).map((handle) => abortable(
+        challenge.container.evaluate((container, action, element) => (
+          action === "contains" && container.contains(element)
+        ), "contains", handle),
+        signal,
+      ))),
+      Promise.all(handles.map((handle) => abortable(handle.boundingBox(), signal))),
+    ]);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+  if (!visible.every(Boolean) || !belongsToContainer.every(Boolean) || !boxes.every(validBox)) {
+    return null;
+  }
+
+  const [containerBox, targetsBox, backgroundBox, confirmBox] = boxes.map((box) => ({
+    x: Number(box.x),
+    y: Number(box.y),
+    width: Number(box.width),
+    height: Number(box.height),
+  }));
+  if (backgroundBox.width < 120 || backgroundBox.height < 80) return null;
+  if (targetsBox.y + targetsBox.height > backgroundBox.y) return null;
+  if (overlapArea(targetsBox, backgroundBox) > 0) return null;
+  if (overlapArea(confirmBox, targetsBox) > 0 || overlapArea(confirmBox, backgroundBox) > 0) {
+    return null;
+  }
+  return {
+    container: containerBox,
+    targets: targetsBox,
+    background: backgroundBox,
+    confirm: confirmBox,
+  };
+}
+
+async function validateCoordinateClickLayout(challenge, signal) {
+  return Boolean(await coordinateClickLayoutSnapshot(challenge, signal));
+}
+
 async function geetestContainers(frame) {
   const handles = await safeQueryAll(frame, GEETEST_CONTAINERS);
   if (handles.length) return handles;
@@ -687,19 +775,20 @@ export async function detectVerificationChallenge(page) {
     const containers = await geetestContainers(frame);
     for (const container of containers) {
       if (!await isVisible(container)) continue;
-      const background = await firstVisible(container, SLIDER_BACKGROUND_SELECTORS);
-      const piece = await firstVisible(container, SLIDER_PIECE_SELECTORS);
-      const handle = background ? await firstVisible(container, SLIDER_HANDLE_SELECTORS) : null;
-      if (handle && background && piece && await isPlausibleSliderHandle(handle, background)) {
-        return {
+      const targets = await firstVisible(container, COORDINATE_TARGET_SELECTORS);
+      const coordinateBackground = await firstVisible(container, COORDINATE_BACKGROUND_SELECTORS);
+      const confirm = await firstVisible(container, COORDINATE_CONFIRM_SELECTORS);
+      if (targets && coordinateBackground && confirm) {
+        const challenge = {
           provider: "geetest4",
-          challenge_type: "slider",
+          challenge_type: "coordinate_click",
           frame,
           container,
-          handle,
-          background,
-          piece,
+          targets,
+          background: coordinateBackground,
+          confirm,
         };
+        if (await validateCoordinateClickLayout(challenge)) return challenge;
       }
 
       const target = await firstVisible(container, CLICK_TARGET_SELECTORS);
@@ -714,6 +803,21 @@ export async function detectVerificationChallenge(page) {
           candidates,
         };
         if (await validateClickLayout(challenge)) return challenge;
+      }
+
+      const background = await firstVisible(container, SLIDER_BACKGROUND_SELECTORS);
+      const piece = await firstVisible(container, SLIDER_PIECE_SELECTORS);
+      const handle = background ? await firstVisible(container, SLIDER_HANDLE_SELECTORS) : null;
+      if (handle && background && piece && await isPlausibleSliderHandle(handle, background)) {
+        return {
+          provider: "geetest4",
+          challenge_type: "slider",
+          frame,
+          container,
+          handle,
+          background,
+          piece,
+        };
       }
     }
 
@@ -930,7 +1034,9 @@ async function defaultFingerprintChallenge(challenge, stage = {}) {
   } else {
     const handles = challenge?.challenge_type === "icon_click"
       ? [challenge.target, ...(challenge.candidates || [])]
-      : [challenge?.checkbox, challenge?.iframe].filter(Boolean);
+      : challenge?.challenge_type === "coordinate_click"
+        ? [challenge.targets, challenge.background]
+        : [challenge?.checkbox, challenge?.iframe].filter(Boolean);
     for (const handle of handles) {
       const identity = await stableElementIdentity(handle, signal);
       if (identity) hash.update(JSON.stringify(identity));
@@ -974,6 +1080,127 @@ async function solveClickChallenge(page, challenge, visionRequest, stage) {
     return { acted: false, reason: "click_layout_invalid", confidence: result.confidence };
   }
   await trustedElementClick(page, challenge.candidates[candidateIndex], stage);
+  return { acted: true, confidence: result.confidence };
+}
+
+function coordinatePointsAreDistinct(points) {
+  for (let leftIndex = 0; leftIndex < points.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < points.length; rightIndex += 1) {
+      const deltaX = points[leftIndex].x - points[rightIndex].x;
+      const deltaY = points[leftIndex].y - points[rightIndex].y;
+      if (Math.hypot(deltaX, deltaY) < 4) return false;
+    }
+  }
+  return true;
+}
+
+function validateCoordinatePoints(result, backgroundBox) {
+  const points = Array.isArray(result?.points) ? result.points : [];
+  if (!result?.ok || points.length < 2 || points.length > 5 || !validBox(backgroundBox)) {
+    return null;
+  }
+  const converted = points.map((point) => ({
+    x: Number(backgroundBox.x) + (Number(point?.x) * Number(backgroundBox.width)),
+    y: Number(backgroundBox.y) + (Number(point?.y) * Number(backgroundBox.height)),
+    confidence: Number(point?.confidence),
+  }));
+  if (converted.some((point) => (
+    !Number.isFinite(point.x) || !Number.isFinite(point.y)
+    || !Number.isFinite(point.confidence) || point.confidence < 0 || point.confidence > 1
+    || point.x < Number(backgroundBox.x)
+    || point.x > Number(backgroundBox.x) + Number(backgroundBox.width)
+    || point.y < Number(backgroundBox.y)
+    || point.y > Number(backgroundBox.y) + Number(backgroundBox.height)
+  ))) return null;
+  return coordinatePointsAreDistinct(converted) ? converted : null;
+}
+
+function coordinateLayoutsEqual(left, right) {
+  if (!left || !right) return false;
+  return ["container", "targets", "background", "confirm"].every((name) => (
+    ["x", "y", "width", "height"].every((key) => left[name][key] === right[name][key])
+  ));
+}
+
+async function currentConfirmationCenter(challenge, signal) {
+  const layout = await coordinateClickLayoutSnapshot(challenge, signal);
+  if (!layout) return null;
+  return {
+    x: layout.confirm.x + (layout.confirm.width / 2),
+    y: layout.confirm.y + (layout.confirm.height / 2),
+  };
+}
+
+async function solveCoordinateClickChallenge(
+  page,
+  challenge,
+  initialFingerprint,
+  options,
+  visionRequest,
+  stage,
+) {
+  const { signal } = stage;
+  if (!challenge?.confirm) return { acted: false, reason: "confirmation_unavailable" };
+  const initialLayout = await coordinateClickLayoutSnapshot(challenge, signal);
+  if (!initialLayout) return { acted: false, reason: "challenge_changed" };
+
+  const [targetsPng, backgroundPng] = await Promise.all([
+    screenshotBuffer(challenge.targets, signal),
+    screenshotBuffer(challenge.background, signal),
+  ]);
+  throwIfActionExpired(stage);
+  const result = await abortable(visionRequest({
+    mode: "coordinate_click",
+    targets_png: targetsPng.toString("base64"),
+    background_png: backgroundPng.toString("base64"),
+  }, { signal }), signal);
+  throwIfActionExpired(stage);
+  if (!result?.ok) {
+    return {
+      acted: false,
+      reason: String(result?.reason || "vision_rejected"),
+      confidence: result?.confidence,
+    };
+  }
+
+  const points = validateCoordinatePoints(result, initialLayout.background);
+  if (!points) {
+    return { acted: false, reason: "coordinate_invalid", confidence: result.confidence };
+  }
+  const currentLayout = await coordinateClickLayoutSnapshot(challenge, signal);
+  if (!coordinateLayoutsEqual(initialLayout, currentLayout)) {
+    return { acted: false, reason: "challenge_changed", confidence: result.confidence };
+  }
+  const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
+  const currentFingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
+  throwIfActionExpired(stage);
+  if (currentFingerprint !== initialFingerprint) {
+    return { acted: false, reason: "challenge_changed", confidence: result.confidence };
+  }
+
+  const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
+  const random = options.random || Math.random;
+  const mouse = await createMouseDriver(page, stage);
+  try {
+    for (const point of points) {
+      throwIfActionExpired(stage);
+      await mouse.move(point.x, point.y);
+      await mouse.down();
+      await mouse.up();
+      await abortable(sleep(Math.round(35 + (clampRandom(random) * 40))), signal);
+    }
+    throwIfActionExpired(stage);
+    const confirmCenter = await currentConfirmationCenter(challenge, signal);
+    if (!confirmCenter) {
+      return { acted: false, reason: "confirmation_unavailable", confidence: result.confidence };
+    }
+    await mouse.move(confirmCenter.x, confirmCenter.y);
+    await mouse.down();
+    await mouse.up();
+  } finally {
+    await mouse.up(signal.aborted).catch(() => undefined);
+    await mouse.close();
+  }
   return { acted: true, confidence: result.confidence };
 }
 
@@ -1204,35 +1431,46 @@ async function waitForOutcome(page, challenge, fingerprint, options, stage) {
   const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
   const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
   let latestChallenge = challenge;
+  let observedUnchanged = false;
 
-  do {
-    throwIfActionExpired(stage);
-    const latestComplete = await abortable(complete(page, latestChallenge), signal);
-    throwIfActionExpired(stage);
-    if (latestComplete) {
-      return { completed: true, changed: false, challenge: latestChallenge };
-    }
-    const current = await abortable(detect(page), signal);
-    throwIfActionExpired(stage);
-    if (current) {
-      latestChallenge = current;
-      const currentComplete = await abortable(complete(page, current), signal);
+  try {
+    do {
       throwIfActionExpired(stage);
-      if (currentComplete) {
-        return { completed: true, changed: false, challenge: current };
-      }
-      const currentFingerprint = await abortable(fingerprintChallenge(current, stage), signal);
+      const latestComplete = await abortable(complete(page, latestChallenge), signal);
       throwIfActionExpired(stage);
-      if (currentFingerprint !== fingerprint) {
-        return { completed: false, changed: true, challenge: current };
+      if (latestComplete) {
+        return { completed: true, changed: false, challenge: latestChallenge };
       }
-    }
-    const remaining = stage.remainingAction();
-    if (remaining <= 0) break;
-    await abortable(sleep(Math.min(POLL_INTERVAL_MS, remaining)), signal);
+      const current = await abortable(detect(page), signal);
+      throwIfActionExpired(stage);
+      if (current) {
+        latestChallenge = current;
+        const currentComplete = await abortable(complete(page, current), signal);
+        throwIfActionExpired(stage);
+        if (currentComplete) {
+          return { completed: true, changed: false, challenge: current };
+        }
+        const currentFingerprint = await abortable(fingerprintChallenge(current, stage), signal);
+        throwIfActionExpired(stage);
+        if (currentFingerprint !== fingerprint) {
+          return { completed: false, changed: true, challenge: current };
+        }
+        observedUnchanged = true;
+      }
+      const remaining = stage.remainingAction();
+      if (remaining <= 0) break;
+      await abortable(sleep(Math.min(POLL_INTERVAL_MS, remaining)), signal);
+      throwIfActionExpired(stage);
+    } while (performance.now() <= stage.actionDeadline);
     throwIfActionExpired(stage);
-  } while (performance.now() <= stage.actionDeadline);
-  throwIfActionExpired(stage);
+  } catch (error) {
+    const actionTimedOut = signal.reason?.reason === "timeout"
+      || (!signal.aborted && stage.remainingAction() <= 0 && error?.reason === "timeout");
+    if (observedUnchanged && actionTimedOut) {
+      return { completed: false, changed: false, challenge: latestChallenge };
+    }
+    throw error;
+  }
   return { completed: false, changed: false, challenge: latestChallenge };
 }
 
@@ -1294,6 +1532,19 @@ async function attemptWithinStage(page, options, stage) {
         summary.attempts = attempt;
         await trustedElementClick(page, challenge.checkbox, stage);
         interaction = { acted: true };
+      } else if (challenge.challenge_type === "coordinate_click") {
+        fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
+        throwIfActionExpired(stage);
+        summary.attempted = true;
+        summary.attempts = attempt;
+        interaction = await solveCoordinateClickChallenge(
+          page,
+          challenge,
+          fingerprint,
+          options,
+          visionRequest,
+          stage,
+        );
       } else if (challenge.challenge_type === "icon_click") {
         fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
         throwIfActionExpired(stage);

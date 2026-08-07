@@ -108,6 +108,21 @@ function fakeClickDiscoveryPage({
   };
 }
 
+function coordinateDiscoveryContainer({ targets, background, confirm, sliderHandle }) {
+  const sliderPiece = fakeHandle({ box: { x: 60, y: 90, width: 36, height: 36 } });
+  return fakeHandle({
+    box: { x: 0, y: 0, width: 340, height: 330 },
+    one: (selector) => {
+      if (/ques_tips|ques_back|question/.test(selector)) return targets;
+      if (/commit_tip|submit/.test(selector)) return confirm;
+      if (/geetest_bg|canvas_bg|geetest_window/.test(selector)) return background;
+      if (/slider_button|geetest_btn|slider.*handle/.test(selector)) return sliderHandle;
+      if (/geetest_slice|canvas_slice|slider_piece/.test(selector)) return sliderPiece;
+      return null;
+    },
+  });
+}
+
 function fakeChild(onInput) {
   const child = new EventEmitter();
   child.stdout = new PassThrough();
@@ -658,6 +673,28 @@ function clickChallenge(click, id = "challenge-a") {
   };
 }
 
+function coordinateChallenge({
+  container = fakeHandle({ box: { x: 0, y: 0, width: 340, height: 330 } }),
+  targets = fakeHandle({ box: { x: 70, y: 18, width: 150, height: 42 } }),
+  background = fakeHandle({ box: { x: 20, y: 72, width: 300, height: 200 } }),
+  confirm = fakeHandle({ box: { x: 136, y: 282, width: 68, height: 30 } }),
+} = {}) {
+  return {
+    provider: "geetest4",
+    challenge_type: "coordinate_click",
+    container,
+    targets,
+    background,
+    confirm,
+  };
+}
+
+function pressedCenters(events) {
+  return events
+    .filter(({ type }) => type === "mousePressed")
+    .map(({ x, y }) => [x, y]);
+}
+
 test("drag trajectory reaches the target with bounded overshoot", () => {
   const points = buildDragTrajectory(180, () => 0.5);
 
@@ -694,6 +731,28 @@ test("verification diagnostics keep only canonical bounded fields", () => {
     },
   );
   assert.equal(sanitizeVerificationResult({ reason: "token=secret" }).reason, "unknown");
+});
+
+test("verification diagnostics preserve coordinate-click safe reasons", () => {
+  for (const reason of [
+    "challenge_changed",
+    "confirmation_unavailable",
+    "coordinate_ambiguous",
+    "coordinate_invalid",
+    "coordinate_not_found",
+    "image_depth_invalid",
+    "target_count_invalid",
+    "target_segmentation_failed",
+  ]) {
+    const result = sanitizeVerificationResult({
+      provider: "geetest4",
+      challenge_type: "coordinate_click",
+      reason,
+    });
+
+    assert.equal(result.challenge_type, "coordinate_click");
+    assert.equal(result.reason, reason);
+  }
 });
 
 test("vision request passes only the strict mode payload to Python", async () => {
@@ -762,6 +821,33 @@ test("slider vision request forwards only the exact composited-piece geometry", 
     geometry,
   });
   assert.doesNotMatch(JSON.stringify(inputPayload), /secret/);
+});
+
+test("coordinate-click vision request forwards only the two PNG inputs", async () => {
+  let inputPayload;
+
+  await runVisionRequest({
+    mode: "coordinate_click",
+    targets_png: "targets",
+    background_png: "background",
+    geometry: { width: 300, height: 200 },
+    url: "https://example.com/private",
+    cookie: "secret-cookie",
+    token: "secret-token",
+  }, {
+    spawnFn: () => fakeChild((child, input) => {
+      inputPayload = JSON.parse(input);
+      child.stdout.end('{"ok":false,"reason":"coordinate_not_found"}');
+      child.emit("close", 0, null);
+    }),
+  });
+
+  assert.deepEqual(inputPayload, {
+    mode: "coordinate_click",
+    targets_png: "targets",
+    background_png: "background",
+  });
+  assert.doesNotMatch(JSON.stringify(inputPayload), /secret|url|geometry/);
 });
 
 test("vision request kills a timed out child", async () => {
@@ -886,6 +972,22 @@ test("challenge discovery checks main frame first, deduplicates frames, and find
   assert.equal(challenge.target, target);
   assert.deepEqual(challenge.candidates, candidates);
   assert.deepEqual(visited, ["main", "child"]);
+});
+
+test("coordinate-click discovery wins over slider-like generated classes", async () => {
+  const targets = fakeHandle({ box: { x: 70, y: 18, width: 150, height: 42 } });
+  const background = fakeHandle({ box: { x: 20, y: 72, width: 300, height: 200 } });
+  const confirm = fakeHandle({ box: { x: 136, y: 282, width: 68, height: 30 } });
+  const sliderHandle = fakeHandle({ box: { x: 20, y: 282, width: 40, height: 30 } });
+  const container = coordinateDiscoveryContainer({ targets, background, confirm, sliderHandle });
+  const frame = fakeFrame({ one: (selector) => (selector.includes("geetest") ? container : null) });
+
+  const challenge = await detectVerificationChallenge({ mainFrame: () => frame, frames: () => [frame] });
+
+  assert.equal(challenge.challenge_type, "coordinate_click");
+  assert.equal(challenge.targets, targets);
+  assert.equal(challenge.background, background);
+  assert.equal(challenge.confirm, confirm);
 });
 
 test("click discovery rejects candidates that do not form a coherent grid", async () => {
@@ -1115,6 +1217,332 @@ test("Turnstile discovery does not select an unrelated page checkbox", async () 
   });
 
   assert.equal(challenge.checkbox, turnstileCheckbox);
+});
+
+test("coordinate click dispatches every point in target order before confirmation", async () => {
+  const events = [];
+  const challenge = coordinateChallenge();
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => events.push(event),
+  }), {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "coordinate-a",
+    visionRequest: async () => ({
+      ok: true,
+      points: [
+        { x: 0.75, y: 0.25, confidence: 0.90 },
+        { x: 0.20, y: 0.80, confidence: 0.86 },
+      ],
+      confidence: 0.86,
+      margin: 0.12,
+    }),
+    isChallengeComplete: async () => true,
+    sleep: async () => {},
+  });
+
+  assert.equal(result.completed, true);
+  assert.deepEqual(events.map(({ type }) => type), [
+    "mouseMoved", "mousePressed", "mouseReleased",
+    "mouseMoved", "mousePressed", "mouseReleased",
+    "mouseMoved", "mousePressed", "mouseReleased",
+  ]);
+  assert.deepEqual(pressedCenters(events), [[245, 122], [80, 232], [170, 297]]);
+});
+
+test("coordinate click rejects one point without mouse input", async () => {
+  const events = [];
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => events.push(event),
+  }), {
+    detectChallenge: async () => coordinateChallenge(),
+    fingerprintChallenge: async () => "coordinate-one",
+    visionRequest: async () => ({
+      ok: true,
+      points: [{ x: 0.25, y: 0.25, confidence: 0.9 }],
+      confidence: 0.9,
+    }),
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(result.reason, "coordinate_invalid");
+});
+
+test("coordinate click rejects six points without mouse input", async () => {
+  const events = [];
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => events.push(event),
+  }), {
+    detectChallenge: async () => coordinateChallenge(),
+    fingerprintChallenge: async () => "coordinate-six",
+    visionRequest: async () => ({
+      ok: true,
+      points: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6].map((x) => ({ x, y: 0.5, confidence: 0.9 })),
+      confidence: 0.9,
+    }),
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(result.reason, "coordinate_invalid");
+});
+
+test("coordinate click rejects non-finite and out-of-range coordinates without mouse input", async () => {
+  for (const invalidPoint of [
+    { x: Number.NaN, y: 0.5, confidence: 0.9 },
+    { x: 0.5, y: Number.POSITIVE_INFINITY, confidence: 0.9 },
+    { x: -0.01, y: 0.5, confidence: 0.9 },
+    { x: 0.5, y: 1.01, confidence: 0.9 },
+  ]) {
+    const events = [];
+    const result = await attemptAutomaticVerification(fakeInputPage({
+      dispatch: async (event) => events.push(event),
+    }), {
+      detectChallenge: async () => coordinateChallenge(),
+      fingerprintChallenge: async () => "coordinate-invalid",
+      visionRequest: async () => ({
+        ok: true,
+        points: [
+          { x: 0.2, y: 0.2, confidence: 0.9 },
+          invalidPoint,
+        ],
+        confidence: 0.9,
+      }),
+    });
+
+    assert.deepEqual(events, []);
+    assert.equal(result.reason, "coordinate_invalid");
+  }
+});
+
+test("coordinate click rejects duplicate coordinates without mouse input", async () => {
+  const events = [];
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => events.push(event),
+  }), {
+    detectChallenge: async () => coordinateChallenge(),
+    fingerprintChallenge: async () => "coordinate-duplicate",
+    visionRequest: async () => ({
+      ok: true,
+      points: [
+        { x: 0.4, y: 0.6, confidence: 0.9 },
+        { x: 0.4, y: 0.6, confidence: 0.85 },
+      ],
+      confidence: 0.85,
+    }),
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(result.reason, "coordinate_invalid");
+});
+
+test("coordinate click rejects layout changes after recognition without mouse input", async () => {
+  const events = [];
+  let layoutChanged = false;
+  const challenge = coordinateChallenge();
+  challenge.background.boundingBox = async () => (
+    layoutChanged
+      ? { x: 21, y: 72, width: 300, height: 200 }
+      : { x: 20, y: 72, width: 300, height: 200 }
+  );
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => events.push(event),
+  }), {
+    detectChallenge: async () => challenge,
+    fingerprintChallenge: async () => "coordinate-layout",
+    visionRequest: async () => {
+      layoutChanged = true;
+      return {
+        ok: true,
+        points: [
+          { x: 0.2, y: 0.2, confidence: 0.9 },
+          { x: 0.8, y: 0.8, confidence: 0.9 },
+        ],
+        confidence: 0.9,
+      };
+    },
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(result.reason, "challenge_changed");
+});
+
+test("coordinate click rejects a changed fingerprint without mouse input", async () => {
+  const events = [];
+  let fingerprintCalls = 0;
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => events.push(event),
+  }), {
+    detectChallenge: async () => coordinateChallenge(),
+    fingerprintChallenge: async () => {
+      fingerprintCalls += 1;
+      return fingerprintCalls === 1 ? "coordinate-a" : "coordinate-b";
+    },
+    visionRequest: async () => ({
+      ok: true,
+      points: [
+        { x: 0.2, y: 0.2, confidence: 0.9 },
+        { x: 0.8, y: 0.8, confidence: 0.9 },
+      ],
+      confidence: 0.9,
+    }),
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(result.reason, "challenge_changed");
+});
+
+test("coordinate click rejects a missing confirmation control without mouse input", async () => {
+  const events = [];
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => events.push(event),
+  }), {
+    detectChallenge: async () => coordinateChallenge({ confirm: null }),
+    fingerprintChallenge: async () => "coordinate-no-confirm",
+    visionRequest: async () => ({
+      ok: true,
+      points: [
+        { x: 0.2, y: 0.2, confidence: 0.9 },
+        { x: 0.8, y: 0.8, confidence: 0.9 },
+      ],
+      confidence: 0.9,
+    }),
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(result.reason, "confirmation_unavailable");
+});
+
+test("coordinate click vision timeout emits no mouse input", async () => {
+  const events = [];
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => events.push(event),
+  }), {
+    detectChallenge: async () => coordinateChallenge(),
+    fingerprintChallenge: async () => "coordinate-timeout",
+    visionRequest: async () => new Promise(() => {}),
+    timeoutMs: 10,
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(result.reason, "timeout");
+});
+
+test("coordinate click abort between points prevents remaining input and confirmation", async () => {
+  const controller = new AbortController();
+  const events = [];
+  const lifecycle = [];
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => {
+      events.push(event);
+      if (event.type === "mouseReleased") controller.abort();
+    },
+    detach: async () => lifecycle.push("detach"),
+  }), {
+    signal: controller.signal,
+    detectChallenge: async () => coordinateChallenge(),
+    fingerprintChallenge: async () => "coordinate-abort",
+    visionRequest: async () => ({
+      ok: true,
+      points: [
+        { x: 0.2, y: 0.2, confidence: 0.9 },
+        { x: 0.8, y: 0.8, confidence: 0.9 },
+      ],
+      confidence: 0.9,
+    }),
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(events.map(({ type }) => type), [
+    "mouseMoved", "mousePressed", "mouseReleased",
+  ]);
+  assert.deepEqual(lifecycle, ["detach"]);
+  assert.equal(result.reason, "aborted");
+});
+
+test("coordinate click treats confirmation styling as an unchanged challenge", async () => {
+  const events = [];
+  let confirmationChanged = false;
+  const confirm = fakeHandle({ box: { x: 136, y: 282, width: 68, height: 30 } });
+  confirm.evaluate = async (_callback, argument) => {
+    if (argument === "fingerprint") {
+      return confirmationChanged ? "confirmation-after-click" : "confirmation-before-click";
+    }
+    return true;
+  };
+  const challenge = coordinateChallenge({
+    targets: fakeHandle({
+      box: { x: 70, y: 18, width: 150, height: 42 },
+      fingerprint: "coordinate-targets",
+    }),
+    background: fakeHandle({
+      box: { x: 20, y: 72, width: 300, height: 200 },
+      fingerprint: "coordinate-background",
+      screenshot: () => pngBuffer(300, 200, confirmationChanged ? 2 : 1),
+    }),
+    confirm,
+  });
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => {
+      events.push(event);
+      if (event.type === "mousePressed" && event.x === 170 && event.y === 297) {
+        confirmationChanged = true;
+      }
+    },
+  }), {
+    detectChallenge: async () => challenge,
+    isChallengeComplete: async () => false,
+    visionRequest: async () => ({
+      ok: true,
+      points: [
+        { x: 0.2, y: 0.2, confidence: 0.9 },
+        { x: 0.8, y: 0.8, confidence: 0.9 },
+      ],
+      confidence: 0.9,
+    }),
+    sleep: async () => {},
+    timeoutMs: 100,
+  });
+
+  assert.equal(pressedCenters(events).filter(([x, y]) => x === 170 && y === 297).length, 1);
+  assert.equal(result.attempts, 1);
+  assert.equal(result.reason, "challenge_unchanged");
+});
+
+test("coordinate click performs at most one second interaction for a replaced challenge", async () => {
+  const events = [];
+  let activeChallenge;
+  let confirmations = 0;
+  const challengeA = coordinateChallenge();
+  const challengeB = coordinateChallenge();
+  activeChallenge = challengeA;
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => {
+      events.push(event);
+      if (event.type === "mousePressed" && event.x === 170 && event.y === 297) {
+        confirmations += 1;
+        if (confirmations === 1) activeChallenge = challengeB;
+      }
+    },
+  }), {
+    detectChallenge: async () => activeChallenge,
+    fingerprintChallenge: async (challenge) => (
+      challenge === challengeA ? "coordinate-a" : "coordinate-b"
+    ),
+    isChallengeComplete: async () => false,
+    visionRequest: async () => ({
+      ok: true,
+      points: [
+        { x: 0.2, y: 0.2, confidence: 0.9 },
+        { x: 0.8, y: 0.8, confidence: 0.9 },
+      ],
+      confidence: 0.9,
+    }),
+    sleep: async () => {},
+    timeoutMs: 100,
+  });
+
+  assert.equal(confirmations, 2);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.reason, "challenge_unchanged");
 });
 
 test("click verification clicks only the candidate selected by vision", async () => {
