@@ -60,6 +60,8 @@ def _decode_png(raw: bytes) -> np.ndarray:
     image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     if image is None or image.ndim not in {2, 3}:
         raise ValueError("image_decode_failed")
+    if image.dtype != np.uint8:
+        raise ValueError("image_depth_invalid")
     height, width = image.shape[:2]
     if min(width, height) < 8 or max(width, height) > MAX_IMAGE_DIMENSION:
         raise ValueError("image_dimensions_invalid")

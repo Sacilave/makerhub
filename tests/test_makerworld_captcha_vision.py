@@ -162,6 +162,18 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
                 result = solve_coordinate_click_challenge(targets_png, background_png)
                 self.assertEqual(result, {"ok": False, "reason": "image_format_invalid"})
 
+    def test_coordinate_click_rejects_16_bit_pngs(self):
+        targets, background, _ = coordinate_fixture()
+        sixteen_bit_targets = np.full(targets.shape, 65535, dtype=np.uint16)
+        sixteen_bit_background = np.full(background.shape, 65535, dtype=np.uint16)
+        for targets_png, background_png in (
+            (png_bytes(sixteen_bit_targets), png_bytes(background)),
+            (png_bytes(targets), png_bytes(sixteen_bit_background)),
+        ):
+            with self.subTest(targets_png=targets_png, background_png=background_png):
+                result = solve_coordinate_click_challenge(targets_png, background_png)
+                self.assertEqual(result, {"ok": False, "reason": "image_depth_invalid"})
+
     def test_solve_request_accepts_coordinate_click_payload(self):
         targets, background, _ = coordinate_fixture()
 
@@ -174,6 +186,20 @@ class MakerWorldCaptchaVisionTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"], result)
+
+    def test_solve_request_rejects_16_bit_coordinate_click_pngs(self):
+        targets, background, _ = coordinate_fixture()
+        sixteen_bit_targets = np.full(targets.shape, 65535, dtype=np.uint16)
+
+        result = solve_request(
+            {
+                "mode": "coordinate_click",
+                "targets_png": png_base64(sixteen_bit_targets),
+                "background_png": png_base64(background),
+            }
+        )
+
+        self.assertEqual(result, {"ok": False, "reason": "image_depth_invalid"})
 
     def test_solve_request_rejects_coordinate_click_sensitive_fields(self):
         targets, background, _ = coordinate_fixture()
