@@ -1260,6 +1260,7 @@ test("coordinate click rejects one point without mouse input", async () => {
       ok: true,
       points: [{ x: 0.25, y: 0.25, confidence: 0.9 }],
       confidence: 0.9,
+      margin: 0.1,
     }),
   });
 
@@ -1278,6 +1279,7 @@ test("coordinate click rejects six points without mouse input", async () => {
       ok: true,
       points: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6].map((x) => ({ x, y: 0.5, confidence: 0.9 })),
       confidence: 0.9,
+      margin: 0.1,
     }),
   });
 
@@ -1305,11 +1307,81 @@ test("coordinate click rejects non-finite and out-of-range coordinates without m
           invalidPoint,
         ],
         confidence: 0.9,
+        margin: 0.1,
       }),
     });
 
     assert.deepEqual(events, []);
     assert.equal(result.reason, "coordinate_invalid");
+  }
+});
+
+test("coordinate click rejects non-numeric vision fields without mouse input", async () => {
+  const validResult = {
+    ok: true,
+    points: [
+      { x: 0.2, y: 0.2, confidence: 0.9 },
+      { x: 0.8, y: 0.8, confidence: 0.85 },
+    ],
+    confidence: 0.85,
+    margin: 0.1,
+  };
+  const invalidResults = [
+    ["ok is a truthy string", { ...validResult, ok: "false" }],
+    ["point x is null", {
+      ...validResult,
+      points: [{ ...validResult.points[0], x: null }, validResult.points[1]],
+    }],
+    ["point y is boolean", {
+      ...validResult,
+      points: [{ ...validResult.points[0], y: true }, validResult.points[1]],
+    }],
+    ["point x is a numeric string", {
+      ...validResult,
+      points: [{ ...validResult.points[0], x: "0.2" }, validResult.points[1]],
+    }],
+    ["point y is a numeric string", {
+      ...validResult,
+      points: [{ ...validResult.points[0], y: "0.2" }, validResult.points[1]],
+    }],
+    ["point confidence is a numeric string", {
+      ...validResult,
+      points: [{ ...validResult.points[0], confidence: "0.9" }, validResult.points[1]],
+    }],
+    ["aggregate confidence is a string", { ...validResult, confidence: "0.85" }],
+    ["aggregate confidence is boolean", { ...validResult, confidence: true }],
+    ["aggregate margin is a string", { ...validResult, margin: "0.1" }],
+    ["aggregate margin is boolean", { ...validResult, margin: false }],
+  ];
+  const { confidence: _confidence, ...missingConfidence } = validResult;
+  const { margin: _margin, ...missingMargin } = validResult;
+  invalidResults.push(
+    ["aggregate confidence is missing", missingConfidence],
+    ["aggregate confidence is NaN", { ...validResult, confidence: Number.NaN }],
+    ["aggregate confidence is infinite", { ...validResult, confidence: Number.POSITIVE_INFINITY }],
+    ["aggregate confidence is below zero", { ...validResult, confidence: -0.01 }],
+    ["aggregate confidence is above one", { ...validResult, confidence: 1.01 }],
+    ["aggregate margin is missing", missingMargin],
+    ["aggregate margin is NaN", { ...validResult, margin: Number.NaN }],
+    ["aggregate margin is infinite", { ...validResult, margin: Number.POSITIVE_INFINITY }],
+    ["aggregate margin is below zero", { ...validResult, margin: -0.01 }],
+    ["aggregate margin is above one", { ...validResult, margin: 1.01 }],
+  );
+
+  for (const [name, visionResult] of invalidResults) {
+    const events = [];
+    const result = await attemptAutomaticVerification(fakeInputPage({
+      dispatch: async (event) => events.push(event),
+    }), {
+      detectChallenge: async () => coordinateChallenge(),
+      fingerprintChallenge: async () => `coordinate-invalid-${name}`,
+      isChallengeComplete: async () => true,
+      visionRequest: async () => visionResult,
+      sleep: async () => {},
+    });
+
+    assert.deepEqual(events, [], name);
+    assert.equal(result.reason, "coordinate_invalid", name);
   }
 });
 
@@ -1327,6 +1399,7 @@ test("coordinate click rejects duplicate coordinates without mouse input", async
         { x: 0.4, y: 0.6, confidence: 0.85 },
       ],
       confidence: 0.85,
+      margin: 0.1,
     }),
   });
 
@@ -1357,6 +1430,7 @@ test("coordinate click rejects layout changes after recognition without mouse in
           { x: 0.8, y: 0.8, confidence: 0.9 },
         ],
         confidence: 0.9,
+        margin: 0.1,
       };
     },
   });
@@ -1383,6 +1457,7 @@ test("coordinate click rejects a changed fingerprint without mouse input", async
         { x: 0.8, y: 0.8, confidence: 0.9 },
       ],
       confidence: 0.9,
+      margin: 0.1,
     }),
   });
 
@@ -1404,6 +1479,7 @@ test("coordinate click rejects a missing confirmation control without mouse inpu
         { x: 0.8, y: 0.8, confidence: 0.9 },
       ],
       confidence: 0.9,
+      margin: 0.1,
     }),
   });
 
@@ -1447,6 +1523,7 @@ test("coordinate click abort between points prevents remaining input and confirm
         { x: 0.8, y: 0.8, confidence: 0.9 },
       ],
       confidence: 0.9,
+      margin: 0.1,
     }),
     sleep: async () => {},
   });
@@ -1488,6 +1565,7 @@ test("coordinate click retries release with the hard deadline when abort races m
         { x: 0.8, y: 0.8, confidence: 0.9 },
       ],
       confidence: 0.9,
+      margin: 0.1,
     }),
     sleep: async () => {},
     timeoutMs: 100,
@@ -1523,6 +1601,7 @@ test("coordinate click stops after the first complete click when the challenge c
         { x: 0.8, y: 0.8, confidence: 0.9 },
       ],
       confidence: 0.9,
+      margin: 0.1,
     }),
     sleep: async () => {},
   });
@@ -1577,6 +1656,7 @@ test("coordinate click treats selection markers and confirmation styling as unch
         { x: 0.8, y: 0.8, confidence: 0.9 },
       ],
       confidence: 0.9,
+      margin: 0.1,
     }),
     sleep: async () => {},
     timeoutMs: 100,
@@ -1615,6 +1695,7 @@ test("coordinate click performs at most one second interaction for a replaced ch
         { x: 0.8, y: 0.8, confidence: 0.9 },
       ],
       confidence: 0.9,
+      margin: 0.1,
     }),
     sleep: async () => {},
     timeoutMs: 100,
@@ -2453,14 +2534,29 @@ test("Turnstile clicks at most once per attempt without calling vision", async (
 });
 
 test("Turnstile cutoff sends no new press after a hanging pointer move", async () => {
+  const controller = new AbortController();
   const lifecycle = [];
+  let observeMove;
+  let observeDetach;
+  const moved = new Promise((resolve) => { observeMove = resolve; });
+  const detached = new Promise((resolve) => { observeDetach = resolve; });
+  const rejectAfter = (delay, label) => new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out`)), delay);
+    timer.unref?.();
+  });
   const page = fakeInputPage({
     dispatch: async ({ type }) => {
       lifecycle.push(type);
-      if (type === "mouseMoved") return new Promise(() => {});
+      if (type === "mouseMoved") {
+        observeMove();
+        return new Promise(() => {});
+      }
       return undefined;
     },
-    detach: async () => { lifecycle.push("detach"); },
+    detach: async () => {
+      lifecycle.push("detach");
+      observeDetach();
+    },
   });
   const challenge = {
     provider: "turnstile",
@@ -2471,16 +2567,24 @@ test("Turnstile cutoff sends no new press after a hanging pointer move", async (
     }),
     response: fakeHandle({ value: "" }),
   };
-  const result = await attemptAutomaticVerification(page, {
+  const verification = attemptAutomaticVerification(page, {
+    signal: controller.signal,
     detectChallenge: async () => challenge,
     turnstileResponseWaitMs: 0,
-    timeoutMs: 10,
+    timeoutMs: 200,
   });
 
-  assert.equal(result.reason, "timeout");
-  assert.deepEqual(lifecycle, ["mouseMoved", "detach"]);
+  await Promise.race([moved, rejectAfter(500, "mouse move")]);
+  controller.abort();
+  await Promise.race([detached, rejectAfter(500, "session detach")]);
+  const result = await verification;
+
+  assert.equal(result.reason, "aborted");
+  assert.equal(lifecycle.includes("mouseMoved"), true);
+  assert.equal(lifecycle.includes("mousePressed"), false);
+  assert.equal(lifecycle.includes("detach"), true);
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepEqual(lifecycle, ["mouseMoved", "detach"]);
+  assert.equal(lifecycle.includes("mousePressed"), false);
 });
 
 test("Turnstile passive token completion does not count as an interaction", async () => {

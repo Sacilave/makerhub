@@ -1094,19 +1094,37 @@ function coordinatePointsAreDistinct(points) {
   return true;
 }
 
+function isUnitIntervalNumber(value) {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= 1;
+}
+
 function validateCoordinatePoints(result, backgroundBox) {
   const points = Array.isArray(result?.points) ? result.points : [];
-  if (!result?.ok || points.length < 2 || points.length > 5 || !validBox(backgroundBox)) {
+  if (
+    result?.ok !== true
+    || points.length < 2
+    || points.length > 5
+    || !validBox(backgroundBox)
+    || !isUnitIntervalNumber(result.confidence)
+    || !isUnitIntervalNumber(result.margin)
+    || points.some((point) => (
+      !isUnitIntervalNumber(point?.x)
+      || !isUnitIntervalNumber(point?.y)
+      || !isUnitIntervalNumber(point?.confidence)
+    ))
+  ) {
     return null;
   }
   const converted = points.map((point) => ({
-    x: Number(backgroundBox.x) + (Number(point?.x) * Number(backgroundBox.width)),
-    y: Number(backgroundBox.y) + (Number(point?.y) * Number(backgroundBox.height)),
-    confidence: Number(point?.confidence),
+    x: Number(backgroundBox.x) + (point.x * Number(backgroundBox.width)),
+    y: Number(backgroundBox.y) + (point.y * Number(backgroundBox.height)),
+    confidence: point.confidence,
   }));
   if (converted.some((point) => (
     !Number.isFinite(point.x) || !Number.isFinite(point.y)
-    || !Number.isFinite(point.confidence) || point.confidence < 0 || point.confidence > 1
     || point.x < Number(backgroundBox.x)
     || point.x > Number(backgroundBox.x) + Number(backgroundBox.width)
     || point.y < Number(backgroundBox.y)
