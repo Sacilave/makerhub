@@ -1122,13 +1122,23 @@ function coordinateLayoutsEqual(left, right) {
   ));
 }
 
-async function currentConfirmationCenter(challenge, signal) {
-  const layout = await coordinateClickLayoutSnapshot(challenge, signal);
-  if (!layout) return null;
-  return {
-    x: layout.confirm.x + (layout.confirm.width / 2),
-    y: layout.confirm.y + (layout.confirm.height / 2),
-  };
+async function currentCoordinateLayoutIfUnchanged(
+  challenge,
+  initialLayout,
+  initialFingerprint,
+  fingerprintChallenge,
+  stage,
+) {
+  throwIfActionExpired(stage);
+  const currentLayout = await coordinateClickLayoutSnapshot(challenge, stage.signal);
+  throwIfActionExpired(stage);
+  if (!coordinateLayoutsEqual(initialLayout, currentLayout)) return null;
+  const currentFingerprint = await abortable(
+    fingerprintChallenge(challenge, stage),
+    stage.signal,
+  );
+  throwIfActionExpired(stage);
+  return currentFingerprint === initialFingerprint ? currentLayout : null;
 }
 
 async function solveCoordinateClickChallenge(
@@ -1167,14 +1177,15 @@ async function solveCoordinateClickChallenge(
   if (!points) {
     return { acted: false, reason: "coordinate_invalid", confidence: result.confidence };
   }
-  const currentLayout = await coordinateClickLayoutSnapshot(challenge, signal);
-  if (!coordinateLayoutsEqual(initialLayout, currentLayout)) {
-    return { acted: false, reason: "challenge_changed", confidence: result.confidence };
-  }
   const fingerprintChallenge = options.fingerprintChallenge || defaultFingerprintChallenge;
-  const currentFingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
-  throwIfActionExpired(stage);
-  if (currentFingerprint !== initialFingerprint) {
+  const currentLayout = await currentCoordinateLayoutIfUnchanged(
+    challenge,
+    initialLayout,
+    initialFingerprint,
+    fingerprintChallenge,
+    stage,
+  );
+  if (!currentLayout) {
     return { acted: false, reason: "challenge_changed", confidence: result.confidence };
   }
 
@@ -1182,18 +1193,37 @@ async function solveCoordinateClickChallenge(
   const random = options.random || Math.random;
   const mouse = await createMouseDriver(page, stage);
   try {
-    for (const point of points) {
+    for (let index = 0; index < points.length; index += 1) {
+      if (index > 0 && !await currentCoordinateLayoutIfUnchanged(
+        challenge,
+        initialLayout,
+        initialFingerprint,
+        fingerprintChallenge,
+        stage,
+      )) {
+        return { acted: false, reason: "challenge_changed", confidence: result.confidence };
+      }
+      const point = points[index];
       throwIfActionExpired(stage);
       await mouse.move(point.x, point.y);
       await mouse.down();
       await mouse.up();
       await abortable(sleep(Math.round(35 + (clampRandom(random) * 40))), signal);
     }
-    throwIfActionExpired(stage);
-    const confirmCenter = await currentConfirmationCenter(challenge, signal);
-    if (!confirmCenter) {
-      return { acted: false, reason: "confirmation_unavailable", confidence: result.confidence };
+    const confirmationLayout = await currentCoordinateLayoutIfUnchanged(
+      challenge,
+      initialLayout,
+      initialFingerprint,
+      fingerprintChallenge,
+      stage,
+    );
+    if (!confirmationLayout) {
+      return { acted: false, reason: "challenge_changed", confidence: result.confidence };
     }
+    const confirmCenter = {
+      x: confirmationLayout.confirm.x + (confirmationLayout.confirm.width / 2),
+      y: confirmationLayout.confirm.y + (confirmationLayout.confirm.height / 2),
+    };
     await mouse.move(confirmCenter.x, confirmCenter.y);
     await mouse.down();
     await mouse.up();
@@ -1265,8 +1295,16 @@ async function createMouseDriver(page, stage) {
     },
     async up(cleanup = false) {
       if (!mouseDown) return;
-      mouseDown = false;
+      if (cleanup) {
+        try {
+          await send({ type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, true);
+        } finally {
+          mouseDown = false;
+        }
+        return;
+      }
       await send({ type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, cleanup);
+      mouseDown = false;
     },
     async close() {
       if (mouseDown) await mouse.up(true).catch(() => undefined);

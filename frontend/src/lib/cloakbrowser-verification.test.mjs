@@ -1453,14 +1453,91 @@ test("coordinate click abort between points prevents remaining input and confirm
 
   assert.deepEqual(events.map(({ type }) => type), [
     "mouseMoved", "mousePressed", "mouseReleased",
+    "mouseReleased",
   ]);
   assert.deepEqual(lifecycle, ["detach"]);
   assert.equal(result.reason, "aborted");
 });
 
-test("coordinate click treats confirmation styling as an unchanged challenge", async () => {
+test("coordinate click retries release with the hard deadline when abort races mouse up", async () => {
+  const controller = new AbortController();
+  const lifecycle = [];
+  let releaseAttempts = 0;
+  let cleanupReleaseSawAbort = false;
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => {
+      lifecycle.push(event.type);
+      if (event.type !== "mouseReleased") return;
+      releaseAttempts += 1;
+      if (releaseAttempts === 1) {
+        controller.abort();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      } else {
+        cleanupReleaseSawAbort = controller.signal.aborted;
+      }
+    },
+    detach: async () => lifecycle.push("detach"),
+  }), {
+    signal: controller.signal,
+    detectChallenge: async () => coordinateChallenge(),
+    fingerprintChallenge: async () => "coordinate-release-race",
+    visionRequest: async () => ({
+      ok: true,
+      points: [
+        { x: 0.2, y: 0.2, confidence: 0.9 },
+        { x: 0.8, y: 0.8, confidence: 0.9 },
+      ],
+      confidence: 0.9,
+    }),
+    sleep: async () => {},
+    timeoutMs: 100,
+  });
+
+  assert.equal(result.reason, "aborted");
+  assert.equal(cleanupReleaseSawAbort, true);
+  assert.deepEqual(lifecycle, [
+    "mouseMoved",
+    "mousePressed",
+    "mouseReleased",
+    "mouseReleased",
+    "detach",
+  ]);
+});
+
+test("coordinate click stops after the first complete click when the challenge changes", async () => {
+  const events = [];
+  let fingerprint = "coordinate-before-first-point";
+  const result = await attemptAutomaticVerification(fakeInputPage({
+    dispatch: async (event) => {
+      events.push(event);
+      if (event.type === "mouseReleased") fingerprint = "coordinate-replaced";
+    },
+  }), {
+    detectChallenge: async () => coordinateChallenge(),
+    fingerprintChallenge: async () => fingerprint,
+    isChallengeComplete: async () => true,
+    visionRequest: async () => ({
+      ok: true,
+      points: [
+        { x: 0.2, y: 0.2, confidence: 0.9 },
+        { x: 0.8, y: 0.8, confidence: 0.9 },
+      ],
+      confidence: 0.9,
+    }),
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(events.map(({ type }) => type), [
+    "mouseMoved", "mousePressed", "mouseReleased",
+  ]);
+  assert.equal(result.completed, false);
+  assert.equal(result.reason, "challenge_changed");
+});
+
+test("coordinate click treats selection markers and confirmation styling as unchanged", async () => {
   const events = [];
   let confirmationChanged = false;
+  let selectionMarkerAdded = false;
   const confirm = fakeHandle({ box: { x: 136, y: 282, width: 68, height: 30 } });
   confirm.evaluate = async (_callback, argument) => {
     if (argument === "fingerprint") {
@@ -1476,7 +1553,7 @@ test("coordinate click treats confirmation styling as an unchanged challenge", a
     background: fakeHandle({
       box: { x: 20, y: 72, width: 300, height: 200 },
       fingerprint: "coordinate-background",
-      screenshot: () => pngBuffer(300, 200, confirmationChanged ? 2 : 1),
+      screenshot: () => pngBuffer(300, 200, selectionMarkerAdded ? 2 : 1),
     }),
     confirm,
   });
@@ -1485,6 +1562,9 @@ test("coordinate click treats confirmation styling as an unchanged challenge", a
       events.push(event);
       if (event.type === "mousePressed" && event.x === 170 && event.y === 297) {
         confirmationChanged = true;
+      }
+      if (event.type === "mouseReleased" && event.x !== 170 && event.y !== 297) {
+        selectionMarkerAdded = true;
       }
     },
   }), {
