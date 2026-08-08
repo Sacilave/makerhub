@@ -44,15 +44,7 @@ export function browserSessionBusy(item = {}) {
 
 export function shouldShowBrowserSession(item = {}, operational = {}) {
   const action = String(operational?.action || "").trim();
-  const operationalState = String(operational?.state || "").trim();
   const status = String(item?.browser_status || "").trim();
-  if (
-    operationalState === "ok"
-    && action === "none"
-    && ["waiting", "action_required", "account_mismatch"].includes(status)
-  ) {
-    return false;
-  }
   return Boolean(String(item?.browser_profile_id || "").trim())
     || action === "browser"
     || ["not_linked", "syncing", "launching", "waiting", "action_required", "account_mismatch"].includes(status);

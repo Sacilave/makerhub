@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.2`
+> 当前版本：`v0.16.3`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-08 · v0.16.3
+
+- 指纹浏览器实际未登录时，设置页和归档队列统一显示需要重新登录，不再同时出现“可归档”和“尚未登录”。
+- 对应平台的新任务会留在队列等待，不再逐条失败；其他平台继续归档。
+- 浏览器重新登录并同步后会重新检测状态并立即唤醒队列，即使 token 没有变化也能恢复。
+
 ### 2026-08-07 · v0.16.2
 
 - 修复 MakerWorld 国区真实坐标点选验证码被误判为滑块的问题。
@@ -364,14 +370,14 @@ npm --prefix frontend run build
 - 过期的 3MF 每日下载上限任务会在平台 gate 恢复后自动继续，不再永久停在“已暂停”。
 - 国内站和国际站每次各只放行 1 个真实 3MF 探测，成功后再逐个继续；当前限额、真实验证和手动暂停不会被误恢复。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-07 · v0.16.0
 
 - 新增可选的 3MF 自动验证：国内站尝试图标点击和滑块，国际站 Turnstile 等待浏览器原生响应后最多点击一个可见复选框；`MAKERHUB_AUTO_VERIFY_3MF` 默认关闭。
 - 单个挑战最多 2 次，只有挑战内容变化后才会再次尝试；每个归档任务只点击一次 3MF 授权，未完成时保留人工回退。
 - 容器包含 OpenCV 本地视觉依赖，带来一定镜像体积代价，但不上传或持久化验证图片、令牌和登录信息。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-06 · v0.15.23
 

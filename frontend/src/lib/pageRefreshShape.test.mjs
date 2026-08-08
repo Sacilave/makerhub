@@ -171,7 +171,7 @@ test("SettingsPage derives synced online account source counts from current subs
   assert.match(settingsPageSource, /const sourceSync = syncStateByPlatform\[item\.platform\]/);
   assert.match(settingsPageSource, /accountSourceStats\(\s*sourceInventory,\s*sourceSync,\s*subscriptionItems,\s*item\.platform,/);
   assert.match(settingsPageSource, /const accountHealthByPlatform = config\.value\?\.account_health \|\| \{\}/);
-  assert.match(settingsPageSource, /accountOperationalView\(operational\)/);
+  assert.match(settingsPageSource, /accountOperationalView\(operational, mergedItem\)/);
   assert.match(settingsPageSource, /const displayView = operationalView;/);
   assert.match(settingsPageSource, /shouldShowBrowserSession\(mergedItem, operational\)/);
 });

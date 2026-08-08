@@ -337,7 +337,8 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         )
 
         with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
-                patch.object(archive_worker_module, "collect_browser_session", return_value=browser_result):
+                patch.object(archive_worker_module, "collect_browser_session", return_value=browser_result), \
+                patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
             refreshed, error = manager._refresh_browser_session_for_task("cn")
 
         self.assertIsNone(refreshed)
@@ -345,6 +346,75 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         saved = store.load().cookies[0]
         self.assertEqual(saved.cookie, "token=old; refreshToken=old")
         self.assertEqual(saved.browser_status, "action_required")
+        update_gate_mock.assert_called_once_with(
+            "cn",
+            gate="cookie_invalid",
+            reason="cloakbrowser_login_missing",
+            source="cloakbrowser_auto_sync",
+            detail="关联的指纹浏览器尚未登录 MakerWorld，请完成浏览器登录后重试。",
+        )
+
+    def test_action_required_browser_platform_is_skipped_without_failing_queued_tasks(self):
+        manager, store = self._manager_with_cookie("token=cn")
+        config = store.load()
+        config.cookies = [
+            config.cookies[0].model_copy(
+                update={"browser_status": "synced", "browser_synced_at": "2026-08-08T09:00:00+08:00"}
+            ),
+            CookiePair(
+                platform="global",
+                cookie="token=global",
+                browser_profile_id="profile-global",
+                browser_status="action_required",
+                browser_message="指纹浏览器尚未登录 MakerWorld。",
+            ),
+        ]
+        store.save(config)
+        queue = {
+            "active": [],
+            "queued": [
+                {
+                    "id": "global-task",
+                    "status": "queued",
+                    "url": "https://makerworld.com/zh/models/3021853",
+                    "meta": {"source": "global"},
+                },
+                {
+                    "id": "cn-task",
+                    "status": "queued",
+                    "url": "https://makerworld.com.cn/zh/models/123",
+                    "meta": {"source": "cn"},
+                },
+            ],
+        }
+
+        selected = manager._next_executable_task(queue)
+
+        self.assertEqual(selected["id"], "cn-task")
+
+    def test_browser_session_change_wakes_a_browser_blocked_queue(self):
+        manager, store = self._manager_with_cookie("token=old")
+        config = store.load()
+        config.cookies = [config.cookies[0].model_copy(update={"browser_status": "action_required"})]
+        store.save(config)
+        queue = {
+            "queued_count": 1,
+            "queued": [
+                {
+                    "id": "task-1",
+                    "status": "queued",
+                    "updated_at": "2026-08-08T09:00:00+08:00",
+                    "url": "https://makerworld.com.cn/zh/models/123",
+                }
+            ],
+        }
+        blocked_signature = manager._queue_wakeup_signature(queue)
+
+        config = store.load()
+        config.cookies = [config.cookies[0].model_copy(update={"browser_status": "synced"})]
+        store.save(config)
+
+        self.assertNotEqual(manager._queue_wakeup_signature(queue), blocked_signature)
 
     def test_task_session_refresh_uses_last_browser_cookie_during_temporary_outage(self):
         manager, store = self._manager_with_cookie("token=synced; refreshToken=fresh")

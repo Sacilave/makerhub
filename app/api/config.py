@@ -2483,10 +2483,11 @@ def _store_browser_session_result(
         and hmac.compare_digest(current_token, candidate_token)
     )
     if not candidate_token:
+        login_required_message = "指纹浏览器尚未登录 MakerWorld，请在浏览器内完成登录后再同步。"
         metadata = _browser_status_metadata(
             profile_id=result.profile_id,
             status="action_required",
-            message="指纹浏览器尚未登录 MakerWorld，请在浏览器内完成登录后再同步。",
+            message=login_required_message,
             synced_at=current.browser_synced_at,
         )
         config.cookies = _upsert_cookie_pair(
@@ -2504,6 +2505,16 @@ def _store_browser_session_result(
             "state.changed",
             {"platform": platform, "status": "action_required"},
         )
+        try:
+            update_three_mf_gate(
+                platform,
+                gate="cookie_invalid",
+                reason="cloakbrowser_login_missing",
+                source="cloakbrowser_sync",
+                detail=login_required_message,
+            )
+        except DatabaseUnavailable:
+            pass
         append_business_log(
             "settings",
             "cloakbrowser_login_missing",
@@ -2547,7 +2558,11 @@ def _store_browser_session_result(
     config.cookies = _upsert_cookie_pair(config.cookies, next_pair)
     saved = store.save(config)
 
-    if changed:
+    browser_session_recovered = bool(
+        current_profile_id
+        and str(current.browser_status or "").strip().lower() != "synced"
+    )
+    if changed or browser_session_recovered:
         _mark_online_account_checking(platform, source="cloakbrowser_sync")
         subscription_manager.retry_error_subscriptions_for_platforms({platform})
         subscription_manager.request_cookie_source_sync({platform}, reason="cloakbrowser_sync")

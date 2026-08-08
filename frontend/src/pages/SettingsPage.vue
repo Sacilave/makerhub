@@ -1122,7 +1122,7 @@ const onlineAccountItems = computed(() => {
       const sourceInventory = inventoryByPlatform[item.platform];
       const sourceSync = syncStateByPlatform[item.platform];
       const operational = accountHealthByPlatform[item.platform] || {};
-      const operationalView = accountOperationalView(operational);
+      const operationalView = accountOperationalView(operational, mergedItem);
       const displayView = operationalView;
       const sourceStats = accountSourceStats(
         sourceInventory,

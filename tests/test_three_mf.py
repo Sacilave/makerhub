@@ -39,6 +39,15 @@ class ThreeMfFailureTest(unittest.TestCase):
             "auth_required",
         )
 
+    def test_linked_browser_logged_out_message_is_auth_required(self):
+        self.assertEqual(
+            normalize_three_mf_failure_state(
+                "",
+                "关联的指纹浏览器尚未登录 MakerWorld，请完成浏览器登录后重试。",
+            ),
+            "auth_required",
+        )
+
     def test_daily_limit_message_overrides_noncanonical_upstream_state(self):
         for message in (
             "今日下载次数已达到上限，请明日再试。",

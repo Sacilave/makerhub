@@ -282,6 +282,7 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                         side_effect=AssertionError("未登录 profile 不应发起身份探针"),
                     ) as metadata_mock, \
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms") as retry_mock, \
+                    patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
                     patch.object(config_api, "append_business_log"), \
                     patch.object(config_api, "publish_state_event"):
                 saved, applied = config_api._store_browser_session_result("cn", target, result, config.proxy)
@@ -293,6 +294,13 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("尚未登录", current.browser_message)
             metadata_mock.assert_not_called()
             retry_mock.assert_not_called()
+            update_gate_mock.assert_called_once_with(
+                "cn",
+                gate="cookie_invalid",
+                reason="cloakbrowser_login_missing",
+                source="cloakbrowser_sync",
+                detail="指纹浏览器尚未登录 MakerWorld，请在浏览器内完成登录后再同步。",
+            )
 
     async def test_store_browser_session_prefers_linked_profile_over_stale_saved_cookie(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -573,6 +581,11 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api.threading, "Thread", side_effect=lambda **kwargs: ImmediateThread(**kwargs)), \
                     patch.object(config_api.time, "monotonic", side_effect=[0.0, 0.0, 601.0]), \
                     patch.object(config_api.time, "sleep") as sleep_mock, \
+                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms") as retry_mock, \
+                    patch.object(config_api.subscription_manager, "request_cookie_source_sync") as source_sync_mock, \
+                    patch.object(config_api, "_retry_verification_missing_3mf_for_platforms") as retry_three_mf_mock, \
+                    patch.object(config_api, "_schedule_online_account_cookie_test") as test_mock, \
+                    patch.object(config_api, "_mark_online_account_checking") as checking_mock, \
                     patch.object(config_api, "append_business_log"), \
                     patch.object(config_api, "publish_state_event"):
                 config_api._schedule_cloakbrowser_monitor("global", target, config.proxy)
@@ -581,6 +594,11 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             sleep_mock.assert_not_called()
             self.assertEqual(saved.browser_status, "synced")
             self.assertEqual(saved.browser_message, "指纹浏览器登录态已同步。")
+            checking_mock.assert_called_once_with("global", source="cloakbrowser_sync")
+            retry_mock.assert_called_once_with({"global"})
+            source_sync_mock.assert_called_once_with({"global"}, reason="cloakbrowser_sync")
+            retry_three_mf_mock.assert_called_once_with({"global"})
+            test_mock.assert_called_once()
 
     async def test_unchanged_browser_cookie_without_auth_token_is_not_marked_synced(self):
         with tempfile.TemporaryDirectory() as tmp:

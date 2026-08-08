@@ -83,6 +83,14 @@ BATCH_CHILD_TRANSIENT_FAILURE_TOKENS = (
 )
 CLOAKBROWSER_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
 CLOAKBROWSER_TASK_SESSION_REFRESH_SECONDS = 2 * 60
+CLOAKBROWSER_TASK_BLOCKING_STATUSES = {
+    "launching",
+    "syncing",
+    "waiting",
+    "action_required",
+    "account_mismatch",
+    "not_configured",
+}
 THREE_MF_RECOVERY_PROBE_BATCH_SIZE = 1
 CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE = (
     "指纹浏览器登录态已同步，但 MakerWorld 仍拒绝 3MF 下载；请在官网完成验证后再继续归档。"
@@ -1007,6 +1015,7 @@ class ArchiveTaskManager:
 
         browser_cookie = sanitize_cookie_header(browser_result.cookie)
         if not extract_auth_token(browser_cookie):
+            login_required_message = "关联的指纹浏览器尚未登录 MakerWorld，请完成浏览器登录后重试。"
             persisted = self._persist_browser_recovery_session(
                 normalized_platform,
                 expected_cookie=expected_cookie,
@@ -1022,7 +1031,24 @@ class ArchiveTaskManager:
                 )
                 if latest is not None:
                     return latest, ""
-            return None, "关联的指纹浏览器尚未登录 MakerWorld，请完成浏览器登录后重试。"
+            if persisted.outcome == "saved":
+                try:
+                    update_three_mf_gate(
+                        normalized_platform,
+                        gate="cookie_invalid",
+                        reason="cloakbrowser_login_missing",
+                        source="cloakbrowser_auto_sync",
+                        detail=login_required_message,
+                    )
+                except Exception as exc:
+                    _log_archive(
+                        "cloakbrowser_login_missing_health_sync_failed",
+                        "指纹浏览器未登录状态写入账号健康失败。",
+                        level="warning",
+                        platform=normalized_platform,
+                        error=str(exc)[:240],
+                    )
+            return None, login_required_message
 
         persisted = self._persist_browser_recovery_session(
             normalized_platform,
@@ -3206,17 +3232,39 @@ class ArchiveTaskManager:
             "message": f"已把 {len(normalized_items)} 个新增模型加入归档队列。",
         }
 
-    @staticmethod
-    def _queue_wakeup_signature(queue: dict) -> tuple[Any, ...]:
+    def _browser_session_queue_state(self) -> tuple[set[str], tuple[tuple[str, str, str], ...]]:
+        try:
+            config = self.store.load()
+        except Exception:
+            return set(), ()
+        blocked_platforms: set[str] = set()
+        signature: list[tuple[str, str, str]] = []
+        for account in getattr(config, "cookies", []) or []:
+            profile_id = str(getattr(account, "browser_profile_id", "") or "").strip()
+            if not profile_id:
+                continue
+            platform = normalize_makerworld_source(getattr(account, "platform", ""))
+            if platform not in {"cn", "global"}:
+                continue
+            status = str(getattr(account, "browser_status", "") or "").strip().lower()
+            synced_at = str(getattr(account, "browser_synced_at", "") or "").strip()
+            signature.append((platform, status, synced_at))
+            if status in CLOAKBROWSER_TASK_BLOCKING_STATUSES:
+                blocked_platforms.add(platform)
+        return blocked_platforms, tuple(sorted(signature))
+
+    def _queue_wakeup_signature(self, queue: dict) -> tuple[Any, ...]:
         queued = list(queue.get("queued") or [])
         first = queued[0] if queued and isinstance(queued[0], dict) else {}
         first_meta = first.get("meta") if isinstance(first.get("meta"), dict) else {}
+        _blocked_platforms, browser_signature = self._browser_session_queue_state()
         return (
             int(queue.get("queued_count") or len(queued)),
             str(first.get("id") or ""),
             str(first.get("status") or ""),
             str(first.get("updated_at") or ""),
             bool(first_meta.get("browser_session_recovery")),
+            browser_signature,
         )
 
     def _clear_blocked_queue_backoff(self) -> None:
@@ -3345,11 +3393,15 @@ class ArchiveTaskManager:
 
     def _next_executable_task(self, queue: dict) -> Optional[dict]:
         queued = list(queue.get("queued") or [])
+        blocked_browser_platforms, _browser_signature = self._browser_session_queue_state()
         for item in queued:
             status = str(item.get("status") or "queued").strip().lower()
             if status not in {"", "queued", "pending"}:
                 continue
             if _is_batch_parent_waiting_for_children(item):
+                continue
+            platform, _url, _meta = self._task_platform_and_url(item)
+            if platform in blocked_browser_platforms:
                 continue
             meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
             gate = None
@@ -3366,6 +3418,9 @@ class ArchiveTaskManager:
             if status not in {"", "queued", "pending"}:
                 continue
             if _is_batch_parent_waiting_for_children(item):
+                continue
+            platform, _url, _meta = self._task_platform_and_url(item)
+            if platform in blocked_browser_platforms:
                 continue
             if not _is_three_mf_only_task(item):
                 return item

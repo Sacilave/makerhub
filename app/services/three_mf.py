@@ -76,6 +76,7 @@ _THREE_MF_FAILURE_INFERENCE_KEYWORDS = {
         "cookie 异常",
         "cookie invalid",
         "登录态",
+        "尚未登录",
         "请登录",
         "please log in",
         "log in to download",

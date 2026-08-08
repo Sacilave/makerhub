@@ -351,16 +351,16 @@ class AutomaticVerificationReleaseContractTest(unittest.TestCase):
         self.assertIn("solve_click_challenge", smoke_command)
         self.assertNotIn("browser", smoke_command.lower())
 
-        self.assertEqual(version, "0.16.2")
+        self.assertEqual(version, "0.16.3")
         self.assertEqual(package["version"], version)
         self.assertEqual(package_lock["version"], version)
         self.assertEqual(package_lock["packages"][""]["version"], version)
-        self.assertIn("> 当前版本：`v0.16.2`", readme)
-        self.assertIn("### 2026-08-07 · v0.16.2", readme)
-        self.assertIn("## 2026-08-07 · v0.16.2", changelog)
+        self.assertIn("> 当前版本：`v0.16.3`", readme)
+        self.assertIn("### 2026-08-08 · v0.16.3", readme)
+        self.assertIn("## 2026-08-08 · v0.16.3", changelog)
 
         release_notes = "\n".join((readme, changelog))
-        for expected in ("坐标点选", "按目标顺序", "转人工"):
+        for expected in ("状态冲突", "停止领取", "重新检测"):
             with self.subTest(expected=expected):
                 self.assertIn(expected, release_notes)
 
