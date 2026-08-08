@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import zipfile
 from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -10,6 +11,7 @@ from unittest.mock import Mock, patch
 import app.services.archive_worker as archive_worker_module
 import app.services.legacy_archiver as legacy_archiver_module
 import app.services.task_state as task_state_module
+import app.services.three_mf_quota as three_mf_quota_module
 from app.services.legacy_archiver import (
     _build_instance_api_candidates,
     _missing_3mf_instances,
@@ -25,6 +27,19 @@ from app.services.task_state import _normalize_missing_3mf
 
 
 class Missing3mfTest(unittest.TestCase):
+    def test_daily_limit_guard_uses_full_24_hour_cooldown(self):
+        fixed_now = datetime(2026, 8, 8, 9, 24, 55, tzinfo=timezone(timedelta(hours=8)))
+
+        with patch.object(archive_worker_module, "_three_mf_limit_now", return_value=fixed_now):
+            limited_until = archive_worker_module._three_mf_limit_until()
+
+        self.assertEqual(limited_until, "2026-08-09T09:24:55+08:00")
+
+    def test_daily_limit_guard_default_message_matches_rolling_cooldown(self):
+        message = archive_worker_module._three_mf_limit_message({})
+
+        self.assertEqual(message, "已达到 MakerWorld 每日下载上限，暂时停止自动重试。")
+
     def test_terminal_and_technical_failures_pause_following_instance_fetches(self):
         for state in (
             "verification_required",
@@ -193,7 +208,7 @@ class Missing3mfTest(unittest.TestCase):
             "国区返回了每日下载上限，今日暂停自动重试，自动重试暂停至 2099-01-02 00:00。",
         )
 
-    def test_manual_missing_retry_clears_stale_limit_guard_and_queues(self):
+    def test_manual_missing_retry_keeps_active_limit_guard_and_does_not_queue(self):
         original_select_cookie = archive_worker_module._select_cookie
         try:
             guard_state = {
@@ -215,7 +230,7 @@ class Missing3mfTest(unittest.TestCase):
 
             with patch.object(archive_worker_module, "load_database_json_state", side_effect=load_guard), \
                     patch.object(archive_worker_module, "save_database_json_state", side_effect=save_guard), \
-                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "cn"}):
+                    patch.object(three_mf_quota_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "cn"}) as reset_quota:
                 manager = ArchiveTaskManager()
                 manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
                 updates = []
@@ -234,23 +249,50 @@ class Missing3mfTest(unittest.TestCase):
                     title="Demo",
                     instance_id="profile-1",
                 )
-                guard_state = archive_worker_module._read_three_mf_limit_guard()
         finally:
             archive_worker_module._select_cookie = original_select_cookie
 
-        self.assertTrue(result["accepted"])
-        self.assertEqual(len(submitted), 1)
-        self.assertTrue(submitted[0]["force"])
-        self.assertFalse(guard_state["active"])
-        self.assertEqual(updates[-1]["status"], "queued")
+        self.assertFalse(result["accepted"])
+        self.assertTrue(result["paused"])
+        self.assertEqual(result["state"], "download_limited")
+        self.assertEqual(submitted, [])
+        self.assertTrue(guard_state["active"])
+        self.assertEqual(updates[-1]["status"], "download_limited")
+        reset_quota.assert_not_called()
 
-    def test_manual_missing_retry_resets_daily_quota_before_queueing(self):
+    def test_active_limit_guard_takes_priority_over_missing_cookie(self):
+        manager = ArchiveTaskManager()
+        manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
+        updates = []
+        manager.task_store = SimpleNamespace(
+            update_missing_3mf_status=lambda **payload: updates.append(payload)
+        )
+        guard = {
+            "active": True,
+            "limited_until": "2099-01-02T00:00:00+08:00",
+            "model_url": "https://makerworld.com.cn/zh/models/2193050",
+            "message": "国区返回了每日下载上限，暂时停止自动重试。",
+        }
+
+        with patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value=guard), \
+                patch.object(archive_worker_module, "_select_cookie", return_value=""), \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_missing_3mf(
+                model_url="https://makerworld.com.cn/zh/models/2193050",
+                model_id="2193050",
+            )
+
+        self.assertTrue(result["paused"])
+        self.assertEqual(result["state"], "download_limited")
+        self.assertEqual(updates[-1]["status"], "download_limited")
+
+    def test_manual_missing_retry_does_not_reset_daily_quota_before_queueing(self):
         original_select_cookie = archive_worker_module._select_cookie
         quota_calls = []
         try:
             with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
                     patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
-                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", side_effect=lambda **kwargs: quota_calls.append(kwargs) or {"reset": True, "source": "global", "previous": {"used": 100}}):
+                    patch.object(three_mf_quota_module, "reset_three_mf_daily_quota", side_effect=lambda **kwargs: quota_calls.append(kwargs) or {"reset": True, "source": "global", "previous": {"used": 100}}):
                 manager = ArchiveTaskManager()
                 manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
                 manager.task_store = SimpleNamespace(
@@ -272,7 +314,7 @@ class Missing3mfTest(unittest.TestCase):
             archive_worker_module._select_cookie = original_select_cookie
 
         self.assertTrue(result["accepted"])
-        self.assertEqual(quota_calls, [{"url": "https://makerworld.com/zh/models/2193050"}])
+        self.assertEqual(quota_calls, [])
         self.assertEqual(len(submitted), 1)
         self.assertTrue(submitted[0]["force"])
 
@@ -303,7 +345,6 @@ class Missing3mfTest(unittest.TestCase):
                     patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda key, payload: state.__setitem__(key, payload) or payload), \
                     patch.object(task_state_module, "load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
                     patch.object(task_state_module, "save_database_json_state", side_effect=lambda key, payload: state.__setitem__(key, payload) or payload), \
-                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}), \
                     patch.object(archive_worker_module, "get_archive_snapshot", return_value={"archived_keys": []}), \
                     patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
                     patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
@@ -358,7 +399,6 @@ class Missing3mfTest(unittest.TestCase):
                     patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda key, payload: state.__setitem__(key, payload) or payload), \
                     patch.object(task_state_module, "load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
                     patch.object(task_state_module, "save_database_json_state", side_effect=lambda key, payload: state.__setitem__(key, payload) or payload), \
-                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}), \
                     patch.object(archive_worker_module, "get_archive_snapshot", return_value={"archived_keys": []}), \
                     patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
                     patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
@@ -440,7 +480,7 @@ class Missing3mfTest(unittest.TestCase):
         try:
             with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
                     patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
-                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}):
+                    patch.object(three_mf_quota_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}):
                 manager = ArchiveTaskManager()
                 manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
                 manager.task_store = SimpleNamespace(
@@ -473,7 +513,7 @@ class Missing3mfTest(unittest.TestCase):
         try:
             with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
                     patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
-                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}):
+                    patch.object(three_mf_quota_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}):
                 manager = ArchiveTaskManager()
                 manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
                 manager.task_store = SimpleNamespace(
@@ -525,6 +565,45 @@ class Missing3mfTest(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual(calls[0]["source"], "global")
 
+    def test_retry_all_missing_keeps_daily_limit_items_paused(self):
+        manager = ArchiveTaskManager()
+        marked = []
+        manager.task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {
+                "items": [
+                    {
+                        "model_id": "2193050",
+                        "model_url": "https://makerworld.com.cn/zh/models/2193050",
+                        "title": "Demo",
+                        "instance_id": "profile-1",
+                        "source": "cn",
+                        "status": "download_limited",
+                    }
+                ]
+            },
+            mark_missing_3mf_retrying=lambda *args, **kwargs: marked.append((args, kwargs)),
+        )
+        manager.retry_missing_3mf = Mock(return_value={"accepted": True, "message": "queued"})
+        guard = {
+            "active": True,
+            "limited_until": "2099-01-02T00:00:00+08:00",
+            "model_url": "https://makerworld.com.cn/zh/models/1",
+            "message": "国区返回了每日下载上限，暂时停止自动重试。",
+        }
+
+        with patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value=guard), \
+                patch.object(three_mf_quota_module, "reset_three_mf_daily_quota") as reset_quota, \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_all_missing_3mf()
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["paused_count"], 1)
+        self.assertEqual(len(marked), 1)
+        self.assertEqual(marked[0][1]["status"], "download_limited")
+        self.assertIn("2099-01-02 00:00", marked[0][1]["message"])
+        manager.retry_missing_3mf.assert_not_called()
+        reset_quota.assert_not_called()
+
     def test_retry_all_missing_groups_instances_by_model_before_queueing(self):
         manager = ArchiveTaskManager()
         manager.task_store = SimpleNamespace(
@@ -553,8 +632,7 @@ class Missing3mfTest(unittest.TestCase):
 
         with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
                 patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
-                patch.object(archive_worker_module, "append_business_log"), \
-                patch.object(archive_worker_module, "_reset_three_mf_daily_quota_for_manual_retry"):
+                patch.object(archive_worker_module, "append_business_log"):
             result = manager.retry_all_missing_3mf()
 
         self.assertTrue(result["accepted"])
@@ -588,8 +666,7 @@ class Missing3mfTest(unittest.TestCase):
 
         with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
                 patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
-                patch.object(archive_worker_module, "append_business_log"), \
-                patch.object(archive_worker_module, "_reset_three_mf_daily_quota_for_manual_retry"):
+                patch.object(archive_worker_module, "append_business_log"):
             result = manager.retry_all_missing_3mf()
 
         self.assertTrue(result["accepted"])
@@ -878,6 +955,7 @@ class Missing3mfTest(unittest.TestCase):
         completed = []
         replaced_missing = []
         removed_failures = []
+        logged = []
         manager.task_store = SimpleNamespace(
             update_missing_3mf_status=lambda **_payload: None,
             replace_missing_3mf_for_model=lambda model_id, items: replaced_missing.append((model_id, items)),
@@ -898,13 +976,25 @@ class Missing3mfTest(unittest.TestCase):
                         "base_name": "Demo Model",
                         "work_dir": "",
                         "missing_3mf": [],
+                        "stats": {
+                            "instances": {
+                                "api_fetch_attempts": 1,
+                                "api_fetch": 1,
+                                "three_mf_downloaded": 1,
+                                "three_mf_existing": 0,
+                            }
+                        },
                     },
                 ), \
                 patch.object(archive_worker_module, "mark_account_ok") as mark_account_ok_mock, \
                 patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
                 patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
                 patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
-                patch.object(archive_worker_module, "_log_archive"):
+                patch.object(
+                    archive_worker_module,
+                    "_log_archive",
+                    side_effect=lambda *args, **kwargs: logged.append((args, kwargs)),
+                ):
             manager._run_single_task(
                 "task-1",
                 "https://makerworld.com/zh/models/973599",
@@ -923,8 +1013,74 @@ class Missing3mfTest(unittest.TestCase):
             removed_failures,
             [("973599", "https://makerworld.com/zh/models/973599")],
         )
-        self.assertEqual(completed, [("task-1", {"progress": 100, "message": "归档完成：Demo Model"})])
+        self.assertEqual(
+            completed,
+            [("task-1", {"progress": 100, "message": "3MF 下载检查完成：Demo Model，当前没有缺失文件。"})],
+        )
+        self.assertEqual(logged[-1][0][0], "three_mf_download_completed")
+        self.assertEqual(logged[-1][1]["three_mf_authorization_attempts"], 1)
+        self.assertEqual(logged[-1][1]["three_mf_authorized"], 1)
+        self.assertEqual(logged[-1][1]["three_mf_downloaded"], 1)
         self.assertFalse(active_updates)
+
+    def test_run_single_task_reports_metadata_stage_before_three_mf_child(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None)
+        )
+        completed = []
+        logged = []
+        manager.task_store = SimpleNamespace(
+            replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
+            remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
+            update_active_task=lambda *_args, **_kwargs: None,
+            complete_archive_task=lambda task_id, **payload: completed.append((task_id, payload)),
+        )
+
+        with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(
+                    archive_worker_module,
+                    "run_archive_model_job",
+                    return_value={
+                        "model_id": "973599",
+                        "base_name": "Demo Model",
+                        "work_dir": "",
+                        "instances": [{"id": "profile-1"}],
+                        "missing_3mf": [
+                            {
+                                "id": "profile-1",
+                                "title": "Profile",
+                                "downloadState": "pending_download",
+                                "downloadMessage": "等待下载 3MF",
+                            }
+                        ],
+                    },
+                ), \
+                patch.object(archive_worker_module, "_sync_account_health_for_archive_result", return_value=None), \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(manager, "_enqueue_three_mf_stage_task_from_result", return_value="three-mf-task") as enqueue_three_mf, \
+                patch.object(
+                    archive_worker_module,
+                    "_log_archive",
+                    side_effect=lambda *args, **kwargs: logged.append((args, kwargs)),
+                ):
+            manager._run_single_task(
+                "task-1",
+                "https://makerworld.com/zh/models/973599",
+                {},
+            )
+
+        enqueue_three_mf.assert_called_once()
+        self.assertEqual(
+            completed,
+            [("task-1", {"progress": 100, "message": "元数据归档完成：Demo Model，3MF 下载任务已入队。"})],
+        )
+        self.assertEqual(logged[-1][0][0], "single_metadata_completed")
 
     def test_run_single_task_updates_three_mf_gate_for_verification_required_missing_3mf(self):
         manager = ArchiveTaskManager(background_enabled=False)
@@ -1864,6 +2020,51 @@ class Missing3mfTest(unittest.TestCase):
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0]["instance_id"], "profile-1")
             self.assertIn("MakerWorld 需要验证", items[0]["message"])
+
+    def test_rebuild_reports_only_new_three_mf_files_as_downloaded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir = Path(temp_dir) / "LOCAL_Model"
+            model_dir.mkdir()
+            meta_path = model_dir / "meta.json"
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "id": "1686848",
+                        "url": "https://makerworld.com.cn/zh/models/1686848",
+                        "title": "Demo model",
+                        "baseName": "LOCAL_Model",
+                        "instances": [
+                            {
+                                "id": "profile-1",
+                                "title": "0.2mm profile",
+                                "name": "profile.3mf",
+                                "fileName": "profile.3mf",
+                                "downloadUrl": "https://cdn.example.test/profile.3mf",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            def write_download(_session, _url, dest, **_kwargs):
+                dest.write_bytes(b"3mf")
+
+            with patch.object(legacy_archiver_module, "download_file", side_effect=write_download), \
+                    patch.object(legacy_archiver_module, "_wait_before_three_mf_download", return_value=0):
+                result = rebuild_once(meta_path)
+
+            self.assertEqual(result["three_mf_downloaded"], 1)
+            self.assertEqual(result["three_mf_existing"], 0)
+
+            with patch.object(legacy_archiver_module, "download_file") as download_again:
+                second_result = rebuild_once(meta_path)
+
+            download_again.assert_not_called()
+            self.assertEqual(second_result["three_mf_downloaded"], 0)
+            self.assertEqual(second_result["three_mf_existing"], 1)
 
     def test_missing_three_mf_local_file_check_is_only_for_rebuild(self):
         with tempfile.TemporaryDirectory() as temp_dir:

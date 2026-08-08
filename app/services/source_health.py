@@ -315,7 +315,7 @@ def _build_cookie_auth_message(platform: str, payload: dict[str, Any]) -> str:
     if state == "html_response":
         return f"{platform_label}账号已保存，但暂时无法读取账号信息；可以点击同步重试。"
     if state == "download_limited":
-        return f"{platform_label}站已到达 3MF 每日下载上限，过零点后会自动恢复。"
+        return f"{platform_label}站已到达 3MF 每日下载上限，已暂时停止自动重试。"
     return f"{platform_label}账号测试失败，暂时无法确认 Cookie 是否可用。"
 
 

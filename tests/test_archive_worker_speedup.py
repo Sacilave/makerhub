@@ -370,6 +370,12 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertEqual(event, "three_mf_download_incomplete")
         self.assertIn("仍缺 1 个 3MF", message)
 
+    def test_three_mf_completion_does_not_claim_a_new_download(self):
+        event, message = archive_worker_module._three_mf_task_completion("Demo", [])
+
+        self.assertEqual(event, "three_mf_download_completed")
+        self.assertEqual(message, "3MF 下载检查完成：Demo，当前没有缺失文件。")
+
     def test_run_single_task_uses_progress_throttle(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None))

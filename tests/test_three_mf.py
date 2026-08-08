@@ -59,6 +59,13 @@ class ThreeMfFailureTest(unittest.TestCase):
                     "download_limited",
                 )
 
+    def test_daily_limit_default_message_does_not_claim_a_midnight_reset(self):
+        message = describe_three_mf_failure("download_limited", source="cn")
+
+        self.assertEqual(message, "国区返回了每日下载上限，暂时停止自动重试。")
+        self.assertNotIn("今日暂停", message)
+        self.assertNotIn("过零点", message)
+
 
 if __name__ == "__main__":
     unittest.main()

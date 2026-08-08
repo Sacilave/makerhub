@@ -77,7 +77,7 @@ class ThreeMfQuotaTest(unittest.TestCase):
         self.assertTrue(global_first["allowed"])
         self.assertEqual(global_first["used"], 1)
 
-    def test_zero_daily_limit_is_unlimited_and_does_not_write_quota(self):
+    def test_zero_daily_limit_is_unlimited_and_tracks_attempts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             lock_path = Path(temp_dir) / "quota.lock"
 
@@ -97,7 +97,9 @@ class ThreeMfQuotaTest(unittest.TestCase):
         self.assertEqual(first["limit"], 0)
         self.assertIsNone(first["remaining"])
         self.assertTrue(second["allowed"])
-        self.assertEqual(self.quota_state, {})
+        self.assertEqual(second["used"], 2)
+        self.assertTrue(self.quota_state["items"]["cn"]["unlimited"])
+        self.assertEqual(self.quota_state["items"]["cn"]["used"], 2)
 
     def test_reset_daily_quota_clears_only_matching_site(self):
         with tempfile.TemporaryDirectory() as temp_dir:

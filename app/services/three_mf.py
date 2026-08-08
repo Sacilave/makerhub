@@ -99,6 +99,8 @@ _THREE_MF_FAILURE_INFERENCE_KEYWORDS = {
 _THREE_MF_LEGACY_MESSAGES = {
     "download_limited": {
         "已达到 MakerWorld 每日下载上限，今日暂停自动重试。",
+        "国区返回了每日下载上限，今日暂停自动重试。",
+        "国际区返回了每日下载上限，今日暂停自动重试。",
         "You've reached your daily download limit.",
     },
     "auth_required": {
@@ -181,10 +183,10 @@ def normalize_makerworld_source(source: Any = "", url: Any = "") -> str:
 def _default_three_mf_failure_message(state: str, source: str) -> str:
     if state == "download_limited":
         if source == "cn":
-            return "国区返回了每日下载上限，今日暂停自动重试。"
+            return "国区返回了每日下载上限，暂时停止自动重试。"
         if source == "global":
-            return "国际区返回了每日下载上限，今日暂停自动重试。"
-        return "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
+            return "国际区返回了每日下载上限，暂时停止自动重试。"
+        return "已达到 MakerWorld 每日下载上限，暂时停止自动重试。"
     if state == "verification_required":
         return "MakerWorld 需要验证，前往官网任意下载一个模型。"
     if state == "cloudflare":

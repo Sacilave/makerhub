@@ -53,7 +53,6 @@ from app.services.three_mf import (
     normalize_makerworld_source,
     normalize_three_mf_failure_state,
 )
-from app.services.three_mf_quota import reset_three_mf_daily_quota
 
 BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
@@ -63,7 +62,7 @@ ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 THREE_MF_LIMIT_GUARD_KEY = "three_mf_limit_guard"
-THREE_MF_LIMIT_DEFAULT_MESSAGE = "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
+THREE_MF_LIMIT_DEFAULT_MESSAGE = "已达到 MakerWorld 每日下载上限，暂时停止自动重试。"
 DEFAULT_THREE_MF_DAILY_LIMIT = 100
 BATCH_CHILD_TRANSIENT_CURL_ERROR_CODES = {5, 6, 7, 28, 35, 52, 55, 56, 92}
 BATCH_CHILD_TRANSIENT_FAILURE_TOKENS = (
@@ -306,9 +305,9 @@ def _three_mf_task_completion(result_name: str, missing_items: list[dict[str, An
     if missing_items:
         return (
             "three_mf_download_incomplete",
-            f"新增 3MF 下载未完成：{result_name}，仍缺 {len(missing_items)} 个 3MF。",
+            f"3MF 下载未完成：{result_name}，仍缺 {len(missing_items)} 个 3MF。",
         )
-    return "three_mf_download_completed", f"新增 3MF 下载完成：{result_name}"
+    return "three_mf_download_completed", f"3MF 下载检查完成：{result_name}，当前没有缺失文件。"
 
 
 def _is_not_found_archive_error(message: Any, url: str = "") -> bool:
@@ -392,7 +391,7 @@ def _is_three_mf_limit_guard_active_for_url(url: str, state: Optional[dict[str, 
 
 def _three_mf_limit_until() -> str:
     now = _three_mf_limit_now()
-    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
+    return (now + timedelta(days=1)).isoformat(timespec="seconds")
 
 
 def _three_mf_limit_message(state: Optional[dict[str, Any]] = None) -> str:
@@ -432,48 +431,6 @@ def _activate_three_mf_limit_guard(
             "instance_id": str(instance_id or "").strip(),
         }
     )
-
-
-def _clear_three_mf_limit_guard_for_manual_retry(url: str = "") -> bool:
-    guard_state = _read_three_mf_limit_guard()
-    if not _is_three_mf_limit_guard_active(guard_state):
-        return False
-    if url and not _is_three_mf_limit_guard_active_for_url(url, guard_state):
-        return False
-
-    _write_three_mf_limit_guard(
-        {
-            "active": False,
-            "limited_until": "",
-            "message": "",
-            "reason": "manual_missing_3mf_retry",
-            "model_id": "",
-            "model_url": "",
-            "instance_id": "",
-        }
-    )
-    append_business_log(
-        "missing_3mf",
-        "limit_guard_cleared_for_manual_retry",
-        "手动重试缺失 3MF，已清除旧的每日上限暂停标记并重新检测。",
-        model_url=normalize_source_url(url),
-        previous_limited_until=guard_state.get("limited_until") or "",
-    )
-    return True
-
-
-def _reset_three_mf_daily_quota_for_manual_retry(url: str = "") -> dict[str, Any]:
-    result = reset_three_mf_daily_quota(url=url)
-    if result.get("reset"):
-        append_business_log(
-            "missing_3mf",
-            "daily_quota_reset_for_manual_retry",
-            "手动重试缺失 3MF，已重置该站点今天的 MakerHub 自动下载计数。",
-            model_url=normalize_source_url(url),
-            source=result.get("source") or "",
-            previous=result.get("previous") or {},
-        )
-    return result
 
 
 def _missing_3mf_message_from_result(
@@ -2547,6 +2504,33 @@ class ArchiveTaskManager:
                 "message": "缺少可用模型链接，无法重新下载 3MF。",
             }
 
+        limit_guard = _read_three_mf_limit_guard()
+        if _is_three_mf_limit_guard_active_for_url(clean_url, limit_guard):
+            message = _three_mf_limit_message(limit_guard)
+            self.task_store.update_missing_3mf_status(
+                model_id=clean_model_id,
+                title="" if clean_model_id else title,
+                instance_id="" if clean_model_id else instance_id,
+                model_url="" if clean_model_id else clean_url,
+                status="download_limited",
+                message=message,
+            )
+            append_business_log(
+                "missing_3mf",
+                "retry_paused_daily_limit",
+                "MakerWorld 下载上限保护仍在生效，本次未发起 3MF 授权请求。",
+                model_id=clean_model_id,
+                model_url=clean_url,
+                instance_id=str(instance_id or ""),
+                limited_until=limit_guard.get("limited_until") or "",
+            )
+            return {
+                "accepted": False,
+                "paused": True,
+                "state": "download_limited",
+                "message": message,
+            }
+
         config = self.store.load()
         if not _select_cookie(clean_url, config):
             message = "未找到可用 Cookie，请先到设置页配置对应站点 Cookie。"
@@ -2570,9 +2554,6 @@ class ArchiveTaskManager:
                 "accepted": False,
                 "message": message,
             }
-
-        _clear_three_mf_limit_guard_for_manual_retry(clean_url)
-        _reset_three_mf_daily_quota_for_manual_retry(clean_url)
 
         self.task_store.update_missing_3mf_status(
             model_id=clean_model_id,
@@ -2918,31 +2899,11 @@ class ArchiveTaskManager:
         missing_payload = self.task_store.load_missing_3mf()
         items = missing_payload.get("items") or []
         limit_guard = _read_three_mf_limit_guard()
-        if _is_three_mf_limit_guard_active(limit_guard):
-            append_business_log(
-                "missing_3mf",
-                "retry_all_limit_guard_cleared_for_manual_retry",
-                "手动批量重试缺失 3MF，已清除旧的每日上限暂停标记并重新检测。",
-                total=len(items),
-                previous_limited_until=limit_guard.get("limited_until") or "",
-            )
-            _clear_three_mf_limit_guard_for_manual_retry()
-        sources_reset: set[str] = set()
-        for item in items:
-            item_url = normalize_source_url(str(item.get("model_url") or ""))
-            source = normalize_makerworld_source(url=item_url)
-            if source in {"cn", "global"} and source not in sources_reset:
-                _reset_three_mf_daily_quota_for_manual_retry(item_url)
-                sources_reset.add(source)
         accepted = 0
         queued = 0
+        paused = 0
         failed = 0
         last_message = ""
-        self.task_store.mark_missing_3mf_retrying(
-            items,
-            status="queued",
-            message="等待重新下载 3MF",
-        )
 
         grouped_items: list[dict[str, Any]] = []
         seen_group_keys: set[tuple[str, str, str]] = set()
@@ -2964,7 +2925,29 @@ class ArchiveTaskManager:
                 }
             )
 
+        eligible_items = []
+        paused_items = []
         for item in grouped_items:
+            if _is_three_mf_limit_guard_active_for_url(str(item.get("model_url") or ""), limit_guard):
+                paused += 1
+                paused_items.append(item)
+                continue
+            eligible_items.append(item)
+
+        if paused_items:
+            self.task_store.mark_missing_3mf_retrying(
+                paused_items,
+                status="download_limited",
+                message=_three_mf_limit_message(limit_guard),
+            )
+        if eligible_items:
+            self.task_store.mark_missing_3mf_retrying(
+                eligible_items,
+                status="queued",
+                message="等待重新下载 3MF",
+            )
+
+        for item in eligible_items:
             result = self.retry_missing_3mf(
                 model_url=str(item.get("model_url") or ""),
                 model_id=str(item.get("model_id") or ""),
@@ -2988,15 +2971,17 @@ class ArchiveTaskManager:
             total=len(items),
             accepted=accepted,
             queued=queued,
+            paused=paused,
             failed=failed,
         )
         return {
             "accepted": accepted > 0 or queued > 0,
             "accepted_count": accepted,
             "queued_count": queued,
+            "paused_count": paused,
             "failed_count": failed,
             "message": (
-                f"缺失 3MF 重试完成：新增入队 {accepted} 个，已在队列 {queued} 个，失败 {failed} 个。"
+                f"缺失 3MF 重试完成：新增入队 {accepted} 个，已在队列 {queued} 个，上限保护暂停 {paused} 个，失败 {failed} 个。"
                 if items
                 else "当前没有缺失 3MF 任务。"
             ),
@@ -4218,12 +4203,20 @@ class ArchiveTaskManager:
         ):
             invalidate_archive_snapshot("archive_worker_single_task_completed")
 
+        three_mf_stage_enqueued = False
         if defer_three_mf_download and isinstance(result.get("instances"), list) and result.get("instances"):
             self._enqueue_three_mf_stage_task_from_result(url, result, meta)
+            three_mf_stage_enqueued = True
 
         result_name = result.get("base_name") or result.get("work_dir") or ""
-        if three_mf_download_task:
+        if three_mf_download_task or missing_3mf_retry:
             completion_event, completion_message = _three_mf_task_completion(result_name, missing_items)
+        elif three_mf_stage_enqueued:
+            completion_event = "single_metadata_completed"
+            completion_message = f"元数据归档完成：{result_name}，3MF 下载任务已入队。"
+        elif missing_items:
+            completion_event = "single_completed_with_missing_3mf"
+            completion_message = f"元数据归档完成：{result_name}，仍缺 {len(missing_items)} 个 3MF。"
         else:
             completion_event = "single_completed"
             completion_message = f"归档完成：{result_name}"
@@ -4233,6 +4226,8 @@ class ArchiveTaskManager:
             progress=100,
             message=completion_message,
         )
+        result_stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
+        instance_stats = result_stats.get("instances") if isinstance(result_stats.get("instances"), dict) else {}
         _log_archive(
             completion_event,
             completion_message,
@@ -4242,4 +4237,8 @@ class ArchiveTaskManager:
             base_name=result.get("base_name"),
             work_dir=result.get("work_dir"),
             missing_3mf_count=len(missing_items),
+            three_mf_authorization_attempts=int(instance_stats.get("api_fetch_attempts") or 0),
+            three_mf_authorized=int(instance_stats.get("api_fetch") or 0),
+            three_mf_downloaded=int(instance_stats.get("three_mf_downloaded") or 0),
+            three_mf_existing=int(instance_stats.get("three_mf_existing") or 0),
         )

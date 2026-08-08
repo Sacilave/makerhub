@@ -85,16 +85,6 @@ def reserve_three_mf_download_slot(
     normalized_limit = _coerce_limit(limit)
     if normalized_source not in {"cn", "global"}:
         return {"allowed": True, "source": normalized_source, "limit": normalized_limit}
-    if normalized_limit <= 0:
-        return {
-            "allowed": True,
-            "source": normalized_source,
-            "limit": 0,
-            "used": 0,
-            "remaining": None,
-            "unlimited": True,
-        }
-
     now = china_now()
     today = now.date().isoformat()
     reset_at = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).isoformat(timespec="seconds")
@@ -107,12 +97,13 @@ def reserve_three_mf_download_slot(
             current = {"date": today, "used": 0, "limit": normalized_limit}
 
         used = int(current.get("used") or 0)
-        if used >= normalized_limit:
+        if normalized_limit > 0 and used >= normalized_limit:
             current.update(
                 {
                     "date": today,
                     "used": used,
                     "limit": normalized_limit,
+                    "unlimited": False,
                     "last_blocked_at": now.isoformat(timespec="seconds"),
                     "last_model_id": str(model_id or ""),
                     "last_model_url": str(model_url or url or ""),
@@ -138,6 +129,7 @@ def reserve_three_mf_download_slot(
                 "date": today,
                 "used": used,
                 "limit": normalized_limit,
+                "unlimited": normalized_limit <= 0,
                 "last_reserved_at": now.isoformat(timespec="seconds"),
                 "last_model_id": str(model_id or ""),
                 "last_model_url": str(model_url or url or ""),
@@ -152,7 +144,8 @@ def reserve_three_mf_download_slot(
             "source": normalized_source,
             "limit": normalized_limit,
             "used": used,
-            "remaining": max(normalized_limit - used, 0),
+            "remaining": None if normalized_limit <= 0 else max(normalized_limit - used, 0),
+            "unlimited": normalized_limit <= 0,
             "date": today,
             "reset_at": reset_at,
         }

@@ -6313,6 +6313,8 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_off
     instances = meta.get("instances", []) or []
     inst_files = []
     meta_changed = False
+    new_instance_downloads = 0
+    existing_instance_downloads = 0
     total_instance_steps = max(len(instances), 1)
     instance_download_started_at = time.perf_counter()
     existing_instance_files = {
@@ -6341,6 +6343,7 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_off
 
         if dest.exists():
             log("存在，跳过：", dest)
+            existing_instance_downloads += 1
         else:
             with resource_slot("three_mf_download", detail=dest.name):
                 _wait_before_three_mf_download(f"下载文件 {dest.name}", logger=logger)
@@ -6351,6 +6354,7 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_off
                         dest,
                         max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
                     )
+                    new_instance_downloads += 1
                 except Exception as exc:
                     _mark_instance_3mf_download_failed(inst, exc, logger=logger)
                     meta_changed = True
@@ -6377,6 +6381,8 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_off
         logger=logger,
         total=len(instances),
         downloaded=len(inst_files),
+        downloaded_new=new_instance_downloads,
+        existing=existing_instance_downloads,
     )
 
     attachments = meta.get("attachments") or []
@@ -6469,6 +6475,10 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_off
     emit_progress(progress_callback, 98, "归档目录整理完成")
     log(logger, "完成归档:", work_dir)
     _log_perf("rebuild.total", rebuild_started_at, logger=logger, base_name=base_name)
+    return {
+        "three_mf_downloaded": new_instance_downloads,
+        "three_mf_existing": existing_instance_downloads,
+    }
 
 
 def archive_model(
@@ -6829,6 +6839,7 @@ def archive_model(
     payload_hint_hits = 0
     existing_hint_hits = 0
     fetched_hint_hits = 0
+    api_fetch_attempts = 0
     existing_planned_instance_files = {
         path.name
         for path in _list_directory_entries(planned_instances_dir)
@@ -6941,6 +6952,7 @@ def archive_model(
                 three_mf_skip_message = str(failure_info.get("message") or three_mf_skip_message or "")
                 skipped_due_limit += 1
             else:
+                api_fetch_attempts += 1
                 name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
                     sess,
                     inst_id,
@@ -7037,6 +7049,7 @@ def archive_model(
         "实例处理完成:",
         f"payload_hint={payload_hint_hits}",
         f"existing_hint={existing_hint_hits}",
+        f"api_fetch_attempts={api_fetch_attempts}",
         f"api_fetch={fetched_hint_hits}",
         f"skipped_due_limit={skipped_due_limit}",
         f"total={len(inst_list)}",
@@ -7048,6 +7061,7 @@ def archive_model(
         total=len(inst_list),
         payload_hint=payload_hint_hits,
         existing_hint=existing_hint_hits,
+        api_fetch_attempts=api_fetch_attempts,
         api_fetch=fetched_hint_hits,
         skipped_due_limit=skipped_due_limit,
     )
@@ -7075,11 +7089,13 @@ def archive_model(
 
     # 归档整理
     work_dir.mkdir(parents=True, exist_ok=True)
+    rebuild_stats: dict[str, int] = {}
     if rebuild_archive:
         log_section("归档整理阶段")
         try:
             rebuild_started_at = time.perf_counter()
-            rebuild_once(meta_path, progress_callback=progress_callback, logger=logger)
+            rebuild_result = rebuild_once(meta_path, progress_callback=progress_callback, logger=logger)
+            rebuild_stats = rebuild_result if isinstance(rebuild_result, dict) else {}
             timings_ms["rebuild_once"] = _log_perf("archive.rebuild_once", rebuild_started_at, logger=logger)
         except Exception as e:
             log(logger, "归档目录整理失败:", e)
@@ -7131,9 +7147,12 @@ def archive_model(
                 "total": len(inst_list),
                 "payload_hint": payload_hint_hits,
                 "existing_hint": existing_hint_hits,
+                "api_fetch_attempts": api_fetch_attempts,
                 "api_fetch": fetched_hint_hits,
                 "skipped_due_limit": skipped_due_limit,
                 "missing_3mf": len(missing_3mf),
+                "three_mf_downloaded": int(rebuild_stats.get("three_mf_downloaded") or 0),
+                "three_mf_existing": int(rebuild_stats.get("three_mf_existing") or 0),
             },
         },
     }

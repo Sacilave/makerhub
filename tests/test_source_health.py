@@ -625,6 +625,19 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertIn("暂时无法读取账号信息", message)
         self.assertNotIn("需要验证", message)
 
+    def test_download_limit_message_does_not_claim_a_midnight_reset(self):
+        message = source_health._build_cookie_auth_message(
+            "cn",
+            {
+                "state": "download_limited",
+                "success_count": 0,
+                "target_count": 0,
+            },
+        )
+
+        self.assertEqual(message, "国内站已到达 3MF 每日下载上限，已暂时停止自动重试。")
+        self.assertNotIn("过零点", message)
+
     def test_cookie_probe_headers_include_bearer_token_from_cookie(self):
         headers = source_health._build_request_headers(
             "https://makerworld.com.cn",
