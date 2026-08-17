@@ -782,6 +782,110 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         self.assertEqual(failure["status"], "verification_required")
         self.assertEqual(update_gate_mock.call_args.kwargs["gate"], "verification_required")
 
+    def test_first_isolated_verification_failure_keeps_platform_gate_open(self):
+        missing_items = [
+            {
+                "status": "verification_required",
+                "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                "instance_id": "instance-1",
+            }
+        ]
+
+        with patch.object(
+            archive_worker_module,
+            "get_account_health",
+            return_value={
+                "status": "ok",
+                "three_mf_gate": "open",
+                "three_mf_reason": "",
+                "model_id": "",
+                "instance_id": "",
+            },
+        ), patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
+            failure = archive_worker_module._sync_account_health_for_archive_result(
+                platform="cn",
+                model_url="https://makerworld.com.cn/zh/models/123",
+                model_id="123",
+                instance_id="instance-1",
+                missing_items=missing_items,
+                missing_3mf_retry=True,
+            )
+
+        self.assertIsNone(failure)
+        update_gate_mock.assert_called_once_with(
+            "cn",
+            gate="open",
+            reason="isolated_three_mf_verification",
+            source="archive_download",
+            detail="MakerWorld 需要验证，前往官网任意下载一个模型。",
+            model_url="https://makerworld.com.cn/zh/models/123",
+            model_id="123",
+            instance_id="instance-1",
+        )
+
+    def test_second_distinct_verification_failure_closes_platform_gate(self):
+        missing_items = [
+            {
+                "status": "verification_required",
+                "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                "instance_id": "instance-2",
+            }
+        ]
+
+        with patch.object(
+            archive_worker_module,
+            "get_account_health",
+            return_value={
+                "status": "ok",
+                "three_mf_gate": "open",
+                "three_mf_reason": "isolated_three_mf_verification",
+                "model_id": "123",
+                "instance_id": "instance-1",
+            },
+        ), patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
+            failure = archive_worker_module._sync_account_health_for_archive_result(
+                platform="cn",
+                model_url="https://makerworld.com.cn/zh/models/456",
+                model_id="456",
+                instance_id="instance-2",
+                missing_items=missing_items,
+                missing_3mf_retry=True,
+            )
+
+        self.assertEqual(failure["status"], "verification_required")
+        self.assertEqual(update_gate_mock.call_args.kwargs["gate"], "verification_required")
+
+    def test_successful_authorization_opens_gate_even_when_another_instance_is_missing(self):
+        missing_items = [
+            {
+                "status": "verification_required",
+                "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                "instance_id": "instance-2",
+            }
+        ]
+
+        with patch.object(archive_worker_module, "mark_account_ok") as mark_ok_mock, \
+                patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
+            failure = archive_worker_module._sync_account_health_for_archive_result(
+                platform="cn",
+                model_url="https://makerworld.com.cn/zh/models/123",
+                model_id="123",
+                instance_id="instance-1",
+                missing_items=missing_items,
+                missing_3mf_retry=True,
+                three_mf_authorization_succeeded=True,
+            )
+
+        self.assertIsNone(failure)
+        mark_ok_mock.assert_called_once_with(
+            "cn",
+            source="three_mf_authorization",
+            model_url="https://makerworld.com.cn/zh/models/123",
+            model_id="123",
+            instance_id="instance-1",
+        )
+        update_gate_mock.assert_not_called()
+
     def test_browser_bridge_http_error_does_not_close_platform_gate(self):
         missing_items = [
             {

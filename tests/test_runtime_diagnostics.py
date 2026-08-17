@@ -750,7 +750,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         with patch.object(tasks_routes, "_require_session_auth") as require_auth, \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf") as retry_mock, \
                 patch.object(tasks_routes, "get_account_health", return_value=health), \
-                patch.object(tasks_routes, "mark_account_checking", return_value={"status": "unknown", "three_mf_gate": "unknown"}) as mark_account_checking_mock, \
+                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok", "three_mf_gate": "open"}) as mark_account_ok_mock, \
                 patch.object(tasks_routes, "_submit_background_task", return_value=True) as background_mock, \
                 patch.object(tasks_routes, "append_business_log") as log_mock:
             payload = asyncio.run(
@@ -762,10 +762,10 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         require_auth.assert_called_once_with(request)
         retry_mock.assert_not_called()
-        mark_account_checking_mock.assert_called_once_with(
+        mark_account_ok_mock.assert_called_once_with(
             "global",
             source="manual_verification",
-            detail="正在通过指纹浏览器验证 3MF 下载权限。",
+            detail="已确认指纹浏览器可以下载，继续归档并逐项复核 3MF 权限。",
         )
         background_mock.assert_called_once_with(
             retry_mock,
@@ -783,7 +783,8 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         )
         self.assertTrue(payload["accepted"])
         self.assertEqual(payload["accepted_count"], 0)
-        self.assertEqual(payload["account_health"]["status"], "unknown")
+        self.assertEqual(payload["account_health"]["status"], "ok")
+        self.assertEqual(payload["message"], "已确认浏览器下载可用，归档已恢复并安排逐项复核。")
         log_mock.assert_called_once()
 
     def test_verified_missing_3mf_route_marks_platform_account_ok_when_user_confirms(self):
@@ -799,7 +800,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         with patch.object(tasks_routes, "_require_session_auth"), \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf", return_value=retry_payload), \
                 patch.object(tasks_routes, "get_account_health", return_value={}), \
-                patch.object(tasks_routes, "mark_account_checking", return_value={"status": "unknown"}) as mark_account_checking_mock, \
+                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok", "three_mf_gate": "open"}) as mark_account_ok_mock, \
                 patch.object(tasks_routes, "_submit_background_task", return_value=True), \
                 patch.object(tasks_routes, "append_business_log"):
             payload = asyncio.run(
@@ -809,12 +810,12 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
                 )
             )
 
-        mark_account_checking_mock.assert_called_once_with(
+        mark_account_ok_mock.assert_called_once_with(
             "global",
             source="manual_verification",
-            detail="正在通过指纹浏览器验证 3MF 下载权限。",
+            detail="已确认指纹浏览器可以下载，继续归档并逐项复核 3MF 权限。",
         )
-        self.assertEqual(payload["account_health"]["status"], "unknown")
+        self.assertEqual(payload["account_health"]["status"], "ok")
 
     def test_verified_missing_3mf_route_marks_account_ok_before_background_retry(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
@@ -831,7 +832,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         with patch.object(tasks_routes, "_require_session_auth"), \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf"), \
                 patch.object(tasks_routes, "get_account_health", return_value={}), \
-                patch.object(tasks_routes, "mark_account_checking", side_effect=_mark), \
+                patch.object(tasks_routes, "mark_account_ok", side_effect=_mark), \
                 patch.object(tasks_routes, "_submit_background_task", side_effect=_background), \
                 patch.object(tasks_routes, "append_business_log"):
             payload = asyncio.run(
@@ -850,7 +851,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         with patch.object(tasks_routes, "_require_session_auth"), \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf") as retry_mock, \
                 patch.object(tasks_routes, "get_account_health", return_value={}), \
-                patch.object(tasks_routes, "mark_account_checking", return_value={"status": "unknown", "three_mf_gate": "unknown"}) as mark_account_checking_mock, \
+                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok", "three_mf_gate": "open"}) as mark_account_ok_mock, \
                 patch.object(tasks_routes, "_submit_background_task", return_value=True) as background_mock, \
                 patch.object(tasks_routes, "append_business_log"):
             payload = asyncio.run(
@@ -860,12 +861,12 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
                 )
             )
 
-        mark_account_checking_mock.assert_called_once()
+        mark_account_ok_mock.assert_called_once()
         retry_mock.assert_not_called()
         background_mock.assert_called_once()
         self.assertTrue(payload["accepted"])
         self.assertEqual(payload["queued_count"], 0)
-        self.assertEqual(payload["account_health"]["three_mf_gate"], "unknown")
+        self.assertEqual(payload["account_health"]["three_mf_gate"], "open")
 
     def test_verified_missing_3mf_route_uses_legacy_retry_when_runtime_env_is_truthy(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
@@ -875,7 +876,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
                 patch("app.api.runtime_routes.runtime_engine.submit_run") as submit_runtime_run, \
                 patch.object(tasks_routes, "get_account_health", return_value={}), \
                 patch.object(tasks_routes, "_submit_background_task", return_value=True) as background_retry, \
-                patch.object(tasks_routes, "mark_account_checking", return_value={"status": "unknown"}), \
+                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok", "three_mf_gate": "open"}), \
                 patch.object(tasks_routes, "append_business_log"):
             payload = asyncio.run(
                 tasks_routes.retry_verified_missing_3mf(
@@ -894,7 +895,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
             resume_paused_probe_first=True,
         )
         self.assertTrue(payload["accepted"])
-        self.assertEqual(payload["account_health"]["status"], "unknown")
+        self.assertEqual(payload["account_health"]["status"], "ok")
 
 
 if __name__ == "__main__":

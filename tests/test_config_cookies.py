@@ -509,6 +509,42 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             )
             update_gate_mock.assert_not_called()
 
+    async def test_online_account_probe_success_finishes_pending_three_mf_cookie_check(self):
+        result = {
+            "ok": True,
+            "message": "国际账号可用，Cookie 已保存。",
+        }
+        metadata = {"status": "ok"}
+        expected = {
+            "platform": "global",
+            "status": "ok",
+            "three_mf_gate": "open",
+        }
+
+        with patch.object(
+            config_api,
+            "get_account_health",
+            return_value={
+                "status": "unknown",
+                "three_mf_gate": "unknown",
+                "three_mf_reason": "cookie_updated",
+            },
+        ), patch.object(config_api, "mark_account_ok", return_value=expected) as mark_ok_mock, \
+                patch.object(config_api, "update_account_health") as update_health_mock:
+            snapshot = config_api._sync_account_health_from_online_account_test(
+                "global",
+                result,
+                metadata,
+            )
+
+        self.assertEqual(snapshot, expected)
+        mark_ok_mock.assert_called_once_with(
+            "global",
+            source="online_account_test",
+            detail="国际账号可用，Cookie 已保存。",
+        )
+        update_health_mock.assert_not_called()
+
     async def test_online_account_probe_failure_closes_three_mf_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")

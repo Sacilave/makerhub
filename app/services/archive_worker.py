@@ -596,8 +596,13 @@ def _sync_account_health_for_archive_result(
     missing_items: list[dict[str, Any]],
     missing_3mf_retry: bool,
     browser_session_recovery: bool = False,
+    three_mf_authorization_succeeded: bool = False,
 ) -> Optional[dict[str, str]]:
     classified_failure = _account_health_failure_from_missing_items(missing_items)
+    direct_verification_failure = bool(
+        classified_failure is not None
+        and classified_failure.get("status") in {"verification_required", "cloudflare"}
+    )
     http_error = _account_health_http_error_from_missing_items(missing_items)
     if (
         classified_failure is not None
@@ -611,7 +616,47 @@ def _sync_account_health_for_archive_result(
         }
     classified_failure = _preserve_browser_confirmation_gate(platform, classified_failure)
     try:
+        if three_mf_authorization_succeeded and classified_failure is not None:
+            mark_account_ok(
+                platform,
+                source="three_mf_authorization",
+                model_url=model_url,
+                model_id=model_id,
+                instance_id=instance_id,
+            )
+            return None
         if classified_failure is not None:
+            if direct_verification_failure:
+                try:
+                    current = get_account_health(platform)
+                except Exception:
+                    current = {"three_mf_gate": "unknown"}
+                current_gate = str(current.get("three_mf_gate") or "open").strip().lower()
+                current_reason = str(current.get("three_mf_reason") or "").strip()
+                current_target = (
+                    str(current.get("model_id") or "").strip(),
+                    str(current.get("instance_id") or "").strip(),
+                )
+                failure_target = (
+                    str(model_id or "").strip(),
+                    str(classified_failure["instance_id"] or instance_id).strip(),
+                )
+                if current_gate in {"", "open", "ok"} and (
+                    current_reason != "isolated_three_mf_verification"
+                    or current_target == failure_target
+                ):
+                    if current_reason != "isolated_three_mf_verification":
+                        update_three_mf_gate(
+                            platform,
+                            gate="open",
+                            reason="isolated_three_mf_verification",
+                            source="archive_download",
+                            detail=classified_failure["detail"],
+                            model_url=model_url,
+                            model_id=model_id,
+                            instance_id=classified_failure["instance_id"] or instance_id,
+                        )
+                    return None
             update_three_mf_gate(
                 platform,
                 gate=classified_failure["status"],
@@ -4151,6 +4196,9 @@ class ArchiveTaskManager:
                 missing_items=missing_items,
                 missing_3mf_retry=missing_3mf_retry,
                 browser_session_recovery=browser_session_recovery,
+                three_mf_authorization_succeeded=(
+                    int((((result.get("stats") or {}).get("instances") or {}).get("api_fetch") or 0)) > 0
+                ),
             )
         if isinstance(account_gate_failure, dict):
             self._pause_three_mf_retry_tasks_for_gate(

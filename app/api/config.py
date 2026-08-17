@@ -117,8 +117,10 @@ from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.subscriptions import cookie_source_inventory_payload, cookie_source_sync_state_payload
 from app.services.source_health import probe_cookie_auth_status
 from app.services.account_health import (
+    get_account_health,
     load_account_health,
     mark_account_checking,
+    mark_account_ok,
     operational_status_payload,
     update_account_health,
     update_three_mf_gate,
@@ -2223,6 +2225,19 @@ def _sync_account_health_from_online_account_test(platform: str, result: dict, m
                 detail=f"{_account_platform_short_label(platform)}账号已保存，账号资料或来源同步可读取。",
             )
     if status == "ok":
+        try:
+            current = get_account_health(platform)
+        except DatabaseUnavailable:
+            current = {}
+        if (
+            str(current.get("three_mf_gate") or "").strip().lower() == "unknown"
+            and str(current.get("three_mf_reason") or "").strip() == "cookie_updated"
+        ):
+            return mark_account_ok(
+                platform,
+                source="online_account_test",
+                detail=detail,
+            )
         return update_account_health(
             platform,
             status="ok",

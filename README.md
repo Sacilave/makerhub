@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.3`
+> 当前版本：`v0.16.4`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-17 · v0.16.4
+
+- 首页“已验证”会立即打开站点 3MF gate 并恢复归档，后台继续逐项复核，不再停在“检测中”。
+- 单个实例验证失败只保留该实例；两个不同实例连续失败时才暂停整站，避免一个异常实例阻塞全部任务。
+- 任意真实 3MF 授权成功都会维持 gate 打开；无探测任务时，账号检测成功也会结束遗留的未知状态。
+
 ### 2026-08-08 · v0.16.3
 
 - 指纹浏览器实际未登录时，设置页和归档队列统一显示需要重新登录，不再同时出现“可归档”和“尚未登录”。
@@ -367,13 +373,13 @@ npm --prefix frontend run build
 - 本地 OpenCV 会识别目标序列和背景中的多个位置，并按目标顺序点击后确认；验证码截图不会上传或持久化。
 - 识别结果不完整、置信度不足或页面发生变化时立即转人工验证，不会盲点、重复确认或把账号误报为退出登录。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-07 · v0.16.1
 
 - 过期的 3MF 每日下载上限任务会在平台 gate 恢复后自动继续，不再永久停在“已暂停”。
 - 国内站和国际站每次各只放行 1 个真实 3MF 探测，成功后再逐个继续；当前限额、真实验证和手动暂停不会被误恢复。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-07 · v0.16.0
 
