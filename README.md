@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.4`
+> 当前版本：`v0.16.5`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-18 · v0.16.5
+
+- 修复 App 已打开 3MF gate、独立 Worker 却仍等待旧的 10 分钟队列退避，导致“已验证”后归档没有立即恢复的问题。
+- Worker 现在监听两个站点的 gate 变化，并在下一次轮询中取消退避、重新领取任务。
+
 ### 2026-08-17 · v0.16.4
 
 - 首页“已验证”会立即打开站点 3MF gate 并恢复归档，后台继续逐项复核，不再停在“检测中”。
@@ -367,14 +372,14 @@ npm --prefix frontend run build
 - 平台返回每日下载上限后会从首次报限起保护 24 小时；手动重试不会清除保护或重置计数。
 - 元数据完成与 3MF 下载完成分别记录，日志会区分授权尝试、授权成功、实际新增和已有 3MF。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-07 · v0.16.2
 
 - 修复 MakerWorld 国区真实坐标点选验证码被误判为滑块的问题。
 - 本地 OpenCV 会识别目标序列和背景中的多个位置，并按目标顺序点击后确认；验证码截图不会上传或持久化。
 - 识别结果不完整、置信度不足或页面发生变化时立即转人工验证，不会盲点、重复确认或把账号误报为退出登录。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-07 · v0.16.1
 

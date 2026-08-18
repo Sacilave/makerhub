@@ -416,6 +416,35 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
 
         self.assertNotEqual(manager._queue_wakeup_signature(queue), blocked_signature)
 
+    def test_three_mf_gate_change_wakes_a_gate_blocked_queue(self):
+        manager, _store = self._manager_with_cookie("token=old")
+        queue = {
+            "queued_count": 1,
+            "queued": [
+                {
+                    "id": "task-1",
+                    "status": "paused",
+                    "updated_at": "2026-08-18T10:00:00+08:00",
+                    "url": "https://makerworld.com.cn/zh/models/123",
+                    "meta": {"missing_3mf_retry": True, "source": "cn"},
+                }
+            ],
+        }
+        health = {
+            "cn": {"three_mf_gate": "verification_required"},
+            "global": {"three_mf_gate": "open"},
+        }
+
+        with patch.object(
+            archive_worker_module,
+            "load_account_health",
+            side_effect=lambda: health,
+        ):
+            blocked_signature = manager._queue_wakeup_signature(queue)
+            health["cn"] = {"three_mf_gate": "open"}
+
+            self.assertNotEqual(manager._queue_wakeup_signature(queue), blocked_signature)
+
     def test_task_session_refresh_uses_last_browser_cookie_during_temporary_outage(self):
         manager, store = self._manager_with_cookie("token=synced; refreshToken=fresh")
         current = store.load().cookies[0]

@@ -29,6 +29,7 @@ from app.services.batch_discovery import (
 )
 from app.services.account_health import (
     get_account_health,
+    load_account_health,
     mark_account_checking,
     mark_account_network_error,
     mark_account_ok,
@@ -3288,6 +3289,18 @@ class ArchiveTaskManager:
         first = queued[0] if queued and isinstance(queued[0], dict) else {}
         first_meta = first.get("meta") if isinstance(first.get("meta"), dict) else {}
         _blocked_platforms, browser_signature = self._browser_session_queue_state()
+        try:
+            account_health = load_account_health()
+        except Exception:
+            gate_signature: tuple[tuple[str, str], ...] = ()
+        else:
+            gate_signature = tuple(
+                (
+                    platform,
+                    str((account_health.get(platform) or {}).get("three_mf_gate") or "open").strip().lower(),
+                )
+                for platform in ("cn", "global")
+            )
         return (
             int(queue.get("queued_count") or len(queued)),
             str(first.get("id") or ""),
@@ -3295,6 +3308,7 @@ class ArchiveTaskManager:
             str(first.get("updated_at") or ""),
             bool(first_meta.get("browser_session_recovery")),
             browser_signature,
+            gate_signature,
         )
 
     def _clear_blocked_queue_backoff(self) -> None:
