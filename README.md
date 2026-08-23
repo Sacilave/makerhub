@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.6`
+> 当前版本：`v0.16.7`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-23 · v0.16.7
+
+- 修复新版浏览器确认提示未被底层恢复逻辑识别的问题；gate 开放后会真正放行 1 个 3MF 探测任务。
+- 人工暂停和每日上限任务仍保持暂停，不会批量恢复或额外消耗下载次数。
+
 ### 2026-08-23 · v0.16.6
 
 - gate 已开放时会自动恢复 1 个遗留的浏览器确认任务进行真实下载探测；MakerWorld 再次要求验证时重新暂停，不会一次放行整批任务。
@@ -363,14 +368,14 @@ npm --prefix frontend run build
 - 修复 App 已打开 3MF gate、独立 Worker 却仍等待旧的 10 分钟队列退避，导致“已验证”后归档没有立即恢复的问题。
 - Worker 现在监听两个站点的 gate 变化，并在下一次轮询中取消退避、重新领取任务。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-17 · v0.16.4
 
 - 首页“已验证”会立即打开站点 3MF gate 并恢复归档，后台继续逐项复核，不再停在“检测中”。
 - 单个实例验证失败只保留该实例；两个不同实例连续失败时才暂停整站，避免一个异常实例阻塞全部任务。
 - 任意真实 3MF 授权成功都会维持 gate 打开；无探测任务时，账号检测成功也会结束遗留的未知状态。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-08 · v0.16.3
 

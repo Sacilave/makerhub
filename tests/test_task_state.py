@@ -1559,6 +1559,39 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(queue["queued"][2]["status"], "paused")
         self.assertEqual(queue["queued"][2]["message"], "用户手动暂停。")
 
+    def test_resume_verification_paused_archive_tasks_recovers_browser_confirmation_message(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "browser-confirmation",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "status": "paused",
+                        "message": (
+                            "指纹浏览器登录态已同步，但 MakerWorld 仍拒绝 3MF 下载；"
+                            "请在官网完成验证后再继续归档。"
+                        ),
+                        "meta": {"source": "cn", "three_mf_download": True},
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            queue = store.resume_verification_paused_archive_tasks(
+                limit=1,
+                message="浏览器登录态已恢复，正在探测 3MF 下载权限",
+                meta_updates={"browser_session_recovery": True},
+            )
+
+        self.assertEqual(queue["resumed_count"], 1)
+        self.assertEqual(queue["queued"][0]["status"], "queued")
+        self.assertTrue(queue["queued"][0]["meta"]["browser_session_recovery"])
+
     def test_resume_verification_paused_archive_tasks_limits_expired_daily_limit_recovery(self):
         daily_limit_message = (
             "国区返回了每日下载上限，今日暂停自动重试，"
