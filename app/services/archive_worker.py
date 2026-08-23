@@ -3350,7 +3350,7 @@ class ArchiveTaskManager:
         if not hasattr(self.task_store, "resume_verification_paused_archive_tasks"):
             return queue
         gate_by_platform = self._verification_resume_gate_snapshot(queue)
-        queue = self._resume_legacy_browser_session_tasks_when_gate_open(queue, gate_by_platform)
+        queue = self._resume_browser_confirmation_tasks_when_gate_open(queue, gate_by_platform)
         queue = self._resume_expired_daily_limit_tasks_when_gate_open(queue, gate_by_platform)
         self._schedule_browser_recovery_for_legacy_cookie_invalid_gates(queue, gate_by_platform)
         return queue
@@ -3429,9 +3429,15 @@ class ArchiveTaskManager:
 
     def _has_blocked_pending_tasks(self) -> bool:
         queue = self.task_store.load_archive_queue()
+        pending_items = [
+            item
+            for item in queue.get("queued") or []
+            if isinstance(item, dict)
+            and str(item.get("status") or "queued").strip().lower() in {"", "queued", "pending"}
+        ]
         return (
             int(queue.get("running_count") or 0) <= 0
-            and int(queue.get("queued_count") or 0) > 0
+            and bool(pending_items)
             and self._next_executable_task(queue) is None
         )
 
@@ -3531,7 +3537,7 @@ class ArchiveTaskManager:
         platform, _url, _meta = self._task_platform_and_url(item)
         return bool((gate_by_platform.get(platform) or {}).get("open"))
 
-    def _resume_legacy_browser_session_tasks_when_gate_open(
+    def _resume_browser_confirmation_tasks_when_gate_open(
         self,
         queue: dict,
         gate_by_platform: dict[str, dict[str, Any]],
@@ -3543,9 +3549,10 @@ class ArchiveTaskManager:
         def _matches(item: dict) -> bool:
             if not _is_three_mf_only_task(item):
                 return False
-            if str(item.get("blocked_reason") or "").strip():
+            if str(item.get("blocked_reason") or "").strip() not in {"", "needs_verification"}:
                 return False
             if str(item.get("message") or "").strip() not in {
+                CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE,
                 CLOAKBROWSER_SESSION_REFRESHED_MESSAGE,
                 CLOAKBROWSER_LEGACY_PROBE_MESSAGE,
             }:
@@ -3563,8 +3570,8 @@ class ArchiveTaskManager:
         if int(resumed_queue.get("resumed_count") or 0) > 0:
             append_business_log(
                 "missing_3mf",
-                "legacy_browser_session_retry_resumed",
-                "浏览器登录态已恢复，已放行一个遗留 3MF 探测任务。",
+                "browser_confirmation_retry_resumed",
+                "浏览器验证状态已恢复，已放行一个 3MF 探测任务。",
                 resumed_count=int(resumed_queue.get("resumed_count") or 0),
             )
         return resumed_queue

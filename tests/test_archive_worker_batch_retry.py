@@ -433,6 +433,26 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertEqual(queue["queued"][0]["status"], "paused")
         self.assertEqual(queue["queued"][0]["blocked_reason"], "needs_verification")
 
+    def test_paused_only_archive_queue_does_not_block_subscription_scans(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.task_store = SimpleNamespace(
+            load_archive_queue=lambda: {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "paused-cn",
+                        "status": "paused",
+                        "blocked_reason": "needs_verification",
+                    }
+                ],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+            }
+        )
+
+        self.assertFalse(manager._has_blocked_pending_tasks())
+
     def test_ensure_worker_for_pending_does_not_requeue_expired_active_tasks_after_initial_repair(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)

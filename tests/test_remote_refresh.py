@@ -488,6 +488,30 @@ class RemoteRefreshManagerTest(unittest.TestCase):
 
         self.assertEqual(self.manager._service_busy_reason(), "archive_queue_busy")
 
+    def test_service_busy_reason_ignores_queue_with_only_paused_work(self):
+        self.task_store.save_archive_queue(
+            {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "paused-verification",
+                        "title": "等待浏览器验证",
+                        "status": "paused",
+                        "blocked_reason": "needs_verification",
+                    },
+                    {
+                        "id": "paused-manual",
+                        "title": "手动暂停",
+                        "status": "paused",
+                        "blocked_reason": "manual",
+                    },
+                ],
+                "recent_failures": [],
+            }
+        )
+
+        self.assertEqual(self.manager._service_busy_reason(), "")
+
     def test_tick_resumes_active_run_before_future_schedule(self):
         self.task_store.patch_remote_refresh_state(
             status="running",

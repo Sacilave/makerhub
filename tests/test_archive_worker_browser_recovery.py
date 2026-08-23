@@ -1161,6 +1161,74 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         schedule_mock.assert_not_called()
         log_mock.assert_called_once()
 
+    def test_ensure_worker_for_pending_resumes_one_browser_confirmation_probe_when_gate_open(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        queued_items = [
+            {
+                "id": f"browser-confirmation-{index}",
+                "status": "paused",
+                "blocked_reason": "needs_verification",
+                "url": f"https://makerworld.com.cn/zh/models/{index}",
+                "message": archive_worker_module.CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE,
+                "meta": {"missing_3mf_retry": True, "source": "cn"},
+            }
+            for index in (1, 2)
+        ]
+        queue = {
+            "active": [],
+            "queued": queued_items,
+            "recent_failures": [],
+            "running_count": 0,
+            "queued_count": len(queued_items),
+        }
+
+        def resume_paused(*, selector=None, limit=None, message="", meta_updates=None):
+            resumed_items = []
+            next_items = []
+            for original in queued_items:
+                item = {**original, "meta": dict(original.get("meta") or {})}
+                if (
+                    item.get("status") == "paused"
+                    and len(resumed_items) < int(limit or 0)
+                    and selector is not None
+                    and selector(item)
+                ):
+                    item["status"] = "queued"
+                    item["message"] = message
+                    item["meta"].update(meta_updates or {})
+                    item.pop("blocked_reason", None)
+                    resumed_items.append(item)
+                next_items.append(item)
+            return {
+                **queue,
+                "queued": next_items,
+                "resumed_count": len(resumed_items),
+                "resumed_items": resumed_items,
+            }
+
+        resume_mock = Mock(side_effect=resume_paused)
+        manager.task_store = SimpleNamespace(resume_verification_paused_archive_tasks=resume_mock)
+
+        with patch.object(manager, "_repair_queue_before_worker_start", return_value=queue), \
+                patch.object(manager, "_ensure_worker") as ensure_worker_mock, \
+                patch.object(
+                    archive_worker_module,
+                    "three_mf_gate_for_url",
+                    return_value={"open": True, "state": "open", "platform": "cn"},
+                ), \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.ensure_worker_for_pending()
+
+        self.assertEqual(resume_mock.call_count, 1)
+        self.assertEqual(resume_mock.call_args.kwargs["limit"], 1)
+        self.assertEqual(
+            [item["id"] for item in result["queued"] if item.get("status") == "queued"],
+            ["browser-confirmation-1"],
+        )
+        self.assertTrue(result["queued"][0]["meta"]["browser_session_recovery"])
+        self.assertEqual(result["queued"][1]["status"], "paused")
+        ensure_worker_mock.assert_called_once()
+
     def test_ensure_worker_for_pending_resumes_one_expired_daily_limit_probe_per_open_platform(self):
         manager = ArchiveTaskManager(background_enabled=True)
         daily_limit_message = (

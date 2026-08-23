@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.5`
+> 当前版本：`v0.16.6`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-23 · v0.16.6
+
+- gate 已开放时会自动恢复 1 个遗留的浏览器确认任务进行真实下载探测；MakerWorld 再次要求验证时重新暂停，不会一次放行整批任务。
+- 纯暂停归档队列不再卡住定时订阅和源端刷新；真正排队或运行中的归档任务仍会优先执行。
+
 ### 2026-08-18 · v0.16.5
 
 - 修复 App 已打开 3MF gate、独立 Worker 却仍等待旧的 10 分钟队列退避，导致“已验证”后归档没有立即恢复的问题。
@@ -364,6 +369,9 @@ npm --prefix frontend run build
 - 单个实例验证失败只保留该实例；两个不同实例连续失败时才暂停整站，避免一个异常实例阻塞全部任务。
 - 任意真实 3MF 授权成功都会维持 gate 打开；无探测任务时，账号检测成功也会结束遗留的未知状态。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-08 · v0.16.3
 
 - 指纹浏览器实际未登录时，设置页和归档队列统一显示需要重新登录，不再同时出现“可归档”和“尚未登录”。
@@ -371,9 +379,6 @@ npm --prefix frontend run build
 - 浏览器重新登录并同步后会重新检测状态并立即唤醒队列，即使 token 没有变化也能恢复。
 - 平台返回每日下载上限后会从首次报限起保护 24 小时；手动重试不会清除保护或重置计数。
 - 元数据完成与 3MF 下载完成分别记录，日志会区分授权尝试、授权成功、实际新增和已有 3MF。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-07 · v0.16.2
 

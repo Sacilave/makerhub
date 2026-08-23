@@ -1921,8 +1921,12 @@ class RemoteRefreshManager:
     def _service_busy_reason(self) -> str:
         queue = self.task_store.load_archive_queue()
         stale_archive_queue_detected = False
-        if queue.get("queued"):
-            return "archive_queue_busy"
+        for item in queue.get("queued") or []:
+            if not isinstance(item, dict):
+                continue
+            status = normalize_runtime_status(item.get("status"), "queued")
+            if status in {"queued", "running"}:
+                return "archive_queue_busy"
         for item in queue.get("active") or []:
             if not isinstance(item, dict):
                 continue
