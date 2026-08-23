@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
@@ -176,6 +178,47 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         self.assertEqual(error, "")
         self.assertIsNotNone(refreshed)
         self.assertEqual(refreshed.cookie, "token=synced; refreshToken=fresh")
+
+    def test_concurrent_task_session_refresh_collects_profile_once(self):
+        manager, _store = self._manager_with_cookie("token=old; refreshToken=old")
+        browser_result = CloakBrowserSessionResult(
+            profile_id="profile-cn",
+            cookie="token=fresh; refreshToken=fresh",
+        )
+        first_collect_started = threading.Event()
+        release_collect = threading.Event()
+        second_thread_started = threading.Event()
+        results = []
+
+        def collect_once(*_args):
+            first_collect_started.set()
+            release_collect.wait(timeout=2)
+            return browser_result
+
+        def refresh(*, second: bool = False):
+            if second:
+                second_thread_started.set()
+            results.append(manager._refresh_browser_session_for_task("cn"))
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(archive_worker_module, "collect_browser_session", side_effect=collect_once) as collect_mock:
+            first = threading.Thread(target=refresh)
+            second = threading.Thread(target=refresh, kwargs={"second": True})
+            first.start()
+            self.assertTrue(first_collect_started.wait(timeout=1))
+            second.start()
+            self.assertTrue(second_thread_started.wait(timeout=1))
+            time.sleep(0.05)
+            release_collect.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(collect_mock.call_count, 1)
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(error == "" for _account, error in results))
+        self.assertTrue(all(account.cookie == browser_result.cookie for account, _error in results))
 
     def test_stale_browser_sync_result_reports_newer_cookie_without_overwriting_it(self):
         manager, store = self._manager_with_cookie("token=old; refreshToken=old")

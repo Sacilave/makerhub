@@ -10,6 +10,89 @@ from app.services.archive_worker import ArchiveTaskManager
 
 
 class ArchiveWorkerSpeedupTest(unittest.TestCase):
+    def test_transient_cloakbrowser_failure_is_requeued_before_terminal_failure(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        requeued = []
+        failed = []
+        missing_updates = []
+        task = {
+            "id": "task-transient",
+            "url": "https://makerworld.com.cn/zh/models/1595694",
+            "mode": "single_model",
+            "status": "running",
+            "attempt_count": 1,
+            "meta": {"source": "cn"},
+        }
+        manager.task_store = SimpleNamespace(
+            update_active_task=lambda *_args, **_kwargs: None,
+            update_missing_3mf_status=lambda **payload: missing_updates.append(payload),
+            requeue_archive_task=lambda task_id, message, **kwargs: requeued.append((task_id, message, kwargs)),
+            fail_archive_task=lambda task_id, message: failed.append((task_id, message)),
+        )
+
+        with patch.object(manager, "_run_single_task", side_effect=RuntimeError("CloakBrowser 服务暂时不可用。")), \
+                patch.object(manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(archive_worker_module, "_sync_account_health_for_archive_exception") as sync_health, \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_leased_task(task)
+
+        self.assertEqual(failed, [])
+        self.assertEqual(missing_updates, [])
+        sync_health.assert_not_called()
+        self.assertEqual(requeued[0][0], "task-transient")
+        self.assertIn("自动重试", requeued[0][1])
+        self.assertTrue(requeued[0][2]["retry_at"])
+
+    def test_transient_cloakbrowser_failure_becomes_terminal_at_retry_limit(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        requeued = []
+        failed = []
+        task = {
+            "id": "task-transient-limit",
+            "url": "https://makerworld.com.cn/zh/models/1595694",
+            "mode": "single_model",
+            "status": "running",
+            "attempt_count": archive_worker_module.MAX_ARCHIVE_TRANSIENT_REQUEUE_ATTEMPTS,
+            "meta": {"source": "cn"},
+        }
+        manager.task_store = SimpleNamespace(
+            update_active_task=lambda *_args, **_kwargs: None,
+            update_missing_3mf_status=lambda **_kwargs: None,
+            requeue_archive_task=lambda *args, **kwargs: requeued.append((args, kwargs)),
+            fail_archive_task=lambda task_id, message: failed.append((task_id, message)),
+        )
+
+        with patch.object(manager, "_run_single_task", side_effect=RuntimeError("CloakBrowser 请求超时。")), \
+                patch.object(manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(archive_worker_module, "_sync_account_health_for_archive_exception"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_leased_task(task)
+
+        self.assertEqual(requeued, [])
+        self.assertEqual(failed[0][0], "task-transient-limit")
+
+    def test_next_executable_task_skips_task_waiting_for_transient_retry(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        queue = {
+            "queued": [
+                {
+                    "id": "delayed",
+                    "status": "queued",
+                    "url": "https://makerworld.com.cn/zh/models/1",
+                    "retry_at": "2999-01-01T00:00:00+08:00",
+                },
+                {
+                    "id": "ready",
+                    "status": "queued",
+                    "url": "https://makerworld.com.cn/zh/models/2",
+                },
+            ]
+        }
+
+        selected = manager._next_executable_task(queue)
+
+        self.assertEqual(selected["id"], "ready")
+
     def test_run_batch_task_submits_discovered_children_in_one_bulk_enqueue(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None))

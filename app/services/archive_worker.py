@@ -48,6 +48,7 @@ from app.services.proxy_policy import temporary_proxy_env
 from app.services.resource_limiter import resource_slot
 from app.services.source_library import refresh_source_preview_snapshots, source_identity_key
 from app.services.task_state import TaskStateStore, _is_daily_limit_paused_archive_task
+from app.services.task_runtime import task_attempt_count
 from app.services.state_events import publish_state_event
 from app.services.three_mf import (
     describe_three_mf_failure,
@@ -59,6 +60,8 @@ BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
 MAX_BATCH_CHILD_REQUEUE_ATTEMPTS = 3
 MAX_BATCH_CHILD_TRANSIENT_REQUEUE_ATTEMPTS = 5
+MAX_ARCHIVE_TRANSIENT_REQUEUE_ATTEMPTS = 5
+ARCHIVE_TRANSIENT_RETRY_BACKOFF_SECONDS = (10, 30, 60, 120)
 ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
@@ -80,6 +83,7 @@ BATCH_CHILD_TRANSIENT_FAILURE_TOKENS = (
     "cloakbrowser 请求超时",
     "cloakbrowser 连接中断",
     "cloakbrowser 服务暂时不可用",
+    "cloakbrowser 获取模型页面失败",
 )
 CLOAKBROWSER_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
 CLOAKBROWSER_TASK_SESSION_REFRESH_SECONDS = 2 * 60
@@ -261,6 +265,23 @@ def _is_transient_batch_child_failure(message: str) -> bool:
             continue
 
     return any(token in lowered for token in BATCH_CHILD_TRANSIENT_FAILURE_TOKENS)
+
+
+def _archive_transient_retry_delay(attempt_count: int) -> int:
+    index = max(min(int(attempt_count or 1), len(ARCHIVE_TRANSIENT_RETRY_BACKOFF_SECONDS)), 1) - 1
+    return ARCHIVE_TRANSIENT_RETRY_BACKOFF_SECONDS[index]
+
+
+def _archive_task_retry_delay(item: dict[str, Any], *, now: Optional[datetime] = None) -> float:
+    retry_at = parse_datetime(str(item.get("retry_at") or "").strip())
+    if retry_at is None:
+        return 0.0
+    current = now or china_now()
+    return max((retry_at - current).total_seconds(), 0.0)
+
+
+def _archive_task_retry_pending(item: dict[str, Any], *, now: Optional[datetime] = None) -> bool:
+    return _archive_task_retry_delay(item, now=now) > 0
 
 
 def _failure_message_from_queue_item(item: Optional[dict[str, Any]]) -> str:
@@ -856,6 +877,10 @@ class ArchiveTaskManager:
         self._blocked_queue_signature: tuple[Any, ...] | None = None
         self._cloakbrowser_recovery_lock = threading.Lock()
         self._cloakbrowser_recovery_attempted_at: dict[str, float] = {}
+        self._browser_session_refresh_locks = {
+            "cn": threading.Lock(),
+            "global": threading.Lock(),
+        }
 
     def _persist_browser_recovery_session(
         self,
@@ -959,6 +984,13 @@ class ArchiveTaskManager:
 
     def _refresh_browser_session_for_task(self, platform: str) -> tuple[object | None, str]:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        refresh_lock = self._browser_session_refresh_locks.get(normalized_platform)
+        if refresh_lock is None:
+            return None, "未识别 MakerWorld 平台。"
+        with refresh_lock:
+            return self._refresh_browser_session_for_task_locked(normalized_platform)
+
+    def _refresh_browser_session_for_task_locked(self, normalized_platform: str) -> tuple[object | None, str]:
         try:
             config = self.store.load()
             current = next((item for item in config.cookies if item.platform == normalized_platform), None)
@@ -3306,6 +3338,7 @@ class ArchiveTaskManager:
             str(first.get("id") or ""),
             str(first.get("status") or ""),
             str(first.get("updated_at") or ""),
+            str(first.get("retry_at") or ""),
             bool(first_meta.get("browser_session_recovery")),
             browser_signature,
             gate_signature,
@@ -3444,9 +3477,12 @@ class ArchiveTaskManager:
     def _next_executable_task(self, queue: dict) -> Optional[dict]:
         queued = list(queue.get("queued") or [])
         blocked_browser_platforms, _browser_signature = self._browser_session_queue_state()
+        now = china_now()
         for item in queued:
             status = str(item.get("status") or "queued").strip().lower()
             if status not in {"", "queued", "pending"}:
+                continue
+            if _archive_task_retry_pending(item, now=now):
                 continue
             if _is_batch_parent_waiting_for_children(item):
                 continue
@@ -3466,6 +3502,8 @@ class ArchiveTaskManager:
         for item in queued:
             status = str(item.get("status") or "queued").strip().lower()
             if status not in {"", "queued", "pending"}:
+                continue
+            if _archive_task_retry_pending(item, now=now):
                 continue
             if _is_batch_parent_waiting_for_children(item):
                 continue
@@ -3688,7 +3726,13 @@ class ArchiveTaskManager:
                     time.sleep(ACTIVE_BATCH_IDLE_POLL_SECONDS)
                     continue
                 self._blocked_queue_signature = self._queue_wakeup_signature(queue)
-                self._blocked_queue_retry_at = time.monotonic() + 10 * 60
+                retry_delays = [
+                    _archive_task_retry_delay(item)
+                    for item in queued
+                    if isinstance(item, dict) and _archive_task_retry_pending(item)
+                ]
+                retry_delay = min(retry_delays) if retry_delays else 10 * 60
+                self._blocked_queue_retry_at = time.monotonic() + max(retry_delay, 0.1)
                 return
 
             self._clear_blocked_queue_backoff()
@@ -3730,6 +3774,36 @@ class ArchiveTaskManager:
                 model_id=model_id,
                 message=error_message,
             ):
+                return
+            attempt_count = max(task_attempt_count(task), 1)
+            is_batch_child = bool(task_meta.get("batch_parent_id"))
+            if (
+                not is_batch_child
+                and _is_transient_batch_child_failure(error_message)
+                and attempt_count < MAX_ARCHIVE_TRANSIENT_REQUEUE_ATTEMPTS
+            ):
+                retry_delay = _archive_transient_retry_delay(attempt_count)
+                retry_at = (china_now() + timedelta(seconds=retry_delay)).isoformat(timespec="seconds")
+                retry_message = (
+                    f"{error_message.rstrip('。')}，将在 {retry_delay} 秒后自动重试"
+                    f"（已尝试 {attempt_count}/{MAX_ARCHIVE_TRANSIENT_REQUEUE_ATTEMPTS} 次）。"
+                )
+                self.task_store.requeue_archive_task(
+                    task_id,
+                    retry_message,
+                    retry_at=retry_at,
+                )
+                _log_archive(
+                    "task_transient_requeued",
+                    retry_message,
+                    level="warning",
+                    task_id=task_id,
+                    url=task_url,
+                    mode=str(task.get("mode") or "") or detect_archive_mode(task_url),
+                    attempt_count=attempt_count,
+                    max_attempts=MAX_ARCHIVE_TRANSIENT_REQUEUE_ATTEMPTS,
+                    retry_at=retry_at,
+                )
                 return
             if model_id:
                 self.task_store.update_missing_3mf_status(

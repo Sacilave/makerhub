@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.7`
+> 当前版本：`v0.16.8`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-24 · v0.16.8
+
+- 高频 MakerWorld 抓取优先直连已关联 profile 的 CDP，失败时才检查并自动启动 profile，避免 Manager 慢查询把页面抓取拖到数分钟。
+- 同平台并发任务只同步一次浏览器登录态；CloakBrowser 临时故障会有限退避重试，不再直接进入最近失败或误报需要重新登录。
+
 ### 2026-08-23 · v0.16.7
 
 - 修复新版浏览器确认提示未被底层恢复逻辑识别的问题；gate 开放后会真正放行 1 个 3MF 探测任务。
@@ -363,13 +368,13 @@ npm --prefix frontend run build
 - gate 已开放时会自动恢复 1 个遗留的浏览器确认任务进行真实下载探测；MakerWorld 再次要求验证时重新暂停，不会一次放行整批任务。
 - 纯暂停归档队列不再卡住定时订阅和源端刷新；真正排队或运行中的归档任务仍会优先执行。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-18 · v0.16.5
 
 - 修复 App 已打开 3MF gate、独立 Worker 却仍等待旧的 10 分钟队列退避，导致“已验证”后归档没有立即恢复的问题。
 - Worker 现在监听两个站点的 gate 变化，并在下一次轮询中取消退避、重新领取任务。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-17 · v0.16.4
 

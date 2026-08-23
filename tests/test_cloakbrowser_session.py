@@ -312,11 +312,11 @@ class CloakBrowserSessionTest(unittest.TestCase):
             cloakbrowser_session,
             "ensure_profile",
             return_value=profile,
-        ), patch.object(
+        ) as ensure_mock, patch.object(
             cloakbrowser_session,
             "launch_profile",
             return_value=(profile, False),
-        ), patch.object(
+        ) as launch_mock, patch.object(
             cloakbrowser_session,
             "_run_bridge",
             return_value=bridge_result,
@@ -352,6 +352,54 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "x-bbl-captcha-result": "verified",
         })
         self.assertEqual(payload["cookies"][0]["name"], "token")
+        ensure_mock.assert_not_called()
+        launch_mock.assert_not_called()
+
+    def test_browser_fetch_falls_back_to_profile_start_when_direct_cdp_connection_fails(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        bridge_result = {
+            "status_code": 200,
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "content_type": "text/html; charset=utf-8",
+            "text": "<html>ok</html>",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+            },
+            clear=True,
+        ), patch.object(
+            cloakbrowser_session,
+            "ensure_profile",
+            return_value=profile,
+        ) as ensure_mock, patch.object(
+            cloakbrowser_session,
+            "launch_profile",
+            return_value=(profile, True),
+        ) as launch_mock, patch.object(
+            cloakbrowser_session,
+            "_run_bridge",
+            side_effect=[
+                cloakbrowser_session.CloakBrowserBridgeError("Unexpected server response: 503"),
+                bridge_result,
+            ],
+        ) as bridge_mock:
+            result = cloakbrowser_session.browser_fetch(
+                "cn",
+                "https://makerworld.com.cn/zh/models/1",
+                profile_id="profile-cn",
+            )
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(bridge_mock.call_count, 2)
+        ensure_mock.assert_called_once_with("cn", "profile-cn", browser_proxy=None)
+        launch_mock.assert_called_once_with(profile)
 
     def test_browser_fetch_protocol_timeout_does_not_restart_profile(self):
         profile = cloakbrowser_session.CloakBrowserProfile(

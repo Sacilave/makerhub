@@ -1345,6 +1345,43 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(queue["recent_failures"][0]["message"], "Cloudflare")
         self.assertEqual(queue["active"], [])
 
+    def test_requeue_archive_task_moves_active_task_back_without_recording_failure(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-retry",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "running",
+                        "attempt_count": 2,
+                        "heartbeat_at": "2026-08-24T10:00:00+08:00",
+                        "lease_expires_at": "2026-08-24T10:30:00+08:00",
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-08-24T10:01:00+08:00"):
+            queue = store.requeue_archive_task(
+                "task-retry",
+                "CloakBrowser 暂时不可用，稍后自动重试。",
+                retry_at="2026-08-24T10:01:10+08:00",
+            )
+
+        self.assertEqual(queue["active"], [])
+        self.assertEqual(queue["recent_failures"], [])
+        self.assertEqual(queue["queued"][0]["status"], "queued")
+        self.assertEqual(queue["queued"][0]["attempt_count"], 2)
+        self.assertEqual(queue["queued"][0]["retry_at"], "2026-08-24T10:01:10+08:00")
+        self.assertEqual(queue["queued"][0]["heartbeat_at"], "")
+        self.assertEqual(queue["queued"][0]["lease_expires_at"], "")
+
     def test_repair_archive_queue_skips_paused_task(self):
         state = {
             "archive_queue": {

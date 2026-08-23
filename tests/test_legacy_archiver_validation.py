@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services import legacy_archiver
+from app.services.makerworld_browser_client import MakerWorldBrowserError
 
 
 class _ApiSession:
@@ -159,6 +160,21 @@ class LegacyArchiverValidationTest(unittest.TestCase):
             )
 
         self.assertIn("__NEXT_DATA__", html)
+
+    def test_fetch_html_with_browser_preserves_cloakbrowser_failure(self):
+        class FailingSession:
+            headers = {"User-Agent": "test-agent"}
+
+        with patch(
+            "app.services.legacy_archiver.makerworld_browser_get_text",
+            side_effect=MakerWorldBrowserError("CloakBrowser 服务暂时不可用。"),
+        ):
+            with self.assertRaisesRegex(MakerWorldBrowserError, "暂时不可用"):
+                legacy_archiver.fetch_html_with_browser(
+                    FailingSession(),
+                    "https://makerworld.com.cn/zh/models/2416065",
+                    "token=abc",
+                )
 
     def test_archive_model_reports_makerworld_404_page_as_source_deleted(self):
         makerworld_404_html = """

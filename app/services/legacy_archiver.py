@@ -757,7 +757,9 @@ def fetch_html_with_browser(session: requests.Session, url: str, raw_cookie: str
         )
     except MakerWorldBrowserError as exc:
         log("CloakBrowser 获取页面失败:", exc)
-        return None
+        raise
+
+
 def _session_cookie_header(session: requests.Session) -> str:
     try:
         return "; ".join(

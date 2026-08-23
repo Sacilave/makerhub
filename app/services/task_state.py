@@ -313,6 +313,7 @@ def _normalize_archive_runtime_item(item: Any, default_status: str) -> dict:
         "parent_task_id",
         "blocked_reason",
         "archive_stage",
+        "retry_at",
     ):
         value = source.get(field)
         if value is not None:
@@ -2002,6 +2003,7 @@ class TaskStateStore:
                     normalized["last_progress_at"] = now
                     normalized["lease_expires_at"] = lease_expiry_from_now()
                     normalized["attempt_count"] = max(task_attempt_count(normalized) + 1, 1)
+                    normalized["retry_at"] = ""
                     normalized["updated_at"] = now
                     task = normalized
                     continue
@@ -2071,6 +2073,7 @@ class TaskStateStore:
             task["last_progress_at"] = now
             task["lease_expires_at"] = lease_expiry_from_now()
             task["attempt_count"] = max(task_attempt_count(task) + 1, 1)
+            task["retry_at"] = ""
             task["updated_at"] = now
             active.append(task)
             leased_task = task
@@ -2243,6 +2246,58 @@ class TaskStateStore:
                 },
             )
         return queue
+
+    def requeue_archive_task(self, task_id: str, message: str, *, retry_at: str = "") -> dict:
+        requeued_item: Optional[dict[str, Any]] = None
+
+        def _mutate(payload: dict) -> dict:
+            nonlocal requeued_item
+            active = []
+            queued = [
+                _normalize_archive_runtime_item(item, "queued")
+                for item in (payload.get("queued") or [])
+            ]
+            for item in payload.get("active") or []:
+                normalized = _normalize_archive_runtime_item(item, "running")
+                if normalized["id"] != task_id:
+                    active.append(normalized)
+                    continue
+                normalized["status"] = "queued"
+                normalized["message"] = str(message or "").strip()
+                normalized["retry_at"] = str(retry_at or "").strip()
+                normalized["heartbeat_at"] = ""
+                normalized["last_progress_at"] = ""
+                normalized["lease_expires_at"] = ""
+                normalized["lease_owner"] = ""
+                normalized["updated_at"] = china_now_iso()
+                requeued_item = normalized
+
+            if requeued_item is not None:
+                requeued_key = _archive_task_identity_key(requeued_item)
+                queued = [
+                    item
+                    for item in queued
+                    if not requeued_key or _archive_task_identity_key(item) != requeued_key
+                ]
+                queued.append(requeued_item)
+                recent_failures = [
+                    _normalize_archive_runtime_item(item, "failed")
+                    for item in (payload.get("recent_failures") or [])
+                ]
+                failure_key = _archive_task_identity_key(requeued_item, failure=True)
+                if failure_key:
+                    recent_failures = [
+                        item
+                        for item in recent_failures
+                        if _archive_task_identity_key(item, failure=True) != failure_key
+                    ]
+                payload["recent_failures"] = recent_failures
+
+            payload["active"] = active
+            payload["queued"] = queued
+            return payload
+
+        return self._update_archive_queue(_mutate)
 
     def requeue_active_tasks(self, message: str = "服务重启后自动恢复") -> dict:
         recovered_count = 0

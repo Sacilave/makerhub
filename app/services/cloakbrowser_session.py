@@ -903,10 +903,18 @@ def browser_fetch(
     clean_profile_id = str(profile_id or "").strip()
 
     with _profile_operation(clean_platform, clean_profile_id, detail="fetch"):
-        _profile, running, _launched_here = _ensure_running_profile(
-            clean_platform,
-            clean_profile_id,
-        )
+        if clean_profile_id:
+            running = CloakBrowserProfile(
+                id=clean_profile_id,
+                name=PROFILE_NAMES[clean_platform],
+                status="running",
+                cdp_url=f"{_configured_url()}/api/profiles/{clean_profile_id}/cdp",
+            )
+        else:
+            _profile, running, _launched_here = _ensure_running_profile(
+                clean_platform,
+                clean_profile_id,
+            )
         payload = _bridge_payload(
             running.id,
             action="fetch",
@@ -916,13 +924,29 @@ def browser_fetch(
         )
         payload["headers"] = _safe_browser_fetch_headers(headers)
         payload["navigation_timeout_ms"] = operation_timeout * 1000
-        running, _restarted, result = _run_bridge_with_profile_recovery(
-            clean_platform,
-            running,
-            payload,
-            timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
-            allow_profile_restart=False,
-        )
+        try:
+            running, _restarted, result = _run_bridge_with_profile_recovery(
+                clean_platform,
+                running,
+                payload,
+                timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
+                allow_profile_restart=False,
+            )
+        except CloakBrowserBridgeError:
+            if not clean_profile_id:
+                raise
+            _profile, running, _launched_here = _ensure_running_profile(
+                clean_platform,
+                clean_profile_id,
+            )
+            payload["cdp_url"] = f"{_configured_url()}/api/profiles/{running.id}/cdp"
+            running, _restarted, result = _run_bridge_with_profile_recovery(
+                clean_platform,
+                running,
+                payload,
+                timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
+                allow_profile_restart=False,
+            )
 
     final_url = _validate_browser_fetch_url(str(result.get("url") or clean_url), clean_platform)
     try:
