@@ -8,7 +8,6 @@ import subprocess
 import sys
 import threading
 import time
-import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import Any, Optional
@@ -28,6 +27,7 @@ from app.services.local_import_upload import (
 )
 from app.services.process_memory import release_process_memory
 from app.services.task_state import TaskStateStore
+from app.services.three_mf import parse_3mf_metadata
 
 
 ORGANIZER_LOG_PATH = LOGS_DIR / "organizer.log"
@@ -1234,27 +1234,7 @@ class LocalOrganizerService:
         return f"zipmeta:{hashlib.sha1(chr(10).join(parts).encode('utf-8', errors='ignore')).hexdigest()}"
 
     def _parse_3mf_metadata(self, source_path: Path) -> dict[str, str]:
-        metadata: dict[str, str] = {}
-        try:
-            with zipfile.ZipFile(source_path) as archive:
-                model_member = ""
-                for name in archive.namelist():
-                    if str(name or "").lower() == "3d/3dmodel.model":
-                        model_member = name
-                        break
-                if not model_member:
-                    return metadata
-
-                root = ET.fromstring(archive.read(model_member))
-                for node in root.findall(".//{*}metadata"):
-                    key = str(node.attrib.get("name") or "").strip()
-                    if not key:
-                        continue
-                    value = node.text or node.attrib.get("value") or ""
-                    metadata[key] = html.unescape(str(value or "")).strip()
-        except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, ET.ParseError, KeyError):
-            return {}
-        return metadata
+        return parse_3mf_metadata(source_path)
 
     def _derive_model_key(self, analysis: dict[str, Any]) -> str:
         design_model_id = str(analysis.get("design_model_id") or "").strip()

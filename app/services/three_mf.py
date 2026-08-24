@@ -15,6 +15,8 @@ _INSPECT_CACHE: dict[str, dict[str, Any]] = {}
 _THREE_MF_SUFFIX = ".3mf"
 _HASH_CHUNK_SIZE_BYTES = 512 * 1024
 _HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
+_METADATA_XML_CHUNK_SIZE_BYTES = 64 * 1024
+_METADATA_XML_MAX_BYTES = 4 * 1024 * 1024
 _THREE_MF_FAILURE_PRIORITY = {
     "download_limited": 60,
     "verification_required": 55,
@@ -327,21 +329,47 @@ def parse_3mf_metadata(source_path: Path) -> dict[str, str]:
     metadata: dict[str, str] = {}
     try:
         with zipfile.ZipFile(source_path) as archive:
-            model_member = ""
-            for name in archive.namelist():
-                if str(name or "").lower() == "3d/3dmodel.model":
-                    model_member = name
+            model_info: Optional[zipfile.ZipInfo] = None
+            for info in archive.infolist():
+                if str(info.filename or "").lower() == "3d/3dmodel.model":
+                    model_info = info
                     break
-            if not model_member:
+            if model_info is None:
                 return metadata
 
-            root = ET.fromstring(archive.read(model_member))
-            for node in root.findall(".//{*}metadata"):
-                key = str(node.attrib.get("name") or "").strip()
-                if not key:
-                    continue
-                value = node.text or node.attrib.get("value") or ""
-                metadata[key] = html.unescape(str(value or "")).strip()
+            parser = ET.XMLPullParser(events=("start", "end"))
+            depth = 0
+            consumed = 0
+            stop_parsing = False
+            with archive.open(model_info) as source:
+                while consumed < _METADATA_XML_MAX_BYTES:
+                    chunk = source.read(
+                        min(
+                            _METADATA_XML_CHUNK_SIZE_BYTES,
+                            _METADATA_XML_MAX_BYTES - consumed,
+                        )
+                    )
+                    if not chunk:
+                        break
+                    consumed += len(chunk)
+                    parser.feed(chunk)
+                    for event, node in parser.read_events():
+                        local_name = str(node.tag or "").rsplit("}", 1)[-1].lower()
+                        if event == "start":
+                            depth += 1
+                            if depth == 2 and local_name in {"resources", "build"}:
+                                stop_parsing = True
+                                break
+                            continue
+                        if depth == 2 and local_name == "metadata":
+                            key = str(node.attrib.get("name") or "").strip()
+                            if key:
+                                value = node.text or node.attrib.get("value") or ""
+                                metadata[key] = html.unescape(str(value or "")).strip()
+                        node.clear()
+                        depth = max(depth - 1, 0)
+                    if stop_parsing:
+                        break
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, ET.ParseError, KeyError):
         return {}
     return metadata
@@ -527,7 +555,6 @@ def _instance_title_keys(instance: dict[str, Any]) -> list[str]:
 
 
 def _make_match(record: dict[str, Any], *, confidence: str, reason: str) -> dict[str, Any]:
-    _ensure_record_analysis(record)
     path = record.get("path")
     return {
         "path": path,

@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.8`
+> 当前版本：`v0.16.9`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-24 · v0.16.9
+
+- 大型 3MF 元数据改为受限流式解析，不再把完整模型网格 XML 一次性解压进 Worker 内存。
+- 文件名已精确匹配时跳过内部解析；源端刷新与本地整理共用同一安全路径，降低内存和 CPU 峰值。
+
 ### 2026-08-24 · v0.16.8
 
 - 高频 MakerWorld 抓取优先直连已关联 profile 的 CDP，失败时才检查并自动启动 profile，避免 Manager 慢查询把页面抓取拖到数分钟。
@@ -363,13 +368,13 @@ npm --prefix frontend run build
 - 修复新版浏览器确认提示未被底层恢复逻辑识别的问题；gate 开放后会真正放行 1 个 3MF 探测任务。
 - 人工暂停和每日上限任务仍保持暂停，不会批量恢复或额外消耗下载次数。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-23 · v0.16.6
 
 - gate 已开放时会自动恢复 1 个遗留的浏览器确认任务进行真实下载探测；MakerWorld 再次要求验证时重新暂停，不会一次放行整批任务。
 - 纯暂停归档队列不再卡住定时订阅和源端刷新；真正排队或运行中的归档任务仍会优先执行。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-18 · v0.16.5
 

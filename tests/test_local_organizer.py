@@ -1,4 +1,5 @@
 import unittest
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -42,6 +43,25 @@ class FakeTaskStore:
 
 
 class LocalOrganizerTest(unittest.TestCase):
+    def test_parse_3mf_metadata_ignores_geometry_after_root_metadata(self):
+        with TemporaryDirectory() as tmp:
+            source_path = Path(tmp) / "large.3mf"
+            model_xml = (
+                b'<model xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+                b'<metadata name="DesignModelId">987654</metadata>'
+                b'<resources><object id="1"><mesh><vertices>'
+            )
+            with zipfile.ZipFile(source_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("3D/3dmodel.model", model_xml)
+
+            service = local_organizer.LocalOrganizerService(
+                store=SimpleNamespace(),
+                task_store=FakeTaskStore(),
+            )
+            metadata = service._parse_3mf_metadata(source_path)
+
+        self.assertEqual(metadata["DesignModelId"], "987654")
+
     def test_release_idle_memory_clears_library_index_cache(self):
         service = local_organizer.LocalOrganizerService(
             store=SimpleNamespace(),
