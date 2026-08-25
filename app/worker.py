@@ -51,6 +51,7 @@ WORKER_MEMORY_MAINTENANCE_INTERVAL_SECONDS = 5 * 60
 WORKER_RECYCLE_RSS_MIB_ENV = "MAKERHUB_WORKER_RECYCLE_RSS_MIB"
 DEFAULT_WORKER_RECYCLE_RSS_MIB = 2048
 CLOAKBROWSER_IDLE_CHECK_INTERVAL_SECONDS = 60
+AUTO_MISSING_3MF_RETRY_INTERVAL_SECONDS = 60
 
 
 def archive_queue_has_runnable_work(queue: dict) -> bool:
@@ -110,6 +111,27 @@ def run_worker_memory_maintenance(
     except Exception as exc:
         result["error"] = str(exc)[:240]
     return result
+
+
+def run_worker_idle_missing_3mf_retry(
+    archive_manager,
+    archive_queue: dict,
+    *,
+    limit: int | None = None,
+) -> dict:
+    if archive_queue_has_runnable_work(archive_queue):
+        return {"accepted": False, "reason": "archive_queue_busy"}
+    try:
+        return archive_manager.retry_idle_missing_3mf(limit=limit)
+    except Exception as exc:
+        append_business_log(
+            "missing_3mf",
+            "idle_retry_failed",
+            "归档队列空闲补档检查失败。",
+            level="warning",
+            error=str(exc)[:240],
+        )
+        return {"accepted": False, "reason": "error", "error": str(exc)[:240]}
 
 
 def _run_database_maintenance() -> dict:
@@ -261,6 +283,7 @@ def main() -> int:
     local_preview_active = False
     last_account_cookie_poll = 0.0
     last_cloakbrowser_idle_check = 0.0
+    last_auto_missing_3mf_retry = 0.0
     archive_model_index_rebuild_thread: threading.Thread | None = None
     next_poll_seconds = WORKER_POLL_SECONDS
     last_memory_maintenance = 0.0
@@ -310,6 +333,11 @@ def main() -> int:
                         level="warning",
                         error=str(exc),
                     )
+            if now - last_auto_missing_3mf_retry >= AUTO_MISSING_3MF_RETRY_INTERVAL_SECONDS:
+                last_auto_missing_3mf_retry = now
+                retry_result = run_worker_idle_missing_3mf_retry(archive_manager, archive_queue)
+                if retry_result.get("accepted"):
+                    archive_queue = task_store.load_archive_queue_compact(item_limit=1)
             marker_mtime = local_preview_queue_marker_mtime()
             marker_changed = bool(marker_mtime and marker_mtime != last_local_preview_marker_mtime)
             quick_interval = max(int(LOCAL_PREVIEW_POLL_SECONDS or 20), 5)

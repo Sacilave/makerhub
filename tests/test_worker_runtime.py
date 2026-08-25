@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app import worker
 
@@ -82,3 +82,27 @@ def test_worker_memory_maintenance_recycles_after_idle_cache_release():
     }
     release_catalog.assert_called_once_with()
     release_process.assert_called_once_with()
+
+
+def test_worker_schedules_missing_3mf_retry_only_when_archive_queue_is_idle():
+    manager = Mock()
+    manager.retry_idle_missing_3mf.return_value = {
+        "accepted": True,
+        "accepted_count": 2,
+        "queued_count": 0,
+    }
+
+    busy_result = worker.run_worker_idle_missing_3mf_retry(
+        manager,
+        {"queued_count": 1, "running_count": 0, "queued": [{"status": "queued"}]},
+        limit=4,
+    )
+    idle_result = worker.run_worker_idle_missing_3mf_retry(
+        manager,
+        {"queued_count": 0, "running_count": 0, "queued": []},
+        limit=4,
+    )
+
+    assert busy_result == {"accepted": False, "reason": "archive_queue_busy"}
+    assert idle_result["accepted_count"] == 2
+    manager.retry_idle_missing_3mf.assert_called_once_with(limit=4)

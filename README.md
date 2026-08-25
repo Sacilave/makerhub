@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.10`
+> 当前版本：`v0.16.11`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-25 · v0.16.11
+
+- 归档队列空闲且账号 gate 正常时自动分批重试历史缺失 3MF，不再需要反复手动点击“全部重试”。
+- 自动补档按模型去重并沿用并发、每日上限与验证保护；失败后进入 15 分钟冷却，避免无效重复请求。
+
 ### 2026-08-25 · v0.16.10
 
 - 源端刷新批次之间改为 1 小时冷却，避免剩余模型连续追赶时让 Worker 和 CloakBrowser 长时间满负载运行。
@@ -363,13 +368,13 @@ npm --prefix frontend run build
 - 大型 3MF 元数据改为受限流式解析，不再把完整模型网格 XML 一次性解压进 Worker 内存。
 - 文件名已精确匹配时跳过内部解析；源端刷新与本地整理共用同一安全路径，降低内存和 CPU 峰值。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-24 · v0.16.8
 
 - 高频 MakerWorld 抓取优先直连已关联 profile 的 CDP，失败时才检查并自动启动 profile，避免 Manager 慢查询把页面抓取拖到数分钟。
 - 同平台并发任务只同步一次浏览器登录态；CloakBrowser 临时故障会有限退避重试，不再直接进入最近失败或误报需要重新登录。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-23 · v0.16.7
 

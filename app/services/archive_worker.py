@@ -96,6 +96,28 @@ CLOAKBROWSER_TASK_BLOCKING_STATUSES = {
     "not_configured",
 }
 THREE_MF_RECOVERY_PROBE_BATCH_SIZE = 1
+AUTO_MISSING_3MF_RETRY_COOLDOWN_SECONDS = 15 * 60
+AUTO_MISSING_3MF_RETRY_STATUSES = {
+    "missing",
+    "failed",
+    "http_error",
+    "network_error",
+    "verification_required",
+    "cloudflare",
+    "auth_required",
+    "cookie_invalid",
+    "download_limited",
+    "pending_download",
+    "queued",
+    "running",
+    "retrying",
+}
+AUTO_MISSING_3MF_VERIFICATION_STATUSES = {
+    "verification_required",
+    "cloudflare",
+    "auth_required",
+    "cookie_invalid",
+}
 CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE = (
     "指纹浏览器登录态已同步，但 MakerWorld 仍拒绝 3MF 下载；请在官网完成验证后再继续归档。"
 )
@@ -240,6 +262,62 @@ def _queue_item_missing_3mf_retry_key(item: dict) -> str:
     if not meta.get("missing_3mf_retry"):
         return ""
     return _queue_missing_3mf_retry_key(item.get("url") or item.get("title") or "", meta)
+
+
+def _auto_missing_3mf_retry_buckets(
+    items: list[dict[str, Any]],
+    *,
+    now: datetime,
+) -> tuple[dict[str, list[dict[str, Any]]], int]:
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for raw_item in items:
+        if not isinstance(raw_item, dict):
+            continue
+        status = str(raw_item.get("status") or "missing").strip().lower()
+        if status not in AUTO_MISSING_3MF_RETRY_STATUSES:
+            continue
+        model_url = normalize_source_url(str(raw_item.get("model_url") or ""))
+        model_id = str(raw_item.get("model_id") or extract_model_id(model_url) or "").strip()
+        source = normalize_makerworld_source(raw_item.get("source"), model_url)
+        if source not in {"cn", "global"} or (not model_id and not model_url):
+            continue
+        key = (source, model_id or model_url)
+        updated_at = parse_datetime(str(raw_item.get("updated_at") or ""))
+        updated_timestamp = updated_at.timestamp() if updated_at is not None else 0.0
+        current = grouped.get(key)
+        if current is None:
+            grouped[key] = {
+                "model_url": model_url,
+                "model_id": model_id,
+                "source": source,
+                "title": str(raw_item.get("title") or ""),
+                "instance_id": "",
+                "_updated_timestamp": updated_timestamp,
+                "verification_probe": status in AUTO_MISSING_3MF_VERIFICATION_STATUSES,
+            }
+            continue
+        current["_updated_timestamp"] = max(float(current.get("_updated_timestamp") or 0.0), updated_timestamp)
+        current["verification_probe"] = bool(current.get("verification_probe")) or (
+            status in AUTO_MISSING_3MF_VERIFICATION_STATUSES
+        )
+
+    buckets = {"cn": [], "global": []}
+    cooldown_count = 0
+    now_timestamp = now.timestamp()
+    for candidate in grouped.values():
+        updated_timestamp = float(candidate.get("_updated_timestamp") or 0.0)
+        if updated_timestamp and now_timestamp - updated_timestamp < AUTO_MISSING_3MF_RETRY_COOLDOWN_SECONDS:
+            cooldown_count += 1
+            continue
+        buckets[candidate["source"]].append(candidate)
+    for bucket in buckets.values():
+        bucket.sort(
+            key=lambda item: (
+                float(item.get("_updated_timestamp") or 0.0),
+                str(item.get("model_id") or item.get("model_url") or ""),
+            )
+        )
+    return buckets, cooldown_count
 
 
 def _is_batch_parent_waiting_for_children(item: dict[str, Any]) -> bool:
@@ -3063,6 +3141,103 @@ class ArchiveTaskManager:
                 if items
                 else "当前没有缺失 3MF 任务。"
             ),
+        }
+
+    def retry_idle_missing_3mf(
+        self,
+        *,
+        limit: Optional[int] = None,
+        now: Optional[datetime] = None,
+    ) -> dict:
+        queue_loader = getattr(self.task_store, "load_archive_queue_compact", None)
+        queue = queue_loader(item_limit=1) if callable(queue_loader) else self.task_store.load_archive_queue()
+        if int(queue.get("queued_count") or 0) > 0 or int(queue.get("running_count") or 0) > 0:
+            return {"accepted": False, "reason": "archive_queue_busy"}
+
+        if limit is None:
+            try:
+                config = self.store.load()
+            except Exception:
+                config = None
+            batch_limit = _archive_worker_concurrency(config)
+        else:
+            batch_limit = max(0, min(int(limit), 4))
+        if batch_limit <= 0:
+            return {"accepted": False, "reason": "disabled"}
+
+        missing_items = list(self.task_store.load_missing_3mf().get("items") or [])
+        buckets, cooldown_count = _auto_missing_3mf_retry_buckets(
+            missing_items,
+            now=now or china_now(),
+        )
+        attempted = 0
+        accepted = 0
+        queued = 0
+        failed = 0
+        gated = 0
+        verification_platforms: set[str] = set()
+
+        while attempted < batch_limit and any(buckets.values()):
+            selected_this_round = False
+            for platform in ("cn", "global"):
+                bucket = buckets[platform]
+                while bucket:
+                    candidate = bucket.pop(0)
+                    candidate.pop("_updated_timestamp", None)
+                    if candidate.get("verification_probe") and platform in verification_platforms:
+                        continue
+                    gate = three_mf_gate_for_url(
+                        str(candidate.get("model_url") or ""),
+                        {"source": platform},
+                    )
+                    if not gate.get("open"):
+                        gated += 1
+                        continue
+                    if candidate.get("verification_probe"):
+                        verification_platforms.add(platform)
+                    attempted += 1
+                    selected_this_round = True
+                    result = self.retry_missing_3mf(
+                        model_url=str(candidate.get("model_url") or ""),
+                        model_id=str(candidate.get("model_id") or ""),
+                        source=platform,
+                        title=str(candidate.get("title") or ""),
+                        instance_id="",
+                    )
+                    message = str(result.get("message") or "")
+                    if result.get("accepted"):
+                        accepted += 1
+                    elif result.get("queued") or result.get("merged") or "已经在归档队列中" in message:
+                        queued += 1
+                    else:
+                        failed += 1
+                    break
+                if attempted >= batch_limit:
+                    break
+            if not selected_this_round:
+                break
+
+        if attempted:
+            append_business_log(
+                "missing_3mf",
+                "idle_retry_scheduled",
+                "归档队列空闲，已自动安排缺失 3MF 重试。",
+                attempted_count=attempted,
+                accepted_count=accepted,
+                queued_count=queued,
+                failed_count=failed,
+                gated_count=gated,
+                cooldown_count=cooldown_count,
+            )
+        return {
+            "accepted": accepted > 0 or queued > 0,
+            "reason": "scheduled" if attempted else "no_eligible_items",
+            "attempted_count": attempted,
+            "accepted_count": accepted,
+            "queued_count": queued,
+            "failed_count": failed,
+            "gated_count": gated,
+            "cooldown_count": cooldown_count,
         }
 
     def _preview_batch(self, clean_url: str, mode: str) -> dict:

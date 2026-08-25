@@ -674,6 +674,109 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(result["queued_count"], 1)
         self.assertEqual(result["failed_count"], 0)
 
+    def test_idle_missing_retry_queues_small_fair_batch_and_respects_gate_and_cooldown(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.task_store = SimpleNamespace(
+            load_archive_queue_compact=lambda **_kwargs: {
+                "queued_count": 0,
+                "running_count": 0,
+                "queued": [],
+                "active": [],
+            },
+            load_missing_3mf=lambda: {
+                "items": [
+                    {
+                        "model_id": "global-old",
+                        "model_url": "https://makerworld.com/zh/models/global-old",
+                        "source": "global",
+                        "status": "missing",
+                        "updated_at": "2026-08-25T10:00:00+08:00",
+                    },
+                    {
+                        "model_id": "global-old",
+                        "model_url": "https://makerworld.com/zh/models/global-old?from=profile",
+                        "instance_id": "profile-2",
+                        "source": "global",
+                        "status": "missing",
+                        "updated_at": "2026-08-25T10:00:00+08:00",
+                    },
+                    {
+                        "model_id": "cn-old",
+                        "model_url": "https://makerworld.com.cn/zh/models/cn-old",
+                        "source": "cn",
+                        "status": "verification_required",
+                        "updated_at": "2026-08-25T10:01:00+08:00",
+                    },
+                    {
+                        "model_id": "global-recent",
+                        "model_url": "https://makerworld.com/zh/models/global-recent",
+                        "source": "global",
+                        "status": "missing",
+                        "updated_at": "2026-08-25T11:55:00+08:00",
+                    },
+                    {
+                        "model_id": "cn-gated",
+                        "model_url": "https://makerworld.com.cn/zh/models/cn-gated",
+                        "source": "cn",
+                        "status": "missing",
+                        "updated_at": "2026-08-25T09:00:00+08:00",
+                    },
+                    {
+                        "model_id": "cn-stale-queued",
+                        "model_url": "https://makerworld.com.cn/zh/models/cn-stale-queued",
+                        "source": "cn",
+                        "status": "queued",
+                        "updated_at": "2026-08-25T08:00:00+08:00",
+                    },
+                ]
+            },
+        )
+        retried = []
+        manager.retry_missing_3mf = lambda **payload: retried.append(payload) or {
+            "accepted": True,
+            "message": "queued",
+        }
+
+        def gate_for_url(url, _meta=None):
+            if "cn-gated" in url:
+                return {"open": False, "state": "daily_limit", "platform": "cn", "message": "limited"}
+            return {"open": True, "state": "open", "platform": "cn" if ".com.cn" in url else "global"}
+
+        with patch.object(archive_worker_module, "three_mf_gate_for_url", side_effect=gate_for_url), \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_idle_missing_3mf(
+                limit=4,
+                now=datetime.fromisoformat("2026-08-25T12:00:00+08:00"),
+            )
+
+        self.assertEqual(result["accepted_count"], 3)
+        self.assertEqual(result["cooldown_count"], 1)
+        self.assertEqual(result["gated_count"], 1)
+        self.assertEqual(
+            [item["model_id"] for item in retried],
+            ["cn-stale-queued", "global-old", "cn-old"],
+        )
+        self.assertTrue(all(item["instance_id"] == "" for item in retried))
+
+    def test_idle_missing_retry_does_not_enqueue_while_archive_queue_has_work(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.task_store = SimpleNamespace(
+            load_archive_queue_compact=lambda **_kwargs: {
+                "queued_count": 1,
+                "running_count": 0,
+                "queued": [{"status": "queued"}],
+                "active": [],
+            },
+            load_missing_3mf=Mock(),
+        )
+        manager.retry_missing_3mf = Mock()
+
+        result = manager.retry_idle_missing_3mf(limit=4)
+
+        self.assertEqual(result["reason"], "archive_queue_busy")
+        manager.task_store.load_missing_3mf.assert_not_called()
+        manager.retry_missing_3mf.assert_not_called()
+
     def test_retry_verification_missing_counts_merged_retry_as_queued(self):
         manager = ArchiveTaskManager()
         manager.task_store = SimpleNamespace(
