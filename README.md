@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.9`
+> 当前版本：`v0.16.10`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-25 · v0.16.10
+
+- 源端刷新批次之间改为 1 小时冷却，避免剩余模型连续追赶时让 Worker 和 CloakBrowser 长时间满负载运行。
+- 源端刷新选出当前批次后立即释放整库模型快照；本地整理器空闲时也清理 catalog 缓存，降低长时间运行后的内存占用。
+
 ### 2026-08-24 · v0.16.9
 
 - 大型 3MF 元数据改为受限流式解析，不再把完整模型网格 XML 一次性解压进 Worker 内存。
@@ -363,13 +368,13 @@ npm --prefix frontend run build
 - 高频 MakerWorld 抓取优先直连已关联 profile 的 CDP，失败时才检查并自动启动 profile，避免 Manager 慢查询把页面抓取拖到数分钟。
 - 同平台并发任务只同步一次浏览器登录态；CloakBrowser 临时故障会有限退避重试，不再直接进入最近失败或误报需要重新登录。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-23 · v0.16.7
 
 - 修复新版浏览器确认提示未被底层恢复逻辑识别的问题；gate 开放后会真正放行 1 个 3MF 探测任务。
 - 人工暂停和每日上限任务仍保持暂停，不会批量恢复或额外消耗下载次数。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-23 · v0.16.6
 

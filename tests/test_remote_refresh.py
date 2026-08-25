@@ -176,6 +176,41 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(remote_refresh._remote_refresh_model_workers(config), 3)
         self.assertEqual(remote_refresh._remote_refresh_model_workers(high_config), 4)
 
+    def test_remote_refresh_batch_cooldown_allows_idle_resource_cleanup(self):
+        original_now = remote_refresh._now
+        remote_refresh._now = lambda: datetime.fromisoformat("2026-05-19T12:00:00+08:00")
+        try:
+            next_run = remote_refresh._next_run_after_batch("0 0 * * *", remaining_total=1)
+        finally:
+            remote_refresh._now = original_now
+
+        self.assertEqual(next_run, "2026-05-19T13:00:00+08:00")
+
+    def test_pick_candidates_releases_full_catalog_cache_after_limiting(self):
+        config = self.store.load()
+        config.cookies = [SimpleNamespace(platform="cn", cookie="token=demo")]
+        self.manager.store.load = lambda: config
+        self.manager.task_store.load_model_flags = lambda: {"deleted": []}
+        models = [
+            {
+                "model_dir": f"MW_{index}",
+                "source": "cn",
+                "origin_url": f"https://makerworld.com.cn/zh/models/{index}",
+                "collect_ts": index,
+            }
+            for index in range(3)
+        ]
+
+        with patch.object(remote_refresh, "get_archive_snapshot", return_value={"models": models}), \
+                patch.object(remote_refresh, "release_catalog_memory") as release_catalog, \
+                patch.object(remote_refresh, "release_process_memory") as release_process:
+            candidates, stats = self.manager._pick_candidates()
+
+        self.assertEqual([item["model_dir"] for item in candidates], ["MW_0", "MW_1", "MW_2"])
+        self.assertEqual(stats["selected_total"], 3)
+        release_catalog.assert_called_once_with()
+        release_process.assert_called_once_with()
+
     def test_remote_refresh_batch_buffer_writes_reads_and_deletes_records(self):
         buffer = remote_refresh._RemoteRefreshBatchBuffer(
             batch_id="test-batch",

@@ -332,7 +332,7 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
         self.assertEqual(state["last_batch_total"], 2)
         self.assertEqual(state["last_eligible_total"], 5)
         self.assertEqual(state["last_remaining_total"], 3)
-        self.assertEqual(state["next_run_at"], "2026-06-12T10:01:00+08:00")
+        self.assertEqual(state["next_run_at"], "2026-06-12T11:00:00+08:00")
         self.assertEqual(source_runs["last_completed_run"]["candidate_total"], 2)
 
     def test_resume_active_run_updates_source_refresh_run_projection(self):

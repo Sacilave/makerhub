@@ -30,10 +30,12 @@ from app.services.catalog import (
     get_archive_snapshot,
     invalidate_archive_snapshot,
     invalidate_model_detail_cache,
+    release_catalog_memory,
     upsert_archive_snapshot_model,
 )
 from app.services.legacy_archiver import COMMENT_SCHEMA_VERSION, normalize_threaded_comments
 from app.services.process_jobs import run_source_deleted_check_job
+from app.services.process_memory import release_process_memory
 from app.services.resource_limiter import resource_snapshot, resource_slot
 from app.services.source_refresh_jobs import run_source_refresh_model_job
 from app.services.remote_refresh_summary import (
@@ -53,7 +55,9 @@ from app.services.three_mf import describe_three_mf_failure, normalize_makerworl
 REMOTE_REFRESH_LOG_PATH = LOGS_DIR / "remote_refresh.log"
 REMOTE_REFRESH_BATCH_DIR = STATE_DIR / "remote_refresh_batches"
 REMOTE_REFRESH_BATCH_MANIFEST_VERSION = 1
-REMOTE_REFRESH_BATCH_RETRY_SECONDS = 60
+# 批次之间留出足够时间，让 Worker 内存维护和浏览器空闲清理生效；
+# 过短的重试间隔会让指纹浏览器连续运行数小时。
+REMOTE_REFRESH_BATCH_RETRY_SECONDS = 60 * 60
 REMOTE_REFRESH_BATCH_BUFFER_KEEP = 5
 REMOTE_REFRESH_BATCH_BUFFER_MAX_AGE_SECONDS = 3 * 24 * 60 * 60
 REMOTE_REFRESH_POLL_SECONDS = 20
@@ -1960,6 +1964,17 @@ class RemoteRefreshManager:
 
     def _pick_candidates(self) -> tuple[list[dict[str, Any]], dict[str, int]]:
         snapshot = get_archive_snapshot()
+        candidates = self._pick_candidates_from_snapshot(snapshot)
+        # 当前批次会持有自己的模型字典；网络任务运行期间不再保留整库快照。
+        snapshot = None
+        release_catalog_memory()
+        release_process_memory()
+        return candidates
+
+    def _pick_candidates_from_snapshot(
+        self,
+        snapshot: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         models = list(snapshot.get("models") or [])
         deleted_model_dirs = set(self.task_store.load_model_flags().get("deleted") or [])
         eligible: list[dict[str, Any]] = []

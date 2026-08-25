@@ -71,13 +71,15 @@ class LocalOrganizerTest(unittest.TestCase):
         service._library_index_cache_root = "/archive"
         service._library_index_cache_at = 123.0
 
-        with patch.object(local_organizer, "release_process_memory") as release_memory:
+        with patch.object(local_organizer, "release_catalog_memory") as release_catalog, \
+                patch.object(local_organizer, "release_process_memory") as release_memory:
             released = service.release_idle_memory(force=True)
 
         self.assertTrue(released)
         self.assertIsNone(service._library_index_cache)
         self.assertEqual(service._library_index_cache_root, "")
         self.assertEqual(service._library_index_cache_at, 0.0)
+        release_catalog.assert_called_once_with()
         release_memory.assert_called_once_with()
 
     def test_release_idle_memory_keeps_cache_while_worker_is_running(self):
@@ -88,11 +90,13 @@ class LocalOrganizerTest(unittest.TestCase):
         service._library_index_cache = {"models": {"model-1": {}}, "configs": {}}
         service._worker_process = SimpleNamespace(poll=lambda: None)
 
-        with patch.object(local_organizer, "release_process_memory") as release_memory:
+        with patch.object(local_organizer, "release_catalog_memory") as release_catalog, \
+                patch.object(local_organizer, "release_process_memory") as release_memory:
             released = service.release_idle_memory(force=True)
 
         self.assertFalse(released)
         self.assertIsNotNone(service._library_index_cache)
+        release_catalog.assert_not_called()
         release_memory.assert_not_called()
 
     def test_sync_candidate_queue_moves_terminal_duplicate_source(self):

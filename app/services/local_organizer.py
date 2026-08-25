@@ -16,7 +16,12 @@ from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso, parse_datetime
 from app.services.business_logs import append_business_log, append_structured_log
-from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
+from app.services.catalog import (
+    get_archive_snapshot,
+    invalidate_archive_snapshot,
+    release_catalog_memory,
+    upsert_archive_snapshot_model,
+)
 from app.services.legacy_archiver import sanitize_filename
 from app.services.local_import_upload import (
     LOCAL_IMPORT_UPLOAD_SUBDIR,
@@ -329,6 +334,7 @@ class LocalOrganizerService:
         self._library_index_cache = None
         self._library_index_cache_root = ""
         self._library_index_cache_at = 0.0
+        release_catalog_memory()
         release_process_memory()
         return True
 
