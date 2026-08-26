@@ -49,7 +49,12 @@ from app.services.remote_refresh_summary import (
 )
 from app.services.task_state import TaskStateStore
 from app.services.task_runtime import is_lease_expired, normalize_runtime_status
-from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
+from app.services.three_mf import (
+    describe_three_mf_failure,
+    is_three_mf_download_prohibited,
+    normalize_makerworld_source,
+    resolve_model_instance_files,
+)
 
 
 REMOTE_REFRESH_LOG_PATH = LOGS_DIR / "remote_refresh.log"
@@ -631,6 +636,8 @@ def _build_missing_3mf_items(
     meta: dict[str, Any],
     resolved_files: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
+    if is_three_mf_download_prohibited(meta):
+        return []
     model_root = meta_path.parent
     model_id = str(meta.get("id") or "").strip()
     model_url = normalize_source_url(str(meta.get("url") or ""))
@@ -645,6 +652,8 @@ def _build_missing_3mf_items(
     raw_instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
     for index, instance in enumerate(raw_instances):
         if not isinstance(instance, dict):
+            continue
+        if is_three_mf_download_prohibited(instance):
             continue
         resolved_match = resolved_matches.get(index) if isinstance(resolved_matches, dict) else None
         resolved_path = resolved_match.get("path") if isinstance(resolved_match, dict) else None

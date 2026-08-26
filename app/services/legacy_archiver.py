@@ -37,7 +37,9 @@ from app.services.makerworld_browser_client import (
 from app.services.profile_rating import normalize_profile_rating
 from app.services.resource_limiter import resource_slot
 from app.services.three_mf import (
+    THREE_MF_NOT_DOWNLOADABLE_STATE,
     describe_three_mf_failure,
+    is_three_mf_download_prohibited,
     is_three_mf_daily_download_limited,
     merge_three_mf_failure,
     normalize_makerworld_source,
@@ -280,6 +282,8 @@ def _missing_3mf_instances(instances: list[dict], work_dir: Path, *, require_loc
     missing = []
     for inst in instances:
         if not isinstance(inst, dict):
+            continue
+        if is_three_mf_download_prohibited(inst):
             continue
         if not inst.get("downloadUrl") or str(inst.get("downloadState") or "").strip():
             missing.append(inst)
@@ -5249,6 +5253,8 @@ def build_meta(
         "slug": design.get("slug") or "",
         "title": design.get("title") or "",
         "titleTranslated": design.get("titleTranslated") or "",
+        "license": design.get("license") or "",
+        "threeMfDownloadAllowed": not is_three_mf_download_prohibited(design),
         "coverUrl": cover_url,
         "tags": design.get("tags") or [],
         "tagsOriginal": design.get("tagsOriginal") or [],
@@ -6819,6 +6825,7 @@ def archive_model(
     planned_instances_dir = work_dir / "instances"
     existing_instance_index = _build_existing_instance_index(existing_meta.get("instances"))
     extracted_instances = extract_instances(design)
+    three_mf_download_prohibited = is_three_mf_download_prohibited(design)
     target_instance_ids = {
         str(item or "").strip()
         for item in (instance_ids or [])
@@ -6892,7 +6899,15 @@ def archive_model(
         )
         existing_file_name = str(existing_inst.get("fileName") or "").strip()
         existing_file_available = bool(existing_file_name and (planned_instances_dir / existing_file_name).exists())
-        if fake_three_mf_downloads_enabled() and not three_mf_fetch_paused:
+        if three_mf_download_prohibited:
+            if not existing_file_available:
+                name3mf = ""
+                url3mf = ""
+            failure_info = {
+                "state": THREE_MF_NOT_DOWNLOADABLE_STATE,
+                "message": describe_three_mf_failure(THREE_MF_NOT_DOWNLOADABLE_STATE),
+            }
+        elif fake_three_mf_downloads_enabled() and not three_mf_fetch_paused:
             name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
                 sess,
                 inst_id,

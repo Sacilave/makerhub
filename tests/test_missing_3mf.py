@@ -118,6 +118,30 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["instance_id"], "profile-1")
 
+    def test_remote_refresh_missing_builder_skips_platform_print_only_instances(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            meta_path = Path(temp_dir) / "model" / "meta.json"
+            meta_path.parent.mkdir(parents=True)
+            meta = {
+                "id": "2618766",
+                "url": "https://makerworld.com.cn/zh/models/2618766",
+                "title": "Print only demo",
+                "license": "Standard Digital File License - Platform Print Only (SDFL-PPO)",
+                "threeMfDownloadAllowed": False,
+                "instances": [
+                    {
+                        "id": "3020206",
+                        "title": "0.2mm profile",
+                        "downloadState": "missing",
+                        "downloadMessage": "未获取到 3MF 下载地址。",
+                    },
+                ],
+            }
+
+            items = _build_missing_3mf_items(meta_path, meta, resolved_files={"matches": {}})
+
+        self.assertEqual(items, [])
+
     def test_normalize_infers_verification_status_from_message(self):
         payload = {
             "items": [

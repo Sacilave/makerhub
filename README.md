@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.13`
+> 当前版本：`v0.16.14`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-26 · v0.16.14
+
+- 识别 MakerWorld `SDFL-PPO` 仅限平台打印许可，不再把官方未提供下载入口的打印配置误算为缺失 3MF。
+- 这类配置不会占用下载额度或 CloakBrowser 授权队列，待补任务会继续处理后续可下载模型。
+
 ### 2026-08-26 · v0.16.13
 
 - 缺失 3MF 自动补档按国内站、国际站各保留 1 个浏览器任务，避免并发任务争抢同一个 profile。
@@ -363,13 +368,13 @@ npm --prefix frontend run build
 - 修复模型元数据页偶发 Cloudflare 页面被错误升级为整个账号需要验证的问题；只有实际 3MF 授权结果才能关闭下载 gate。
 - CloakBrowser 隐藏抓取仅加载主文档，并为 CDP 正文启用受控持久缓存，避免 `Network.getResponseBody` 因 inspector cache 驱逐而反复失败。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-25 · v0.16.11
 
 - 归档队列空闲且账号 gate 正常时自动分批重试历史缺失 3MF，不再需要反复手动点击“全部重试”。
 - 自动补档按模型去重并沿用并发、每日上限与验证保护；失败后进入 15 分钟冷却，避免无效重复请求。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-25 · v0.16.10
 

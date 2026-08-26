@@ -1,3 +1,4 @@
+import json
 import unittest
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -18,6 +19,55 @@ class _ApiSession:
 
 
 class LegacyArchiverValidationTest(unittest.TestCase):
+    def test_archive_model_skips_3mf_for_platform_print_only_license(self):
+        design = {
+            "id": 2618766,
+            "title": "Print only demo",
+            "license": "Standard Digital File License - Platform Print Only (SDFL-PPO)",
+            "instances": [
+                {
+                    "id": 3020206,
+                    "title": "0.2mm profile",
+                    "appCanPrint": True,
+                }
+            ],
+        }
+        html = (
+            '<html><script id="__NEXT_DATA__" type="application/json">'
+            + json.dumps({"props": {"pageProps": {"design": design}}})
+            + "</script></html>"
+        )
+
+        with TemporaryDirectory() as temp_dir, patch.object(
+            legacy_archiver,
+            "fetch_html_with_browser",
+            return_value=html,
+        ), patch.object(
+            legacy_archiver,
+            "reserve_three_mf_download_slot",
+            side_effect=AssertionError("print-only model must not reserve download quota"),
+        ), patch.object(
+            legacy_archiver,
+            "fetch_instance_3mf",
+            side_effect=AssertionError("print-only model must not request 3MF authorization"),
+        ):
+            result = legacy_archiver.archive_model(
+                "https://makerworld.com.cn/zh/models/2618766",
+                "",
+                Path(temp_dir) / "archive",
+                Path(temp_dir) / "logs",
+                download_assets=False,
+                collect_comments_data=False,
+                rebuild_archive=False,
+            )
+
+            meta = json.loads((Path(result["work_dir"]) / "meta.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["missing_3mf"], [])
+        self.assertEqual(meta["license"], design["license"])
+        self.assertFalse(meta["threeMfDownloadAllowed"])
+        self.assertEqual(meta["instances"][0]["downloadState"], "not_downloadable")
+
     def test_design_payload_rejects_empty_api_shell(self):
         error = legacy_archiver._design_payload_error(
             {"id": 0, "title": "", "coverUrl": "", "instances": []},

@@ -23,11 +23,13 @@ _THREE_MF_FAILURE_PRIORITY = {
     "cloudflare": 55,
     "cookie_invalid": 50,
     "auth_required": 50,
+    "not_downloadable": 40,
     "http_error": 30,
     "not_found": 20,
     "missing": 10,
     "available": 0,
 }
+THREE_MF_NOT_DOWNLOADABLE_STATE = "not_downloadable"
 _THREE_MF_TRANSIENT_STATES = {
     "queued",
     "running",
@@ -182,6 +184,31 @@ def normalize_makerworld_source(source: Any = "", url: Any = "") -> str:
     return ""
 
 
+def is_three_mf_download_prohibited(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("threeMfDownloadAllowed") is False:
+        return True
+    if str(payload.get("downloadState") or "").strip().lower() == THREE_MF_NOT_DOWNLOADABLE_STATE:
+        return True
+
+    license_info = payload.get("licenseDescriptionInfo")
+    license_description = license_info if isinstance(license_info, str) else ""
+    if isinstance(license_info, dict):
+        license_description = " ".join(
+            str(license_info.get(key) or "")
+            for key in ("title", "content", "description")
+        )
+    license_text = " ".join(
+        (
+            str(payload.get("license") or ""),
+            str(payload.get("licenseName") or ""),
+            license_description,
+        )
+    ).lower()
+    return "sdfl-ppo" in license_text or "platform print only" in license_text
+
+
 def _default_three_mf_failure_message(state: str, source: str) -> str:
     if state == "download_limited":
         if source == "cn":
@@ -201,6 +228,8 @@ def _default_three_mf_failure_message(state: str, source: str) -> str:
         return "下载 3MF 需要有效登录态，请检查 Cookie / token 是否过期。"
     if state == "cookie_invalid":
         return _default_three_mf_failure_message("auth_required", source)
+    if state == THREE_MF_NOT_DOWNLOADABLE_STATE:
+        return "该模型采用仅限平台打印的许可，不提供 3MF 文件下载。"
     if state == "not_found":
         return "源端没有返回该打印配置的 3MF 下载地址。"
     if state == "http_error":
