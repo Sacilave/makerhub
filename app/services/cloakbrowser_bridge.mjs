@@ -515,6 +515,34 @@ function authorizationWaitError(error) {
     : "3MF authorization response unavailable");
 }
 
+export function threeMfDownloadActionScore(candidate = {}) {
+  if (!candidate.visible || candidate.disabled) return 0;
+  const ownText = [
+    candidate.text,
+    candidate.ariaLabel,
+    candidate.title,
+    candidate.testId,
+    candidate.tracking,
+  ].map((value) => String(value || "")).join(" ").replace(/\s+/g, " ").trim();
+  const signalText = [ownText, candidate.className, candidate.href]
+    .map((value) => String(value || ""))
+    .join(" ");
+  const contextText = String(candidate.contextText || "").replace(/\s+/g, " ").trim();
+  const hasDownloadSignal = /(?:下载|download)/i.test(signalText);
+  const hasModelSignal = /(?:3\s*mf|打印配置|print(?:ing)?\s*profile|模型|model)/i.test(signalText);
+  const contextHasThreeMf = /3\s*mf/i.test(contextText);
+  const primarySignal = /(?:primary|download|3mf)/i.test(
+    [candidate.className, candidate.testId, candidate.tracking].join(" "),
+  );
+  if (hasDownloadSignal && hasModelSignal) return 100;
+  if (hasDownloadSignal && contextHasThreeMf) return 80;
+  if (
+    primarySignal
+    && /^(?:下载|download)(?:\s*(?:文件|file|模型|model|打印配置|print(?:ing)?\s*profile))?$/i.test(ownText)
+  ) return 70;
+  return 0;
+}
+
 export async function coordinateThreeMfAuthorization(page, options = {}) {
   const authorizationTimeout = Math.max(Number(options.authorizationTimeout || 90000), 1);
   const navigationTimeout = Math.max(Number(options.navigationTimeout || 30000), 1);
@@ -616,22 +644,63 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
 async function findThreeMfDownloadButton(page, timeoutMs) {
   const deadline = Date.now() + Math.max(Number(timeoutMs || 30000), 15000);
   while (Date.now() < deadline) {
-    // MakerWorld renders the primary 3MF action as a span, not a semantic button.
-    const handles = await page.$$("button, a, [role='button'], .primaryButton");
+    const handles = await page.$$(
+      "button, a, [role='button'], .primaryButton, [aria-label*='download' i], "
+      + "[title*='download' i], [data-testid*='download' i], [class*='download' i]",
+    );
+    let bestHandle = null;
+    let bestScore = 0;
     for (const handle of handles) {
-      const matches = await handle.evaluate((element) => {
-        const style = window.getComputedStyle(element);
-        const text = String(element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
-        return style.display !== "none"
-          && style.visibility !== "hidden"
-          && element.getBoundingClientRect().width > 0
-          && element.getBoundingClientRect().height > 0
-          && !element.hasAttribute("disabled")
-          && /(?:下载|download)\s*3mf/i.test(text);
-      });
-      if (matches) return handle;
-      await handle.dispose();
+      let candidate;
+      try {
+        candidate = await handle.evaluate((element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          const contextParts = [];
+          let current = element;
+          for (let depth = 0; current && depth < 4; depth += 1, current = current.parentElement) {
+            const value = String(current.innerText || current.textContent || "").replace(/\s+/g, " ").trim();
+            if (value) contextParts.push(value.slice(0, 512));
+          }
+          return {
+            visible: style.display !== "none"
+              && style.visibility !== "hidden"
+              && style.opacity !== "0"
+              && style.pointerEvents !== "none"
+              && rect.width > 0
+              && rect.height > 0,
+            disabled: element.hasAttribute("disabled")
+              || element.getAttribute("aria-disabled") === "true"
+              || /(?:^|\s)(?:disabled|is-disabled)(?:\s|$)/i.test(String(element.className || "")),
+            text: String(element.innerText || element.textContent || "").slice(0, 256),
+            ariaLabel: String(element.getAttribute("aria-label") || "").slice(0, 256),
+            title: String(element.getAttribute("title") || "").slice(0, 256),
+            testId: String(element.getAttribute("data-testid") || "").slice(0, 256),
+            tracking: String(
+              element.getAttribute("data-track")
+              || element.getAttribute("data-event")
+              || element.getAttribute("data-action")
+              || "",
+            ).slice(0, 256),
+            className: String(element.className || "").slice(0, 256),
+            href: String(element.getAttribute("href") || "").slice(0, 512),
+            contextText: contextParts.join(" ").slice(0, 1536),
+          };
+        });
+      } catch {
+        await handle.dispose().catch(() => undefined);
+        continue;
+      }
+      const score = threeMfDownloadActionScore(candidate);
+      if (score > bestScore) {
+        await bestHandle?.dispose().catch(() => undefined);
+        bestHandle = handle;
+        bestScore = score;
+      } else {
+        await handle.dispose().catch(() => undefined);
+      }
     }
+    if (bestHandle) return bestHandle;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error("model page did not expose an enabled 3MF download action");

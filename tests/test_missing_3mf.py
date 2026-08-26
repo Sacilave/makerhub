@@ -719,7 +719,7 @@ class Missing3mfTest(unittest.TestCase):
                         "model_url": "https://makerworld.com.cn/zh/models/cn-gated",
                         "source": "cn",
                         "status": "missing",
-                        "updated_at": "2026-08-25T09:00:00+08:00",
+                        "updated_at": "2026-08-25T07:00:00+08:00",
                     },
                     {
                         "model_id": "cn-stale-queued",
@@ -749,14 +749,56 @@ class Missing3mfTest(unittest.TestCase):
                 now=datetime.fromisoformat("2026-08-25T12:00:00+08:00"),
             )
 
-        self.assertEqual(result["accepted_count"], 3)
+        self.assertEqual(result["accepted_count"], 2)
         self.assertEqual(result["cooldown_count"], 1)
         self.assertEqual(result["gated_count"], 1)
         self.assertEqual(
             [item["model_id"] for item in retried],
-            ["cn-stale-queued", "global-old", "cn-old"],
+            ["cn-stale-queued", "global-old"],
         )
         self.assertTrue(all(item["instance_id"] == "" for item in retried))
+
+    def test_idle_missing_retry_schedules_at_most_one_model_per_platform(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.task_store = SimpleNamespace(
+            load_archive_queue_compact=lambda **_kwargs: {
+                "queued_count": 0,
+                "running_count": 0,
+                "queued": [],
+                "active": [],
+            },
+            load_missing_3mf=lambda: {
+                "items": [
+                    {
+                        "model_id": model_id,
+                        "model_url": f"https://makerworld.com.cn/zh/models/{model_id}",
+                        "source": "cn",
+                        "status": "http_error",
+                        "updated_at": "2026-08-25T10:00:00+08:00",
+                    }
+                    for model_id in ("cn-1", "cn-2", "cn-3")
+                ]
+            },
+        )
+        retried = []
+        manager.retry_missing_3mf = lambda **payload: retried.append(payload) or {
+            "accepted": True,
+            "message": "queued",
+        }
+
+        with patch.object(
+            archive_worker_module,
+            "three_mf_gate_for_url",
+            return_value={"open": True, "state": "open", "platform": "cn"},
+        ), patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_idle_missing_3mf(
+                limit=4,
+                now=datetime.fromisoformat("2026-08-25T12:00:00+08:00"),
+            )
+
+        self.assertEqual(result["attempted_count"], 1)
+        self.assertEqual(result["accepted_count"], 1)
+        self.assertEqual([item["model_id"] for item in retried], ["cn-1"])
 
     def test_idle_missing_retry_does_not_enqueue_while_archive_queue_has_work(self):
         manager = ArchiveTaskManager(background_enabled=False)

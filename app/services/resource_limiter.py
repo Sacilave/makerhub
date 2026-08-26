@@ -65,7 +65,7 @@ class _ResourceGate:
         self.total_wait_ms = 0.0
         self.max_wait_ms = 0.0
         self._next_ticket = 0
-        self._waiters: deque[int] = deque()
+        self._waiters: deque[tuple[int, int]] = deque()
         self._owners: dict[int, int] = {}
 
     def set_capacity(self, capacity: int) -> None:
@@ -82,9 +82,13 @@ class _ResourceGate:
         with self._condition:
             return self.capacity
 
-    def acquire(self) -> float:
+    def acquire(self, *, priority: int = 0) -> float:
         started_at = time.perf_counter()
         owner_id = threading.get_ident()
+        try:
+            clean_priority = int(priority)
+        except (TypeError, ValueError):
+            clean_priority = 0
         with self._condition:
             owner_depth = self._owners.get(owner_id, 0)
             if owner_depth > 0:
@@ -93,17 +97,21 @@ class _ResourceGate:
 
             ticket = self._next_ticket
             self._next_ticket += 1
-            self._waiters.append(ticket)
+            waiter = (clean_priority, ticket)
+            self._waiters.append(waiter)
             try:
-                while self.active >= self.capacity or self._waiters[0] != ticket:
+                while self.active >= self.capacity or max(
+                    self._waiters,
+                    key=lambda item: (item[0], -item[1]),
+                ) != waiter:
                     self._condition.wait(timeout=1)
-                self._waiters.popleft()
+                self._waiters.remove(waiter)
                 self.active += 1
                 self._owners[owner_id] = 1
                 self._condition.notify_all()
             except BaseException:
                 try:
-                    self._waiters.remove(ticket)
+                    self._waiters.remove(waiter)
                 except ValueError:
                     pass
                 self._condition.notify_all()
@@ -313,13 +321,14 @@ def resource_slot(
     name: str,
     *,
     detail: str = "",
+    priority: int = 0,
     log_wait: Optional[Callable[..., None]] = None,
     warn_after_ms: float = 250.0,
 ):
     gate = _gate_for(name)
     started_at = time.perf_counter()
     reentrant = gate.is_owned_by_current_thread()
-    gate.acquire()
+    gate.acquire(priority=priority)
     global_handle = None
     try:
         if not reentrant:

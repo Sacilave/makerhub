@@ -13,6 +13,7 @@ import {
 import {
   coordinateThreeMfAuthorization,
   readAuthorizationResponse,
+  threeMfDownloadActionScore,
 } from "../../../app/services/cloakbrowser_bridge.mjs";
 
 
@@ -74,6 +75,46 @@ function pngBuffer(width, height = 40, marker = 0) {
   buffer.writeUInt32BE(marker, 24);
   return buffer;
 }
+
+test("3MF download action scoring accepts localized and contextual primary actions", () => {
+  assert.equal(threeMfDownloadActionScore({
+    visible: true,
+    disabled: false,
+    text: "下载 3MF",
+  }), 100);
+  assert.equal(threeMfDownloadActionScore({
+    visible: true,
+    disabled: false,
+    text: "下载",
+    className: "primaryButton",
+    contextText: "主配置 0.2mm 层高 下载 3MF",
+  }), 80);
+  assert.equal(threeMfDownloadActionScore({
+    visible: true,
+    disabled: false,
+    ariaLabel: "Download printing profile",
+  }), 100);
+});
+
+test("3MF download action scoring rejects disabled and unrelated download actions", () => {
+  assert.equal(threeMfDownloadActionScore({
+    visible: true,
+    disabled: true,
+    text: "Download 3MF",
+  }), 0);
+  assert.equal(threeMfDownloadActionScore({
+    visible: true,
+    disabled: false,
+    text: "Download image",
+    className: "asset-download",
+    contextText: "Model gallery",
+  }), 0);
+  assert.equal(threeMfDownloadActionScore({
+    visible: false,
+    disabled: false,
+    text: "下载 3MF",
+  }), 0);
+});
 
 function fakeFrame({ one = () => null, many = () => [], label = "frame" } = {}) {
   return {

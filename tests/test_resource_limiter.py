@@ -455,6 +455,45 @@ class ResourceLimiterConfigTest(unittest.TestCase):
         self.assertFalse(second.is_alive())
         self.assertEqual(order, ["first", "second"])
 
+    def test_resource_gate_serves_higher_priority_waiter_first(self):
+        resource_limiter.RESOURCE_LIMITS["priority_test"] = 1
+        order = []
+        normal_started = threading.Event()
+        priority_started = threading.Event()
+
+        def wait_for_slot(label, started, priority):
+            started.set()
+            with resource_limiter.resource_slot("priority_test", priority=priority):
+                order.append(label)
+
+        with resource_limiter.resource_slot("priority_test"):
+            normal = threading.Thread(
+                target=wait_for_slot,
+                args=("normal", normal_started, 0),
+            )
+            urgent = threading.Thread(
+                target=wait_for_slot,
+                args=("urgent", priority_started, 100),
+            )
+            normal.start()
+            normal_started.wait(timeout=1)
+            urgent.start()
+            priority_started.wait(timeout=1)
+
+            deadline = time.monotonic() + 1
+            while (
+                resource_limiter.resource_snapshot()["priority_test"].get("waiting") != 2
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+
+        normal.join(timeout=1)
+        urgent.join(timeout=1)
+
+        self.assertFalse(normal.is_alive())
+        self.assertFalse(urgent.is_alive())
+        self.assertEqual(order, ["urgent", "normal"])
+
     def test_resource_gate_does_not_let_reacquisition_bypass_existing_waiter(self):
         resource_limiter.RESOURCE_LIMITS["shared_test"] = 1
         first_acquired = threading.Event()

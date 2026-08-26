@@ -3196,17 +3196,17 @@ class ArchiveTaskManager:
         queued = 0
         failed = 0
         gated = 0
-        verification_platforms: set[str] = set()
+        scheduled_platforms: set[str] = set()
 
         while attempted < batch_limit and any(buckets.values()):
             selected_this_round = False
             for platform in ("cn", "global"):
+                if platform in scheduled_platforms:
+                    continue
                 bucket = buckets[platform]
                 while bucket:
                     candidate = bucket.pop(0)
                     candidate.pop("_updated_timestamp", None)
-                    if candidate.get("verification_probe") and platform in verification_platforms:
-                        continue
                     gate = three_mf_gate_for_url(
                         str(candidate.get("model_url") or ""),
                         {"source": platform},
@@ -3214,8 +3214,7 @@ class ArchiveTaskManager:
                     if not gate.get("open"):
                         gated += 1
                         continue
-                    if candidate.get("verification_probe"):
-                        verification_platforms.add(platform)
+                    scheduled_platforms.add(platform)
                     attempted += 1
                     selected_this_round = True
                     result = self.retry_missing_3mf(

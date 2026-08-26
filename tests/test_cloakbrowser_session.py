@@ -259,6 +259,9 @@ class CloakBrowserSessionTest(unittest.TestCase):
         source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn("button, a, [role='button'], .primaryButton", source)
+        self.assertIn("threeMfDownloadActionScore(candidate)", source)
+        self.assertIn("candidate.contextText", source)
+        self.assertIn("candidate.ariaLabel", source)
 
     def test_bridge_click_continues_after_navigation_timeout(self):
         source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
@@ -1080,7 +1083,71 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(bridge_payload["authorization_timeout_ms"], 90000)
         self.assertFalse(bridge_payload["auto_verify_3mf"])
         self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 210)
-        resource_slot_mock.assert_called_once_with("cloakbrowser_platform_cn", detail="click")
+        resource_slot_mock.assert_called_once_with(
+            "cloakbrowser_platform_cn",
+            detail="click",
+            priority=100,
+        )
+
+    def test_browser_3mf_authorization_retries_one_transient_bridge_failure(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        bridge_result = {
+            "ok": True,
+            "status_code": 200,
+            "payload": {
+                "name": "part.3mf",
+                "url": "https://download.example.test/part.3mf",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir), create=True), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                patch.object(
+                    cloakbrowser_session,
+                    "_ensure_running_profile",
+                    return_value=(profile, profile, False),
+                ) as ensure_mock, \
+                patch.object(
+                    cloakbrowser_session,
+                    "_run_bridge",
+                    side_effect=[
+                        cloakbrowser_session.CloakBrowserBridgeError(
+                            "CDP endpoint returned HTTP 502"
+                        ),
+                        bridge_result,
+                    ],
+                ) as bridge_mock, \
+                patch.object(cloakbrowser_session.time, "sleep") as sleep_mock, \
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    },
+                    clear=True,
+                ):
+            result = cloakbrowser_session.browser_authorize_3mf_download(
+                "cn",
+                "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
+                profile_id="profile-cn",
+                model_url="https://makerworld.com.cn/zh/models/456",
+                instance_id="123",
+            )
+
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(bridge_mock.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["allow_recovery_restart"] for call in ensure_mock.call_args_list],
+            [False, True],
+        )
+        sleep_mock.assert_called_once_with(
+            cloakbrowser_session.AUTHORIZATION_TRANSIENT_RETRY_DELAY_SECONDS
+        )
 
     def test_browser_3mf_authorization_reads_auto_verify_flag_per_operation(self):
         profile = cloakbrowser_session.CloakBrowserProfile(

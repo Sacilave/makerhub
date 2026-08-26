@@ -31,6 +31,7 @@ DEFAULT_TIMEOUT_SECONDS = 30
 AUTHORIZATION_TIMEOUT_SECONDS = 90
 AUTO_VERIFY_TIMEOUT_SECONDS = 50
 AUTHORIZATION_BRIDGE_CLEANUP_MARGIN_SECONDS = 40
+AUTHORIZATION_TRANSIENT_RETRY_DELAY_SECONDS = 0.5
 PROFILE_RECOVERY_COOLDOWN_SECONDS = 60
 CLOAKBROWSER_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_IDLE_SECONDS"
 DEFAULT_CLOAKBROWSER_IDLE_SECONDS = 30 * 60
@@ -450,7 +451,11 @@ def _profile_operation(platform: str, profile_id: str = "", *, detail: str):
     clean_platform = normalize_platform(platform)
     touch_profile_activity(clean_platform)
     try:
-        with resource_slot(_profile_resource_name(clean_platform, profile_id), detail=detail):
+        with resource_slot(
+            _profile_resource_name(clean_platform, profile_id),
+            detail=detail,
+            priority=100 if detail == "click" else 0,
+        ):
             touch_profile_activity(clean_platform)
             yield
     finally:
@@ -1028,27 +1033,37 @@ def browser_authorize_3mf_download(
     page_url = _browser_model_page_url(model_url, clean_platform, clean_instance_id)
 
     with _profile_operation(clean_platform, clean_profile_id, detail="click"):
-        _profile, running, _launched_here = _ensure_running_profile(
-            clean_platform,
-            clean_profile_id,
-        )
-        bridge_payload = _bridge_payload(
-            running.id,
-            action="click",
-            target_url=clean_api_url,
-            model_url=page_url,
-            instance_id=clean_instance_id,
-            platform=clean_platform,
-        )
-        running, _restarted, result = _run_bridge_with_profile_recovery(
-            clean_platform,
-            running,
-            bridge_payload,
-            timeout_seconds=_authorization_bridge_timeout_seconds(
-                bridge_payload["navigation_timeout_ms"]
-            ),
-            allow_profile_restart=False,
-        )
+        for attempt in range(2):
+            try:
+                _profile, running, _launched_here = _ensure_running_profile(
+                    clean_platform,
+                    clean_profile_id,
+                    allow_recovery_restart=attempt > 0,
+                )
+                bridge_payload = _bridge_payload(
+                    running.id,
+                    action="click",
+                    target_url=clean_api_url,
+                    model_url=page_url,
+                    instance_id=clean_instance_id,
+                    platform=clean_platform,
+                )
+                running, _restarted, result = _run_bridge_with_profile_recovery(
+                    clean_platform,
+                    running,
+                    bridge_payload,
+                    timeout_seconds=_authorization_bridge_timeout_seconds(
+                        bridge_payload["navigation_timeout_ms"]
+                    ),
+                    allow_profile_restart=False,
+                )
+                _clear_profile_recovery_attempt(running.id)
+                break
+            except CloakBrowserError as exc:
+                if attempt > 0 or not _is_transient_profile_error(exc):
+                    raise
+                _mark_profile_recovery_attempt(clean_profile_id)
+                time.sleep(AUTHORIZATION_TRANSIENT_RETRY_DELAY_SECONDS)
 
     try:
         status_code = int(result.get("status_code") or 0)
