@@ -832,6 +832,27 @@ def _sync_account_health_for_archive_exception(
         source=task_meta.get("source"),
         url=model_url,
     )
+    if state in {"verification_required", "cloudflare"}:
+        try:
+            mark_account_network_error(
+                platform,
+                reason="archive_task_page_verification",
+                source="archive_task",
+                detail=detail,
+                model_url=model_url,
+                model_id=model_id,
+                instance_id=str(task_meta.get("instance_id") or "").strip(),
+            )
+        except Exception as exc:
+            _log_archive(
+                "account_health_sync_failed",
+                "账号页面访问异常状态同步失败，归档失败状态已保留。",
+                level="warning",
+                model_id=model_id,
+                url=model_url,
+                error=str(exc)[:240],
+            )
+        return
     if state not in {"verification_required", "cloudflare", "auth_required", "cookie_invalid", "download_limited"}:
         return
 

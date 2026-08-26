@@ -626,7 +626,7 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertEqual(queue["queued"], [])
         self.assertEqual(queue["active"], [])
 
-    def test_run_loop_closes_three_mf_gate_when_page_fetch_needs_verification(self):
+    def test_run_loop_keeps_three_mf_gate_open_when_metadata_page_fetch_needs_verification(self):
         manager = ArchiveTaskManager(background_enabled=False)
         task = {
             "id": "task-cloudflare",
@@ -657,20 +657,21 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
                 patch.object(manager, "_run_single_task", side_effect=RuntimeError("页面被 Cloudflare 验证拦截，请更新 cookie（含 cf_clearance）后重试")), \
                 patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
                 patch.object(archive_worker_module, "_is_three_mf_limit_guard_active", return_value=False), \
+                patch.object(archive_worker_module, "mark_account_network_error") as mark_network_error, \
                 patch.object(archive_worker_module, "update_three_mf_gate") as update_gate, \
                 patch.object(archive_worker_module, "_log_archive"):
             manager._run_loop()
 
-        update_gate.assert_called_once_with(
+        mark_network_error.assert_called_once_with(
             "cn",
-            gate="cloudflare",
-            reason="archive_task_failed",
+            reason="archive_task_page_verification",
             source="archive_task",
             detail="页面被 Cloudflare 验证拦截，请更新 cookie（含 cf_clearance）后重试",
             model_url="https://makerworld.com.cn/zh/models/1595694",
             model_id="1595694",
             instance_id="",
         )
+        update_gate.assert_not_called()
         self.assertEqual(failed[0][0], "task-cloudflare")
         self.assertEqual(missing_updates[0]["model_id"], "1595694")
 

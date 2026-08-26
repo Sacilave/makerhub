@@ -22,6 +22,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const requireFromFrontend = createRequire(path.join(ROOT_DIR, "frontend", "node_modules", "package.json"));
 const puppeteer = requireFromFrontend("puppeteer-core");
+const BROWSER_FETCH_TOTAL_BUFFER_BYTES = 32 * 1024 * 1024;
+const BROWSER_FETCH_RESOURCE_BUFFER_BYTES = 24 * 1024 * 1024;
 
 async function readInput() {
   const chunks = [];
@@ -329,7 +331,10 @@ async function fetchBrowserResponse(browser, context, platform, targetUrl, heade
     const onLoadingFailed = (event) => failedRequests.set(event.requestId, event.errorText || "request failed");
     const onRequestPaused = (event) => {
       const task = (async () => {
-        if (!isAllowedBrowserFetchUrl(event.request.url, platform)) {
+        if (
+          event.resourceType !== "Document"
+          || !isAllowedBrowserFetchUrl(event.request.url, platform)
+        ) {
           await session.send("Fetch.failRequest", {
             requestId: event.requestId,
             errorReason: "BlockedByClient",
@@ -349,7 +354,11 @@ async function fetchBrowserResponse(browser, context, platform, targetUrl, heade
     session.on("Fetch.requestPaused", onRequestPaused);
     try {
       await session.send("Page.enable");
-      await session.send("Network.enable");
+      await session.send("Network.enable", {
+        maxTotalBufferSize: BROWSER_FETCH_TOTAL_BUFFER_BYTES,
+        maxResourceBufferSize: BROWSER_FETCH_RESOURCE_BUFFER_BYTES,
+        enableDurableMessages: true,
+      });
       await session.send("Fetch.enable", {
         patterns: [{ urlPattern: "*", requestStage: "Request" }],
       });

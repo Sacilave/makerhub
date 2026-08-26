@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.11`
+> 当前版本：`v0.16.12`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-26 · v0.16.12
+
+- 修复模型元数据页偶发 Cloudflare 页面被错误升级为整个账号需要验证的问题；只有实际 3MF 授权结果才能关闭下载 gate。
+- CloakBrowser 隐藏抓取仅加载主文档，并为 CDP 正文启用受控持久缓存，避免 `Network.getResponseBody` 因 inspector cache 驱逐而反复失败。
+
 ### 2026-08-25 · v0.16.11
 
 - 归档队列空闲且账号 gate 正常时自动分批重试历史缺失 3MF，不再需要反复手动点击“全部重试”。
@@ -363,13 +368,13 @@ npm --prefix frontend run build
 - 源端刷新批次之间改为 1 小时冷却，避免剩余模型连续追赶时让 Worker 和 CloakBrowser 长时间满负载运行。
 - 源端刷新选出当前批次后立即释放整库模型快照；本地整理器空闲时也清理 catalog 缓存，降低长时间运行后的内存占用。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-24 · v0.16.9
 
 - 大型 3MF 元数据改为受限流式解析，不再把完整模型网格 XML 一次性解压进 Worker 内存。
 - 文件名已精确匹配时跳过内部解析；源端刷新与本地整理共用同一安全路径，降低内存和 CPU 峰值。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-24 · v0.16.8
 
