@@ -57,6 +57,15 @@ def _zip_bytes(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
+def _three_mf_bytes(preview: bytes) -> bytes:
+    return _zip_bytes(
+        {
+            "3D/3dmodel.model": b"<model unit=\"millimeter\"></model>",
+            "Metadata/thumbnail.png": preview,
+        }
+    )
+
+
 def _fake_rar_extractor(files_by_archive: dict[str, dict[str, bytes]]):
     def _extract(rar_path: Path, destination: Path) -> None:
         files = files_by_archive.get(Path(rar_path).name)
@@ -232,6 +241,116 @@ class LocalImportUploadTest(unittest.TestCase):
             self.assertEqual(task_item["status"], "success")
             self.assertEqual(task_item["progress"], 100)
             self.assertEqual(task_item["message"], "本地模型包已导入。")
+
+    def test_package_uses_each_three_mf_embedded_preview_for_its_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            archive_root.mkdir()
+            source_root.mkdir()
+
+            package = _zip_bytes(
+                {
+                    "Configs/A.3mf": _three_mf_bytes(b"preview-a"),
+                    "Configs/B.3mf": _three_mf_bytes(b"preview-b"),
+                    "Configs/cover.jpg": b"package-cover",
+                }
+            )
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix())
+                )
+            )
+            task_store = FakeTaskStore()
+            staging_dir, staged_file = _stage_test_file(root, "Configs.zip", package)
+            queued_task = _queued_package_task(staging_dir, "Configs", source_root, archive_root, staged_file["path"])
+            task_store.upsert_organize_task(queued_task)
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_import_upload, "invalidate_archive_snapshot"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = local_import_upload.run_queued_package_import_task(
+                    queued_task,
+                    store=store,
+                    task_store=task_store,
+                )
+
+            model_root = archive_root / result["model_dir"]
+            meta = json.loads((model_root / "meta.json").read_text(encoding="utf-8"))
+            instances = {item["fileName"]: item for item in meta["instances"]}
+            preview_a = instances["A.3mf"]["thumbnailLocal"]
+            preview_b = instances["B.3mf"]["thumbnailLocal"]
+
+            self.assertEqual(meta["cover"], "images/cover.jpg")
+            self.assertNotEqual(preview_a, preview_b)
+            self.assertEqual(instances["A.3mf"]["pictures"][0]["relPath"], preview_a)
+            self.assertEqual(instances["B.3mf"]["pictures"][0]["relPath"], preview_b)
+            self.assertEqual((model_root / preview_a).read_bytes(), b"preview-a")
+            self.assertEqual((model_root / preview_b).read_bytes(), b"preview-b")
+
+    def test_detail_repairs_shared_previews_in_existing_three_mf_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            archive_root.mkdir()
+            source_root.mkdir()
+
+            package = _zip_bytes(
+                {
+                    "Configs/A.3mf": _three_mf_bytes(b"preview-a"),
+                    "Configs/B.3mf": _three_mf_bytes(b"preview-b"),
+                    "Configs/cover.jpg": b"package-cover",
+                }
+            )
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix())
+                )
+            )
+            task_store = FakeTaskStore()
+            staging_dir, staged_file = _stage_test_file(root, "Configs.zip", package)
+            queued_task = _queued_package_task(staging_dir, "Configs", source_root, archive_root, staged_file["path"])
+            task_store.upsert_organize_task(queued_task)
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_import_upload, "invalidate_archive_snapshot"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = local_import_upload.run_queued_package_import_task(
+                    queued_task,
+                    store=store,
+                    task_store=task_store,
+                )
+
+            model_root = archive_root / result["model_dir"]
+            meta_path = model_root / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            for image_path in (model_root / "images").glob("*_thumbnail.png"):
+                image_path.unlink()
+            for instance in meta["instances"]:
+                instance["thumbnailLocal"] = "images/cover.jpg"
+                instance["pictures"] = [{"relPath": "images/cover.jpg"}]
+            meta["localImport"].pop("instancePreviewVersion", None)
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                detail = catalog.get_model_detail(result["model_dir"])
+
+            self.assertIsNotNone(detail)
+            repaired_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            instances = {item["fileName"]: item for item in repaired_meta["instances"]}
+            self.assertNotEqual(instances["A.3mf"]["thumbnailLocal"], instances["B.3mf"]["thumbnailLocal"])
+            self.assertEqual(
+                (model_root / instances["A.3mf"]["thumbnailLocal"]).read_bytes(),
+                b"preview-a",
+            )
+            self.assertEqual(
+                (model_root / instances["B.3mf"]["thumbnailLocal"]).read_bytes(),
+                b"preview-b",
+            )
 
     def test_folder_import_creates_top_level_group_downloads(self):
         with tempfile.TemporaryDirectory() as tmp:

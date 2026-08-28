@@ -2983,17 +2983,16 @@ def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[di
         except (json.JSONDecodeError, OSError):
             raw_meta = {}
         if isinstance(raw_meta, dict) and _normalize_source(raw_meta, target.relative_to(ARCHIVE_DIR.resolve())) == "local":
-            before = json.dumps(raw_meta.get("localImport") or {}, ensure_ascii=False, sort_keys=True)
             preview_state = build_local_preview_state(raw_meta, target)
-            after = json.dumps(raw_meta.get("localImport") or {}, ensure_ascii=False, sort_keys=True)
-            if preview_state.get("needs_generation") and before != after:
+            if preview_state.get("metadata_changed"):
                 raw_meta["update_time"] = china_now_iso()
                 meta_path.write_text(json.dumps(raw_meta, ensure_ascii=False, indent=2), encoding="utf-8")
-                from app.services.local_preview_worker import mark_local_preview_queue_updated
+                if preview_state.get("needs_generation"):
+                    from app.services.local_preview_worker import mark_local_preview_queue_updated
 
-                mark_local_preview_queue_updated("local_preview_queued_from_detail")
+                    mark_local_preview_queue_updated("local_preview_queued_from_detail")
                 invalidate_model_detail_cache(clean_model_dir)
-                invalidate_archive_snapshot("local_preview_queued_from_detail")
+                invalidate_archive_snapshot("local_preview_state_updated_from_detail")
 
     detail: Optional[dict]
     if include_detail:

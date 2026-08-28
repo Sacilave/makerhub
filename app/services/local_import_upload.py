@@ -23,7 +23,11 @@ from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as
 from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
-from app.services.local_model_preview import ensure_package_preview_images, mark_local_preview_pending
+from app.services.local_model_preview import (
+    PACKAGE_INSTANCE_PREVIEW_VERSION,
+    ensure_package_preview_images,
+    mark_local_preview_pending,
+)
 from app.services.local_preview_worker import mark_local_preview_queue_updated
 from app.services.task_state import TaskStateStore
 
@@ -1068,14 +1072,27 @@ def _build_package_meta(
         except OSError:
             publish_iso = now_iso
 
-    cover_path = image_paths[0] if image_paths else ""
-    gallery_items = [{"relPath": item} for item in image_paths]
+    first_instance_preview = next(
+        (
+            str(preview_path)
+            for item in model_files
+            for preview_path in (item.get("preview_paths") or [])
+            if str(preview_path or "").strip()
+        ),
+        "",
+    )
+    package_image_paths = image_paths or ([first_instance_preview] if first_instance_preview else [])
+    cover_path = package_image_paths[0] if package_image_paths else ""
+    gallery_items = [{"relPath": item} for item in package_image_paths]
     summary_text = description_text or "从本地文件导入的模型。"
     instances = []
     for index, item in enumerate(model_files, start=1):
         target_path = Path(item["target_path"])
         source_relative = str(item.get("relative_path") or item.get("file_name") or target_path.name)
         file_label = _file_kind_label(target_path)
+        instance_image_paths = list(item.get("preview_paths") or image_paths)
+        instance_gallery_items = [{"relPath": image_path} for image_path in instance_image_paths]
+        instance_cover_path = instance_image_paths[0] if instance_image_paths else ""
         instances.append(
             {
                 "id": f"local-{index}",
@@ -1086,8 +1103,8 @@ def _build_package_meta(
                 "publishedAt": publish_iso,
                 "publishTime": publish_iso,
                 "summary": "",
-                "thumbnailLocal": cover_path,
-                "pictures": gallery_items,
+                "thumbnailLocal": instance_cover_path,
+                "pictures": instance_gallery_items,
                 "fileName": target_path.name,
                 "sourceFileName": Path(source_relative).name,
                 "downloadCount": 0,
@@ -1153,6 +1170,7 @@ def _build_package_meta(
             "skippedArchives": skipped_archives[:50],
             "groups": groups or [],
             "groupCount": len(groups or []),
+            "instancePreviewVersion": PACKAGE_INSTANCE_PREVIEW_VERSION,
         },
     }
 

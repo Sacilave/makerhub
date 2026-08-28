@@ -435,15 +435,6 @@ def set_local_model_cover_image(model_dir: str, rel_path: str) -> dict[str, Any]
     ordered_images = [selected_item, *remaining]
     meta["cover"] = target_ref
     meta["designImages"] = ordered_images
-    for instance in meta.get("instances") or []:
-        if not isinstance(instance, dict):
-            continue
-        instance["thumbnailLocal"] = target_ref
-        instance["pictures"] = [
-            {"relPath": str(item.get("relPath") or target_ref)}
-            for item in ordered_images
-            if isinstance(item, dict) and str(item.get("relPath") or "").strip()
-        ]
     _write_meta(model_root, meta)
     return selected_item
 

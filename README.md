@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.14`
+> 当前版本：`v0.16.15`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -353,6 +353,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-08-28 · v0.16.15
+
+- 本地模型包内的多个 3MF 配置会分别提取并展示各自的内嵌缩略图，不再全部复用模型包封面。
+- 设置模型总封面和生成 Three.js 预览时不再覆盖其他配置图片；打开旧本地模型详情还会一次性修复历史共享引用。
+
 ### 2026-08-26 · v0.16.14
 
 - 识别 MakerWorld `SDFL-PPO` 仅限平台打印许可，不再把官方未提供下载入口的打印配置误算为缺失 3MF。
@@ -363,13 +368,13 @@ npm --prefix frontend run build
 - 缺失 3MF 自动补档按国内站、国际站各保留 1 个浏览器任务，避免并发任务争抢同一个 profile。
 - 3MF 真实点击授权优先于普通页面抓取；临时 `5xx/CDP` 故障会受控重试一次，下载按钮也能按多种页面信号识别。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-26 · v0.16.12
 
 - 修复模型元数据页偶发 Cloudflare 页面被错误升级为整个账号需要验证的问题；只有实际 3MF 授权结果才能关闭下载 gate。
 - CloakBrowser 隐藏抓取仅加载主文档，并为 CDP 正文启用受控持久缓存，避免 `Network.getResponseBody` 因 inspector cache 驱逐而反复失败。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-25 · v0.16.11
 

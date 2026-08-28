@@ -180,15 +180,26 @@ class LocalModelEditTest(unittest.TestCase):
             meta = json.loads((model_root / "meta.json").read_text(encoding="utf-8"))
             self.assertEqual(meta["title"], "新的标题")
 
-    def test_set_local_model_cover_image_reorders_gallery_and_instances(self):
+    def test_set_local_model_cover_image_reorders_gallery_without_overwriting_instances(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()
             model_root = self._write_local_model(archive_root)
             (model_root / "images" / "side.png").write_bytes(b"png-data")
+            (model_root / "images" / "head.png").write_bytes(b"head-data")
             meta_path = model_root / "meta.json"
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             meta["designImages"].append({"relPath": "images/side.png"})
             meta["instances"][0]["pictures"].append({"relPath": "images/side.png"})
+            meta["instances"].append(
+                {
+                    "id": "local-2",
+                    "title": "head",
+                    "fileName": "head.stl",
+                    "fileKind": "STL",
+                    "thumbnailLocal": "images/head.png",
+                    "pictures": [{"relPath": "images/head.png"}],
+                }
+            )
             meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
             with patch.object(local_model_edit, "ARCHIVE_DIR", archive_root), \
@@ -200,8 +211,10 @@ class LocalModelEditTest(unittest.TestCase):
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             self.assertEqual(meta["cover"], "images/side.png")
             self.assertEqual(meta["designImages"][0]["relPath"], "images/side.png")
-            self.assertEqual(meta["instances"][0]["thumbnailLocal"], "images/side.png")
-            self.assertEqual(meta["instances"][0]["pictures"][0]["relPath"], "images/side.png")
+            self.assertEqual(meta["instances"][0]["thumbnailLocal"], "images/cover.jpg")
+            self.assertEqual(meta["instances"][0]["pictures"][0]["relPath"], "images/cover.jpg")
+            self.assertEqual(meta["instances"][1]["thumbnailLocal"], "images/head.png")
+            self.assertEqual(meta["instances"][1]["pictures"], [{"relPath": "images/head.png"}])
             self.assertTrue(detail["cover_url"].endswith("/LOCAL_Test/images/side.png"))
             self.assertTrue(detail["gallery"][0]["url"].endswith("/LOCAL_Test/images/side.png"))
 
@@ -238,6 +251,100 @@ class LocalModelEditTest(unittest.TestCase):
             self.assertFalse(meta["localImport"]["previewNeedsGeneration"])
             self.assertTrue(detail["cover_url"].endswith(f"/LOCAL_Test/{meta['cover']}"))
             self.assertEqual(detail["local_preview"]["status"], "success")
+
+    def test_generated_three_preview_only_updates_its_source_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            model_root = self._write_local_model(archive_root)
+            (model_root / "instances" / "head.stl").write_bytes(b"solid head\nendsolid head\n")
+            (model_root / "images" / "head.jpg").write_bytes(b"head-preview")
+            meta_path = model_root / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["cover"] = ""
+            meta["designImages"] = []
+            meta["instances"][0]["thumbnailLocal"] = ""
+            meta["instances"][0]["pictures"] = []
+            meta["instances"].append(
+                {
+                    "id": "local-2",
+                    "title": "head",
+                    "fileName": "head.stl",
+                    "fileKind": "STL",
+                    "thumbnailLocal": "images/head.jpg",
+                    "pictures": [{"relPath": "images/head.jpg"}],
+                }
+            )
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(local_model_edit, "ARCHIVE_DIR", archive_root):
+                local_model_edit.save_local_model_generated_preview(
+                    "LOCAL_Test",
+                    image_data="data:image/png;base64,aW1hZ2U=",
+                    mime_type="image/png",
+                    source_instance_key="local-1",
+                    source_file_name="body.stl",
+                )
+
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            source_instance, other_instance = meta["instances"]
+            self.assertEqual(source_instance["thumbnailLocal"], meta["cover"])
+            self.assertEqual(source_instance["pictures"][0]["relPath"], meta["cover"])
+            self.assertEqual(other_instance["thumbnailLocal"], "images/head.jpg")
+            self.assertEqual(other_instance["pictures"], [{"relPath": "images/head.jpg"}])
+
+    def test_detail_removes_historical_generated_preview_from_other_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            model_root = self._write_local_model(archive_root)
+            (model_root / "instances" / "head.stl").write_bytes(b"solid head\nendsolid head\n")
+            (model_root / "images" / "head.jpg").write_bytes(b"head-preview")
+            generated_path = "images/three_preview_body.png"
+            (model_root / generated_path).write_bytes(b"generated-preview")
+            generated_item = {
+                "relPath": generated_path,
+                "kind": "generated_three_preview",
+                "generated": True,
+                "generator": "three",
+                "previewVersion": 2,
+                "sourceFileName": "body.stl",
+                "sourceInstanceKey": "local-1",
+            }
+            meta_path = model_root / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["cover"] = generated_path
+            meta["designImages"] = [generated_item]
+            meta["instances"][0]["thumbnailLocal"] = generated_path
+            meta["instances"][0]["pictures"] = [generated_item]
+            meta["instances"].append(
+                {
+                    "id": "local-2",
+                    "title": "head",
+                    "fileName": "head.stl",
+                    "fileKind": "STL",
+                    "thumbnailLocal": generated_path,
+                    "pictures": [generated_item, {"relPath": "images/head.jpg"}],
+                }
+            )
+            meta["localImport"] = {
+                "previewGenerator": "three",
+                "previewVersion": 2,
+                "previewStatus": "success",
+                "previewNeedsGeneration": False,
+                "previewFile": generated_path,
+                "previewSourceFileName": "body.stl",
+                "previewSourceInstanceKey": "local-1",
+            }
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                detail = catalog.get_model_detail("LOCAL_Test")
+
+            self.assertIsNotNone(detail)
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            source_instance, other_instance = meta["instances"]
+            self.assertEqual(source_instance["pictures"][0]["relPath"], generated_path)
+            self.assertEqual(other_instance["thumbnailLocal"], "images/head.jpg")
+            self.assertEqual(other_instance["pictures"], [{"relPath": "images/head.jpg"}])
 
     def test_rejects_non_local_model(self):
         with tempfile.TemporaryDirectory() as tmp:

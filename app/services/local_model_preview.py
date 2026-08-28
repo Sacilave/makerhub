@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,10 @@ PREVIEW_IMAGE_MIME_TYPES = {
     "image/jpeg": ".jpg",
     "image/webp": ".webp",
 }
+PACKAGE_PREVIEW_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+PACKAGE_PREVIEW_LIMIT = 6
+PACKAGE_PREVIEW_MAX_BYTES = 8 * 1024 * 1024
+PACKAGE_INSTANCE_PREVIEW_VERSION = 1
 
 
 def _clean_ref(value: Any) -> str:
@@ -231,14 +236,19 @@ def _update_preview_pending_state(meta: dict[str, Any], *, model_root: Path | No
 
 
 def mark_local_preview_pending(meta: dict[str, Any], *, model_root: Path | None = None) -> bool:
-    return _update_preview_pending_state(meta, model_root=model_root)
+    repaired = _repair_generated_preview_instance_refs(meta)
+    if model_root is not None:
+        repaired = repair_package_instance_preview_images(model_root, meta) or repaired
+    return _update_preview_pending_state(meta, model_root=model_root) or repaired
 
 
 def build_local_preview_state(meta: dict[str, Any], model_root: Path) -> dict[str, Any]:
     if str(meta.get("source") or "").strip().lower() != "local":
         return {}
 
-    _update_preview_pending_state(meta, model_root=model_root)
+    generated_refs_repaired = _repair_generated_preview_instance_refs(meta)
+    package_previews_repaired = repair_package_instance_preview_images(model_root, meta)
+    preview_state_changed = _update_preview_pending_state(meta, model_root=model_root)
     local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
     status = str(local_import.get("previewStatus") or "").strip().lower()
     version = int(local_import.get("previewVersion") or 0)
@@ -269,6 +279,7 @@ def build_local_preview_state(meta: dict[str, Any], model_root: Path) -> dict[st
         "candidate": candidate,
         "message": str(local_import.get("previewError") or ""),
         "generated_at": str(local_import.get("previewGeneratedAt") or ""),
+        "metadata_changed": generated_refs_repaired or package_previews_repaired or preview_state_changed,
     }
 
 
@@ -276,6 +287,102 @@ def _generated_preview_filename(source_file_name: str, mime_type: str) -> str:
     suffix = PREVIEW_IMAGE_MIME_TYPES.get(mime_type, ".png")
     stem = sanitize_filename(Path(str(source_file_name or "")).stem).strip() or "model"
     return f"three_preview_{stem}{suffix}"
+
+
+def _target_preview_instance(
+    meta: dict[str, Any],
+    *,
+    source_instance_key: str,
+    source_file_name: str,
+) -> dict[str, Any] | None:
+    instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+    clean_key = str(source_instance_key or "").strip()
+    clean_file_name = Path(str(source_file_name or "")).name
+
+    for index, instance in enumerate(instances):
+        if isinstance(instance, dict) and clean_key and _instance_key(instance, index) == clean_key:
+            return instance
+    for instance in instances:
+        if not isinstance(instance, dict) or not clean_file_name:
+            continue
+        file_name = Path(str(instance.get("fileName") or instance.get("name") or "")).name
+        if file_name == clean_file_name:
+            return instance
+    if clean_key or clean_file_name:
+        return None
+    return next((instance for instance in instances if isinstance(instance, dict)), None)
+
+
+def _first_relative_file_ref(items: list[Any]) -> str:
+    for item in items:
+        if isinstance(item, str):
+            clean = _clean_ref(item)
+            if clean:
+                return clean
+            continue
+        if not isinstance(item, dict):
+            continue
+        for key in ("relPath", "localName", "fileName", "path", "thumbnailLocal"):
+            clean = _clean_ref(item.get(key))
+            if clean:
+                return clean
+    return ""
+
+
+def _generated_preview_targets_instance(
+    value: Any,
+    *,
+    instance: dict[str, Any],
+    index: int,
+    local_import: dict[str, Any],
+) -> bool:
+    item = value if isinstance(value, dict) else {}
+    source_key = str(item.get("sourceInstanceKey") or local_import.get("previewSourceInstanceKey") or "").strip()
+    if source_key and _instance_key(instance, index) == source_key:
+        return True
+
+    source_file_name = Path(
+        str(item.get("sourceFileName") or local_import.get("previewSourceFileName") or "")
+    ).name
+    if source_file_name:
+        instance_file_name = Path(str(instance.get("fileName") or instance.get("name") or "")).name
+        return instance_file_name == source_file_name
+    return not source_key and index == 0
+
+
+def _repair_generated_preview_instance_refs(meta: dict[str, Any]) -> bool:
+    instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+    local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+    changed = False
+    for index, instance in enumerate(instances):
+        if not isinstance(instance, dict):
+            continue
+        pictures = instance.get("pictures") if isinstance(instance.get("pictures"), list) else []
+        kept_pictures = [
+            picture
+            for picture in pictures
+            if not is_generated_preview_item(picture)
+            or _generated_preview_targets_instance(
+                picture,
+                instance=instance,
+                index=index,
+                local_import=local_import,
+            )
+        ]
+        if kept_pictures != pictures:
+            instance["pictures"] = kept_pictures
+            changed = True
+
+        thumbnail = instance.get("thumbnailLocal")
+        if is_generated_preview_item(thumbnail) and not _generated_preview_targets_instance(
+            thumbnail,
+            instance=instance,
+            index=index,
+            local_import=local_import,
+        ):
+            instance["thumbnailLocal"] = _first_relative_file_ref(kept_pictures)
+            changed = True
+    return changed
 
 
 def _unlink_generated_preview_files(model_root: Path, meta: dict[str, Any]) -> None:
@@ -354,15 +461,22 @@ def apply_generated_preview_image(
     meta["cover"] = rel_path
     meta["designImages"] = [image_item, *user_images]
 
+    target_instance = _target_preview_instance(
+        meta,
+        source_instance_key=source_instance_key,
+        source_file_name=source_file_name,
+    )
     for instance in meta.get("instances") or []:
         if not isinstance(instance, dict):
             continue
         pictures = instance.get("pictures") if isinstance(instance.get("pictures"), list) else []
         user_pictures = [item for item in pictures if not is_generated_preview_item(item)]
-        instance["pictures"] = [image_item, *user_pictures]
+        instance["pictures"] = [image_item, *user_pictures] if instance is target_instance else user_pictures
         thumbnail = str(instance.get("thumbnailLocal") or "").strip()
-        if not thumbnail or is_generated_preview_item(thumbnail):
+        if instance is target_instance and (not thumbnail or is_generated_preview_item(thumbnail)):
             instance["thumbnailLocal"] = rel_path
+        elif instance is not target_instance and is_generated_preview_item(thumbnail):
+            instance["thumbnailLocal"] = _first_relative_file_ref(user_pictures)
 
     local_import = _local_import_meta(meta)
     local_import.update(
@@ -417,7 +531,105 @@ def ensure_package_preview_images(
     image_paths: list[str],
     title: str,
 ) -> list[str]:
+    images_dir = model_root / PREVIEW_REL_DIR
+    for item in model_files:
+        target_path = Path(str(item.get("target_path") or ""))
+        item["preview_paths"] = _extract_three_mf_preview_images(target_path, images_dir)
     return image_paths
+
+
+def repair_package_instance_preview_images(model_root: Path, meta: dict[str, Any]) -> bool:
+    local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+    if not bool(local_import.get("package")):
+        return False
+    if int(local_import.get("instancePreviewVersion") or 0) >= PACKAGE_INSTANCE_PREVIEW_VERSION:
+        return False
+
+    package_refs: set[str] = set()
+    for item in _iter_image_items(meta):
+        package_refs.update(_relative_file_refs(item))
+
+    instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+    for instance in instances:
+        if not isinstance(instance, dict):
+            continue
+        file_name = Path(str(instance.get("fileName") or instance.get("name") or "")).name
+        if Path(file_name).suffix.lower() != ".3mf":
+            continue
+
+        current_refs = _relative_file_refs(instance.get("thumbnailLocal"))
+        for picture in instance.get("pictures") or []:
+            if not is_generated_preview_item(picture):
+                current_refs.update(_relative_file_refs(picture))
+        if current_refs and not current_refs.issubset(package_refs):
+            continue
+
+        preview_paths = _extract_three_mf_preview_images(model_root / "instances" / file_name, model_root / PREVIEW_REL_DIR)
+        if not preview_paths:
+            continue
+        instance["thumbnailLocal"] = preview_paths[0]
+        instance["pictures"] = [{"relPath": preview_path} for preview_path in preview_paths]
+
+    local_import["instancePreviewVersion"] = PACKAGE_INSTANCE_PREVIEW_VERSION
+    meta["localImport"] = local_import
+    return True
+
+
+def _package_preview_priority(info: zipfile.ZipInfo) -> tuple[int, str]:
+    name = info.filename.lower()
+    if "thumbnail" in name:
+        score = 0
+    elif "cover" in name or "preview" in name:
+        score = 1
+    elif "plate" in name:
+        score = 2
+    elif "metadata" in name:
+        score = 3
+    else:
+        score = 100
+    return (score, name)
+
+
+def _unique_package_preview_target(images_dir: Path, source_path: Path, member_name: str) -> Path:
+    source_stem = sanitize_filename(source_path.stem).strip() or "model"
+    member_path = Path(member_name)
+    member_stem = sanitize_filename(member_path.stem).strip() or "preview"
+    suffix = member_path.suffix.lower() or ".png"
+    target = images_dir / f"{source_stem}_{member_stem}{suffix}"
+    index = 2
+    while target.exists():
+        target = images_dir / f"{source_stem}_{member_stem}_{index}{suffix}"
+        index += 1
+    return target
+
+
+def _extract_three_mf_preview_images(source_path: Path, images_dir: Path) -> list[str]:
+    if not source_path.is_file() or source_path.suffix.lower() != ".3mf":
+        return []
+
+    try:
+        with zipfile.ZipFile(source_path) as archive:
+            members = [
+                info
+                for info in archive.infolist()
+                if not info.is_dir()
+                and Path(info.filename).suffix.lower() in PACKAGE_PREVIEW_SUFFIXES
+                and 0 < info.file_size <= PACKAGE_PREVIEW_MAX_BYTES
+            ]
+            members.sort(key=_package_preview_priority)
+            preview_paths: list[str] = []
+            for info in members[:PACKAGE_PREVIEW_LIMIT]:
+                with archive.open(info) as handle:
+                    data = handle.read(PACKAGE_PREVIEW_MAX_BYTES + 1)
+                if not data or len(data) > PACKAGE_PREVIEW_MAX_BYTES:
+                    continue
+                images_dir.mkdir(parents=True, exist_ok=True)
+                target = _unique_package_preview_target(images_dir, source_path, Path(info.filename).name)
+                target.write_bytes(data)
+                preview_paths.append(f"{PREVIEW_REL_DIR}/{target.name}")
+            return preview_paths
+    except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile, zipfile.LargeZipFile):
+        return []
 
 
 def ensure_local_model_preview(model_root: Path) -> bool:
