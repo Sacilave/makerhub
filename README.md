@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.15`
+> 当前版本：`v0.16.16`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -118,6 +118,8 @@ services:
       MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
       MAKERHUB_CLOAKBROWSER_IDLE_SECONDS: "${MAKERHUB_CLOAKBROWSER_IDLE_SECONDS:-1800}"
       MAKERHUB_WORKER_RECYCLE_RSS_MIB: "${MAKERHUB_WORKER_RECYCLE_RSS_MIB:-2048}"
+      MAKERHUB_WORKER_HARD_RECYCLE_RSS_MIB: "${MAKERHUB_WORKER_HARD_RECYCLE_RSS_MIB:-4096}"
+      MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB: "${MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB:-768}"
     volumes:
       - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
       - ${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data
@@ -268,6 +270,9 @@ App 和 Worker 始终共享 `MAKERHUB_CONFIG_PATH` 与 `MAKERHUB_ARCHIVE_PATH`�
 | `MAKERHUB_CLOAKBROWSER_BIND_ADDRESS` | `127.0.0.1` | Manager 宿主机监听地址 |
 | `MAKERHUB_CLOAKBROWSER_PUBLIC_URL` | 空 | 用户浏览器能够访问的 Manager 地址 |
 | `MAKERHUB_AUTO_VERIFY_3MF` | `false` | 开启 3MF 页面自动验证；默认关闭，失败后人工回退 |
+| `MAKERHUB_WORKER_RECYCLE_RSS_MIB` | `2048` | Worker 在安全任务间隙主动重启的 RSS 阈值（MiB） |
+| `MAKERHUB_WORKER_HARD_RECYCLE_RSS_MIB` | `4096` | Worker 可恢复重启的 RSS 硬上限（MiB） |
+| `MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB` | `768` | 本地整理 daemon 的独立回收阈值（MiB） |
 | `MAKERHUB_TRUSTED_PROXIES` | 空 | 允许提供转发头的受控代理地址 |
 
 不要把 `MAKERHUB_TRUSTED_PROXIES` 设置为 `*`、`0.0.0.0/0` 或公网网段。默认不信任 `X-Forwarded-*` 请求头。
@@ -353,6 +358,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-01 · v0.16.16
+
+- 限制 `3MF` 检查缓存数量，长期归档时仍会定期清理 catalog、来源库和 Python 堆内存。
+- Worker 超过 4 GiB、整理 daemon 超过 768 MiB 时会在可恢复机制保护下自动回收，不再无限增长并占用 Swap。
+
 ### 2026-08-28 · v0.16.15
 
 - 本地模型包内的多个 3MF 配置会分别提取并展示各自的内嵌缩略图，不再全部复用模型包封面。
@@ -363,13 +373,13 @@ npm --prefix frontend run build
 - 识别 MakerWorld `SDFL-PPO` 仅限平台打印许可，不再把官方未提供下载入口的打印配置误算为缺失 3MF。
 - 这类配置不会占用下载额度或 CloakBrowser 授权队列，待补任务会继续处理后续可下载模型。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-26 · v0.16.13
 
 - 缺失 3MF 自动补档按国内站、国际站各保留 1 个浏览器任务，避免并发任务争抢同一个 profile。
 - 3MF 真实点击授权优先于普通页面抓取；临时 `5xx/CDP` 故障会受控重试一次，下载按钮也能按多种页面信号识别。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-26 · v0.16.12
 

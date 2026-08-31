@@ -1,3 +1,4 @@
+import os
 import unittest
 import zipfile
 from pathlib import Path
@@ -43,6 +44,30 @@ class FakeTaskStore:
 
 
 class LocalOrganizerTest(unittest.TestCase):
+    def test_organizer_recycle_threshold_can_be_disabled(self):
+        self.assertTrue(local_organizer.organizer_should_recycle(rss_mib=800, threshold_mib=768))
+        self.assertFalse(local_organizer.organizer_should_recycle(rss_mib=800, threshold_mib=0))
+
+    def test_daemon_loop_exits_after_high_memory_idle_release(self):
+        service = local_organizer.LocalOrganizerService(
+            store=SimpleNamespace(),
+            task_store=FakeTaskStore(),
+        )
+
+        with patch.dict(os.environ, {local_organizer.ORGANIZER_DAEMON_ENV: "1"}), \
+                patch.object(service, "run_once"), \
+                patch.object(service, "release_idle_memory", return_value=True), \
+                patch.object(local_organizer, "process_rss_mib", return_value=900), \
+                patch.object(local_organizer, "organizer_recycle_rss_mib", return_value=768), \
+                patch.object(local_organizer, "_append_organizer_log") as append_log:
+            service._run_loop()
+
+        append_log.assert_called_once_with(
+            "daemon_memory_recycle",
+            rss_mib=900,
+            threshold_mib=768,
+        )
+
     def test_parse_3mf_metadata_ignores_geometry_after_root_metadata(self):
         with TemporaryDirectory() as tmp:
             source_path = Path(tmp) / "large.3mf"

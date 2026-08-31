@@ -43,6 +43,21 @@ def _model(model_dir: str, *, source: str = "cn") -> dict:
 
 
 class SourceLibraryTest(unittest.TestCase):
+    def test_release_source_library_memory_clears_group_cache(self):
+        _SOURCE_LIBRARY_GROUP_CACHE.update(
+            signature=("marker", 1),
+            groups={"author": {"items": [1]}},
+            all_models=({"model_dir": "model-1"},),
+            sections=({"key": "authors"},),
+        )
+
+        source_library.release_source_library_memory()
+
+        self.assertIsNone(_SOURCE_LIBRARY_GROUP_CACHE["signature"])
+        self.assertEqual(_SOURCE_LIBRARY_GROUP_CACHE["groups"], {})
+        self.assertEqual(_SOURCE_LIBRARY_GROUP_CACHE["all_models"], ())
+        self.assertEqual(_SOURCE_LIBRARY_GROUP_CACHE["sections"], ())
+
     def test_local_deleted_state_group_includes_soft_deleted_models(self):
         groups = {
             "local_deleted": {

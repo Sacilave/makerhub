@@ -37,7 +37,7 @@ if not WORKER_HEALTHCHECK_MODE:
     from app.services.local_preview_worker import local_preview_queue_marker_mtime, run_local_preview_generation_once
     from app.services.process_memory import process_rss_mib, release_process_memory
     from app.services.source_refresh import SourceRefreshTaskManager
-    from app.services.source_library import SourceLibraryManager
+    from app.services.source_library import SourceLibraryManager, release_source_library_memory
     from app.services.subscriptions import SubscriptionManager
     from app.services.task_state import TaskStateStore
 
@@ -50,6 +50,8 @@ ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS = 10 * 60
 WORKER_MEMORY_MAINTENANCE_INTERVAL_SECONDS = 5 * 60
 WORKER_RECYCLE_RSS_MIB_ENV = "MAKERHUB_WORKER_RECYCLE_RSS_MIB"
 DEFAULT_WORKER_RECYCLE_RSS_MIB = 2048
+WORKER_HARD_RECYCLE_RSS_MIB_ENV = "MAKERHUB_WORKER_HARD_RECYCLE_RSS_MIB"
+DEFAULT_WORKER_HARD_RECYCLE_RSS_MIB = 4096
 CLOAKBROWSER_IDLE_CHECK_INTERVAL_SECONDS = 60
 AUTO_MISSING_3MF_RETRY_INTERVAL_SECONDS = 60
 
@@ -77,10 +79,31 @@ def worker_recycle_rss_mib() -> int:
         return DEFAULT_WORKER_RECYCLE_RSS_MIB
 
 
-def worker_should_recycle(*, rss_mib: float, threshold_mib: int, activity: dict[str, bool]) -> bool:
+def worker_hard_recycle_rss_mib() -> int:
+    raw = str(
+        os.environ.get(WORKER_HARD_RECYCLE_RSS_MIB_ENV)
+        or DEFAULT_WORKER_HARD_RECYCLE_RSS_MIB
+    ).strip()
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return DEFAULT_WORKER_HARD_RECYCLE_RSS_MIB
+
+
+def worker_should_recycle(
+    *,
+    rss_mib: float,
+    threshold_mib: int,
+    hard_threshold_mib: int,
+    activity: dict[str, bool],
+) -> bool:
+    rss = float(rss_mib or 0.0)
+    hard_threshold = int(hard_threshold_mib or 0)
+    if hard_threshold > 0 and rss >= hard_threshold:
+        return True
     return (
         int(threshold_mib or 0) > 0
-        and float(rss_mib or 0.0) >= int(threshold_mib)
+        and rss >= int(threshold_mib)
         and not any(bool(value) for value in activity.values())
     )
 
@@ -89,24 +112,44 @@ def run_worker_memory_maintenance(
     activity_loader: Callable[[], dict[str, bool]],
     *,
     threshold_mib: int | None = None,
+    hard_threshold_mib: int | None = None,
 ) -> dict:
-    result = {"recycle": False, "rss_mib": 0.0, "threshold_mib": 0, "error": ""}
+    result = {
+        "recycle": False,
+        "reason": "",
+        "rss_mib": 0.0,
+        "threshold_mib": 0,
+        "hard_threshold_mib": 0,
+        "error": "",
+    }
     try:
         activity = activity_loader()
-        if any(bool(value) for value in activity.values()):
-            return result
         release_catalog_memory()
+        release_source_library_memory()
         release_process_memory()
         rss_mib = process_rss_mib()
         effective_threshold = worker_recycle_rss_mib() if threshold_mib is None else max(int(threshold_mib), 0)
-        result.update(
-            recycle=worker_should_recycle(
-                rss_mib=rss_mib,
-                threshold_mib=effective_threshold,
-                activity=activity,
-            ),
+        effective_hard_threshold = (
+            worker_hard_recycle_rss_mib()
+            if hard_threshold_mib is None
+            else max(int(hard_threshold_mib), 0)
+        )
+        hard_limit_reached = (
+            effective_hard_threshold > 0
+            and rss_mib >= effective_hard_threshold
+        )
+        recycle = worker_should_recycle(
             rss_mib=rss_mib,
             threshold_mib=effective_threshold,
+            hard_threshold_mib=effective_hard_threshold,
+            activity=activity,
+        )
+        result.update(
+            recycle=recycle,
+            reason="hard_limit" if recycle and hard_limit_reached else "idle_limit" if recycle else "",
+            rss_mib=rss_mib,
+            threshold_mib=effective_threshold,
+            hard_threshold_mib=effective_hard_threshold,
         )
     except Exception as exc:
         result["error"] = str(exc)[:240]
@@ -290,6 +333,16 @@ def main() -> int:
     try:
         while not stop_event.wait(next_poll_seconds):
             _run_database_maintenance()
+            try:
+                local_organizer.start()
+            except Exception as exc:
+                append_business_log(
+                    "organizer",
+                    "daemon_restart_failed",
+                    "本地整理后台进程启动失败，稍后自动重试。",
+                    level="warning",
+                    error=str(exc)[:240],
+                )
             archive_queue = archive_manager.ensure_worker_for_pending()
             archive_model_index_rebuild_status = read_archive_model_index_rebuild_status()
             if archive_model_index_rebuild_thread is not None and not archive_model_index_rebuild_thread.is_alive():
@@ -375,14 +428,11 @@ def main() -> int:
                 def _load_worker_activity() -> dict[str, bool]:
                     organize_queue = task_store.load_organize_tasks()
                     return {
-                        "archive": archive_queue_has_runnable_work(archive_queue),
+                        "archive": int(archive_queue.get("running_count") or 0) > 0,
                         "subscription": subscription_manager._has_active_work(),
                         "source_library": source_library_manager._has_active_work(),
                         "source_refresh": remote_refresh_manager._has_active_work(),
-                        "organizer": bool(
-                            int(organize_queue.get("running_count") or 0)
-                            or int(organize_queue.get("queued_count") or 0)
-                        ),
+                        "organizer": int(organize_queue.get("running_count") or 0) > 0,
                         "index_rebuild": bool(archive_model_index_rebuild_status.get("running")),
                         "preview": bool(local_preview_active),
                     }
@@ -397,13 +447,20 @@ def main() -> int:
                         error=str(memory_result.get("error") or "")[:240],
                     )
                 if memory_result.get("recycle"):
+                    hard_limit = memory_result.get("reason") == "hard_limit"
                     append_business_log(
                         "system",
-                        "worker_idle_memory_recycle",
-                        "makerhub worker 空闲内存超过阈值，正在重启回收内存。",
+                        "worker_memory_recycle",
+                        (
+                            "makerhub worker 内存超过硬上限，正在重启并自动恢复任务。"
+                            if hard_limit
+                            else "makerhub worker 已到达安全任务间隙，正在重启回收内存。"
+                        ),
                         level="warning",
+                        reason=str(memory_result.get("reason") or ""),
                         rss_mib=float(memory_result.get("rss_mib") or 0.0),
                         threshold_mib=int(memory_result.get("threshold_mib") or 0),
+                        hard_threshold_mib=int(memory_result.get("hard_threshold_mib") or 0),
                     )
                     break
     finally:

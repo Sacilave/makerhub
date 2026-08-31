@@ -108,6 +108,16 @@ SOURCE_LIBRARY_SNAPSHOT_KINDS = {
 }
 
 
+def release_source_library_memory() -> None:
+    with _SOURCE_LIBRARY_GROUP_CACHE_LOCK:
+        _SOURCE_LIBRARY_GROUP_CACHE.update(
+            signature=None,
+            groups={},
+            all_models=(),
+            sections=(),
+        )
+
+
 def _now_iso() -> str:
     return china_now_iso()
 

@@ -30,7 +30,7 @@ from app.services.local_import_upload import (
     queue_local_path_package_import,
     run_queued_package_import_task,
 )
-from app.services.process_memory import release_process_memory
+from app.services.process_memory import process_rss_mib, release_process_memory
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import parse_3mf_metadata
 
@@ -44,6 +44,8 @@ ORGANIZER_MAX_FILES_PER_CYCLE = 1
 ORGANIZER_WORKER_TIMEOUT_SECONDS = 20 * 60
 ORGANIZER_LIBRARY_INDEX_CACHE_TTL_SECONDS = 300
 ORGANIZER_MEMORY_RELEASE_INTERVAL_SECONDS = 5 * 60
+ORGANIZER_RECYCLE_RSS_MIB_ENV = "MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB"
+DEFAULT_ORGANIZER_RECYCLE_RSS_MIB = 768
 ORGANIZER_LIBRARY_INDEX_CACHE_PATH = STATE_DIR / "organizer_library_index.json"
 ORGANIZER_HASH_CHUNK_SIZE_BYTES = 512 * 1024
 ORGANIZER_HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
@@ -59,6 +61,21 @@ ORGANIZER_TERMINAL_STATUSES = {"success", "skipped"}
 ORGANIZER_UPLOAD_FALLBACK_STEMS = {"wechat-upload", "移动端导入"}
 ORGANIZER_MODEL_TITLE_SUFFIXES = {".3mf", ".stl", ".step", ".stp", ".obj"}
 ORGANIZER_PACKAGE_FILE_SUFFIXES = (MODEL_SUFFIXES - {".3mf"}) | PACKAGE_ARCHIVE_SUFFIXES
+
+
+def organizer_recycle_rss_mib() -> int:
+    raw = str(
+        os.environ.get(ORGANIZER_RECYCLE_RSS_MIB_ENV)
+        or DEFAULT_ORGANIZER_RECYCLE_RSS_MIB
+    ).strip()
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return DEFAULT_ORGANIZER_RECYCLE_RSS_MIB
+
+
+def organizer_should_recycle(*, rss_mib: float, threshold_mib: int) -> bool:
+    return int(threshold_mib or 0) > 0 and float(rss_mib or 0.0) >= int(threshold_mib)
 
 
 def _now_iso() -> str:
@@ -314,10 +331,21 @@ class LocalOrganizerService:
                 self.run_once()
             except Exception as exc:
                 _append_organizer_log("loop_error", error=str(exc))
+            memory_released = False
             try:
-                self.release_idle_memory()
+                memory_released = self.release_idle_memory()
             except Exception as exc:
                 _append_organizer_log("memory_release_error", error=str(exc))
+            if memory_released and os.environ.get(ORGANIZER_DAEMON_ENV) == "1":
+                rss_mib = process_rss_mib()
+                threshold_mib = organizer_recycle_rss_mib()
+                if organizer_should_recycle(rss_mib=rss_mib, threshold_mib=threshold_mib):
+                    _append_organizer_log(
+                        "daemon_memory_recycle",
+                        rss_mib=rss_mib,
+                        threshold_mib=threshold_mib,
+                    )
+                    return
             time.sleep(ORGANIZER_POLL_INTERVAL_SECONDS)
 
     def release_idle_memory(self, *, force: bool = False) -> bool:

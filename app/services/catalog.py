@@ -41,7 +41,12 @@ from app.services.profile_rating import normalize_profile_rating
 from app.services.source_health import build_source_health_cards
 from app.services.state_contracts import RUNTIME_SNAPSHOTS_STATE_KEY
 from app.services.task_state import TaskStateStore, compact_remote_refresh_state
-from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
+from app.services.three_mf import (
+    describe_three_mf_failure,
+    normalize_makerworld_source,
+    release_three_mf_inspect_cache,
+    resolve_model_instance_files,
+)
 from app.services.local_model_preview import build_local_preview_state
 
 
@@ -181,6 +186,7 @@ def release_catalog_memory() -> None:
         _SUBSCRIPTION_FLAGS_INDEX_CACHE.update(signature=None, deleted_by_key={})
     with _DECORATED_MODELS_LOCK:
         _DECORATED_MODELS_CACHE.update(signature=None, all_models=(), visible_models=())
+    release_three_mf_inspect_cache()
 
 
 def _read_archive_snapshot_marker() -> str:

@@ -1,4 +1,4 @@
-from app.services import catalog
+from app.services import catalog, three_mf
 
 
 def test_release_catalog_memory_clears_large_process_caches():
@@ -19,6 +19,10 @@ def test_release_catalog_memory_clears_large_process_caches():
         all_models=({"id": "model-1"},),
         visible_models=({"id": "model-1"},),
     )
+    three_mf._INSPECT_CACHE["/archive/model-1/instances/model.3mf"] = {
+        "signature": (1, 1),
+        "payload": {"model_title": "model-1"},
+    }
 
     catalog.release_catalog_memory()
 
@@ -28,3 +32,4 @@ def test_release_catalog_memory_clears_large_process_caches():
     assert catalog._SUBSCRIPTION_FLAGS_INDEX_CACHE["deleted_by_key"] == {}
     assert catalog._DECORATED_MODELS_CACHE["all_models"] == ()
     assert catalog._DECORATED_MODELS_CACHE["visible_models"] == ()
+    assert not three_mf._INSPECT_CACHE

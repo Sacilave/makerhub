@@ -5,13 +5,15 @@ import re
 import threading
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 
 _INSPECT_CACHE_LOCK = threading.RLock()
-_INSPECT_CACHE: dict[str, dict[str, Any]] = {}
+_INSPECT_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
+_INSPECT_CACHE_MAX_ITEMS = 64
 _THREE_MF_SUFFIX = ".3mf"
 _HASH_CHUNK_SIZE_BYTES = 512 * 1024
 _HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
@@ -127,6 +129,13 @@ _THREE_MF_LEGACY_MESSAGES = {
         "未获取到 3MF 下载地址。",
     },
 }
+
+
+def release_three_mf_inspect_cache() -> int:
+    with _INSPECT_CACHE_LOCK:
+        released = len(_INSPECT_CACHE)
+        _INSPECT_CACHE.clear()
+    return released
 
 
 def _normalize_loose_identity_text(value: Any) -> str:
@@ -468,6 +477,7 @@ def inspect_3mf_file(source_path: Path) -> dict[str, Any]:
         if cached and cached.get("signature") == signature:
             payload = cached.get("payload")
             if isinstance(payload, dict):
+                _INSPECT_CACHE.move_to_end(cache_key)
                 return dict(payload)
 
     metadata = parse_3mf_metadata(source_path)
@@ -497,6 +507,9 @@ def inspect_3mf_file(source_path: Path) -> dict[str, Any]:
             "signature": signature,
             "payload": payload,
         }
+        _INSPECT_CACHE.move_to_end(cache_key)
+        while len(_INSPECT_CACHE) > max(int(_INSPECT_CACHE_MAX_ITEMS or 0), 1):
+            _INSPECT_CACHE.popitem(last=False)
     return dict(payload)
 
 

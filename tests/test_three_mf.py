@@ -4,11 +4,14 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+from app.services import three_mf
 from app.services.three_mf import (
     describe_three_mf_failure,
+    inspect_3mf_file,
     merge_three_mf_failure,
     normalize_three_mf_failure_state,
     parse_3mf_metadata,
+    release_three_mf_inspect_cache,
     resolve_model_instance_files,
 )
 
@@ -74,6 +77,36 @@ class ThreeMfFailureTest(unittest.TestCase):
 
 
 class ThreeMfMetadataTest(unittest.TestCase):
+    def tearDown(self):
+        release_three_mf_inspect_cache()
+
+    def test_inspection_cache_evicts_oldest_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                patch.object(three_mf, "_INSPECT_CACHE_MAX_ITEMS", 2):
+            root = Path(temp_dir)
+            paths = []
+            for index in range(3):
+                source_path = root / f"model-{index}.3mf"
+                with zipfile.ZipFile(source_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr(
+                        "3D/3dmodel.model",
+                        f'<model><metadata name="DesignProfileId">{index}</metadata><resources /></model>',
+                    )
+                paths.append(source_path)
+                inspect_3mf_file(source_path)
+
+            cached_paths = list(three_mf._INSPECT_CACHE)
+
+        self.assertEqual(len(cached_paths), 2)
+        self.assertNotIn(paths[0].resolve().as_posix(), cached_paths)
+        self.assertIn(paths[2].resolve().as_posix(), cached_paths)
+
+    def test_release_inspection_cache_reports_removed_entries(self):
+        three_mf._INSPECT_CACHE["model"] = {"signature": (1, 1), "payload": {}}
+
+        self.assertEqual(release_three_mf_inspect_cache(), 1)
+        self.assertEqual(release_three_mf_inspect_cache(), 0)
+
     def test_parser_returns_root_metadata_without_reading_invalid_geometry_tail(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source_path = Path(temp_dir) / "large.3mf"
