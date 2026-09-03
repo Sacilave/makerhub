@@ -31,16 +31,13 @@ RUN apt-get update \
         libxss1 libxtst6 fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
+# CloakBrowser's CDP bridge needs Node at runtime. Reuse the same Node runtime
+# that built the frontend instead of installing a second distro Node package.
 COPY --from=frontend-build /usr/local/bin/node /usr/local/bin/node
 
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt \
-    && python - <<'PY'
-from importlib.metadata import version
-assert version('pillow') == '12.3.0'
-assert version('opencv-python-headless') == '4.14.0.94'
-assert version('cryptography') == '50.0.1'
-PY
+    && python -c "from importlib.metadata import version; assert version('pillow') == '12.3.0'; assert version('opencv-python-headless') == '4.14.0.94'; assert version('cryptography') == '50.0.1'"
 
 RUN mkdir -p /app/config/config /app/config/logs /app/config/state /app/data /app/data/local
 COPY app ./app
