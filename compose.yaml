@@ -91,7 +91,7 @@ services:
     stop_grace_period: 2m
 
   makerhub-postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine
     container_name: makerhub-postgres
     environment:
       TZ: ${TZ:-Asia/Shanghai}
