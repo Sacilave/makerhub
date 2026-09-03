@@ -17,3 +17,7 @@ data/
 frontend/node_modules/
 frontend/dist/
 .worktrees/
+
+# Local encryption material. Never commit real keys.
+secrets/*
+!secrets/.gitkeep
