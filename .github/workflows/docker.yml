@@ -62,7 +62,7 @@ jobs:
           tags: makerhub:verify
       - name: Smoke test image
         run: |
-          docker run --rm --entrypoint python makerhub:verify - <<'PY'
+          docker run --rm -i --entrypoint python makerhub:verify - <<'PY'
           from importlib.metadata import version
           import cv2
           import app.main
