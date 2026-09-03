@@ -1,0 +1,62 @@
+name: Release Tag Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      live_canary_confirmed:
+        description: "Confirm a real MakerWorld read-only live canary passed on this exact main commit"
+        required: true
+        type: boolean
+        default: false
+      live_canary_commit:
+        description: "40-character commit SHA recorded by live-canary-result.json"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: makerhub-release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact main source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Validate live canary evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Release tags must be created from main."
+            exit 1
+          fi
+          if [[ "${{ inputs.live_canary_confirmed }}" != "true" ]]; then
+            echo "::error::Run the real-account read-only live canary first."
+            exit 1
+          fi
+          if [[ "${{ inputs.live_canary_commit }}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Live canary commit does not match this main commit (${GITHUB_SHA})."
+            exit 1
+          fi
+          python scripts/check_release_version.py --tag "v$(tr -d '\r\n' < VERSION)"
+
+      - name: Create annotated release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v$(tr -d '\r\n' < VERSION)"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists."
+            exit 1
+          fi
+          git config user.name "Sacilave"
+          git config user.email "sacilave@gmail.com"
+          git tag -a "${TAG}" "${GITHUB_SHA}" -m "MakerHub ${TAG}"
+          git push origin "${TAG}"

@@ -21,3 +21,6 @@ frontend/dist/
 # Local encryption material. Never commit real keys.
 secrets/*
 !secrets/.gitkeep
+
+# Generated release artifacts.
+/dist/

@@ -31,6 +31,8 @@ FastAPI + Vue application responsible for the web UI, authentication, configurat
 
 Processes archive jobs and background workflows, including subscriptions, source refreshes, local imports, missing-3MF repair, indexing, and maintenance.
 
+Source refresh work is coordinated by `SourceRefreshTaskManager`. Its persistent projection is split between `source_refresh_queue` for queued/recoverable source-refresh work and `source_refresh_runs` for run history/progress. These states remain separate from the archive queue so source discovery progress can be resumed and inspected without forcing the large archive queue through a different storage model.
+
 ### PostgreSQL
 
 Stores configuration, task state, model indexes, sessions, and business logs. Sensitive state objects are envelope-encrypted before entering PostgreSQL; large queue structures that require PostgreSQL JSONB queries remain queryable.
@@ -42,6 +44,17 @@ Maintains isolated browser profiles for MakerWorld global and China-region sessi
 ### Archive filesystem
 
 Stores 3MF files, model assets, images, attachments, local imports, and generated metadata. Large binary assets do not live inside PostgreSQL.
+
+## State ownership
+
+MakerHub deliberately keeps different long-running workflows in separate state namespaces:
+
+- `ArchiveTaskManager` owns the archive queue and archive task projection;
+- `SourceRefreshTaskManager` owns `source_refresh_queue` and `source_refresh_runs` for source-refresh progress, recovery, and run history;
+- subscription state records recurring sources and discovery cursors;
+- account/browser state describes MakerWorld session health and verification gates.
+
+The separation is important: source discovery may finish, pause, or retry independently from actual file downloads. The UI reads projections of these states instead of treating every workflow as one monolithic queue.
 
 ## State encryption boundary
 

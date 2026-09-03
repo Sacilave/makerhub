@@ -8,7 +8,6 @@ import re
 import sys
 from typing import Any
 
-
 SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
@@ -44,10 +43,7 @@ def _check_versions(root: Path, tag: str) -> list[str]:
         version_sources.extend(
             [
                 ("frontend/package-lock.json", str(package_lock.get("version") or "")),
-                (
-                    "frontend/package-lock.json packages['']",
-                    str(root_package.get("version") or ""),
-                ),
+                ("frontend/package-lock.json packages['']", str(root_package.get("version") or "")),
             ]
         )
     except (AttributeError, OSError, json.JSONDecodeError, ValueError) as exc:
@@ -75,13 +71,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tag", default="", help="Optional release tag to validate.")
     args = parser.parse_args(argv)
 
-    errors = _check_versions(args.root.resolve(), args.tag)
+    root = args.root.resolve()
+    errors = _check_versions(root, args.tag)
     if errors:
         for error in errors:
             print(f"release version check failed: {error}", file=sys.stderr)
         return 1
 
-    version = (args.root.resolve() / "VERSION").read_text(encoding="utf-8").strip()
+    version = (root / "VERSION").read_text(encoding="utf-8").strip()
     print(f"release version check passed: v{version}")
     return 0
 

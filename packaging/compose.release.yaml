@@ -5,10 +5,7 @@ x-logging: &default-logging
     max-file: "3"
 
 x-makerhub-common: &makerhub-common
-  build:
-    context: .
-    dockerfile: Dockerfile
-  image: ${MAKERHUB_IMAGE:-makerhub:local}
+  image: __MAKERHUB_IMAGE__
   init: true
   security_opt:
     - no-new-privileges:true
@@ -17,7 +14,6 @@ x-makerhub-common: &makerhub-common
     MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
     MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
     MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
-    # Required by both App and Worker after YAML merge: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
     MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
     MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
     MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
@@ -30,8 +26,6 @@ x-makerhub-common: &makerhub-common
   volumes:
     - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
     - ${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data
-    # High-risk optional self-update capability. Keep disabled unless explicitly required.
-    # - /var/run/docker.sock:/var/run/docker.sock
   networks:
     - backend
     - egress
@@ -138,6 +132,6 @@ networks:
 
 secrets:
   makerhub_state_encryption_key:
-    file: ${MAKERHUB_DATA_ENCRYPTION_KEY_PATH:-./secrets/state-encryption-key}
+    file: ./secrets/state-encryption-key
   makerhub_state_encryption_previous_keys:
-    file: ${MAKERHUB_DATA_ENCRYPTION_PREVIOUS_KEYS_PATH:-./secrets/state-encryption-previous-keys}
+    file: ./secrets/state-encryption-previous-keys
