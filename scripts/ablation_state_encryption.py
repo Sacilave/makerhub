@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import sys
 import time
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from app.core.state_crypto import protect_state_payload, unprotect_state_payload
 
-ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "ablation-results.json"
 RUNS = 7
 ITERATIONS = 1000
