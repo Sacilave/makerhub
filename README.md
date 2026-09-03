@@ -61,7 +61,14 @@ MakerWorld / Bambu Lab
 
 ### 📦 MakerWorld 完整归档
 
-MakerHub 可以处理单个模型、作者模型列表、自己的 MakerWorld 收藏夹、收藏夹中的多个子收藏、关注的合集与批量模型来源。
+MakerHub 可以处理：
+
+- 单个模型；
+- 作者模型列表；
+- 自己的 MakerWorld 收藏夹；
+- 收藏夹中的多个子收藏；
+- 关注的合集；
+- 批量模型来源。
 
 归档内容根据源端实际可用数据保存，包括：
 
@@ -79,23 +86,50 @@ MakerHub 可以处理单个模型、作者模型列表、自己的 MakerWorld �
 
 MakerHub 会读取账号收藏来源并发现其中的模型。
 
-收藏发现不会只依赖单一旧接口，而是结合 MakerWorld 页面数据、当前 API 与 fallback 策略，并对“页面总数”和“实际发现数量”做完整性判断。
+收藏发现不是只依赖单一旧接口，而是结合 MakerWorld 页面数据、当前 API 与 fallback 策略，并对“页面总数”和“实际发现数量”做完整性判断。
 
-这让它适合这样的场景：
+这意味着它更适合这样的场景：
 
 > **“我有几百个收藏，不想一个一个下载，希望一次完整备份并以后继续同步。”**
 
 ### 🔄 自动订阅
 
-你可以把收藏夹、作者、合集和其他支持的 MakerWorld 来源保存为订阅。后台 Worker 会定期重新发现模型，并将新增内容送入统一归档队列。
+你可以把来源保存为订阅：
+
+- 收藏夹；
+- 作者；
+- 合集；
+- 其他支持的 MakerWorld 来源。
+
+后台 Worker 会定期重新发现模型，并将新增内容送入统一归档队列。
 
 ### 🧩 私人模型库
 
-归档完成后，MakerHub 不只是一个下载脚本。Web UI 可以用于搜索模型、浏览模型卡片、查看归档状态、管理本地文件、标记收藏 / 已打印、查看任务、修复缺失 3MF，以及管理来源和订阅。
+归档完成后，MakerHub 不只是一个下载脚本。
+
+Web UI 可以用于：
+
+- 搜索模型；
+- 浏览模型卡片；
+- 查看归档状态；
+- 管理本地文件；
+- 标记收藏 / 已打印；
+- 查看任务；
+- 修复缺失 3MF；
+- 管理来源和订阅。
 
 ### 📁 本地模型导入
 
-除了 MakerWorld，MakerHub 也可以整理自己的本地模型文件，例如 `.3mf`、`.stl`、`.step`、`.obj`、压缩包、图片与附件，让在线归档和本地模型进入同一个资料库。
+除了 MakerWorld，MakerHub 也可以整理自己的本地模型文件，例如：
+
+- `.3mf`
+- `.stl`
+- `.step`
+- `.obj`
+- 压缩包
+- 图片与附件
+
+这样 MakerWorld 下载模型和自己保存的模型可以进入同一个本地资料库。
 
 ### 🌏 国内站与国际站
 
@@ -139,13 +173,108 @@ flowchart LR
 
 # 快速安装
 
+## 推荐：直接下载 Release
+
+如果只是使用 MakerHub，不需要克隆源码。Release 提供两种固定架构的可运行包：
+
+| 平台 | Release 文件 | 运行环境 |
+| --- | --- | --- |
+| Windows x86-64 / amd64 | `makerhub-windows-amd64.zip` | Windows 10/11 64 位 + Docker Desktop（WSL2） |
+| Linux x86-64 / amd64 | `makerhub-linux-amd64.tar.gz` | 64 位 Linux + Docker Engine + Compose v2 |
+
+每个 Release 包都固定到**通过同一轮完整 E2E Gate 的不可变容器 digest**，Windows 与 Linux 不维护两套不同的 MakerHub 后端，因此功能和数据格式保持一致。
+
+Windows 解压后：
+
+```powershell
+.\makerhub.ps1 start
+```
+
+Linux 解压后：
+
+```bash
+chmod +x makerhub.sh
+./makerhub.sh start
+```
+
+启动器会自动完成：
+
+```text
+检查 CPU / Docker / Compose
+        ↓
+生成 PostgreSQL / CloakBrowser 随机凭据
+        ↓
+生成 AES-256 状态加密主密钥
+        ↓
+拉取当前 Release 固定的容器 digest
+        ↓
+启动 App / Worker / PostgreSQL / CloakBrowser
+        ↓
+等待 readiness
+        ↓
+显示首次管理员密码
+        ↓
+打开 http://127.0.0.1:9042
+```
+
+常用维护命令：
+
+```text
+start
+stop
+restart
+status
+logs
+doctor
+password
+update
+```
+
+其中 `doctor` 会检查 Docker、Compose、App readiness、Worker heartbeat、PostgreSQL 和 CloakBrowser 网络连通性。
+
+正式 Release 不是“构建成功就发布”。候选版本需要先通过完整 Compose E2E；在真人 MakerWorld 登录场景下，还要对准备发布的 exact commit 执行只读收藏预扫描 Canary，并把生成的 `source_commit` 与 Release workflow 的 `GITHUB_SHA` 对齐。
+
+> Release 的 `update` 只会重新拉取当前版本固定的镜像，不会静默跨版本升级。
+
+### Release 跨版本升级
+
+Release 默认把 `data/`、`.env` 和 `secrets/` 放在**当前实例目录**。跨版本升级时不要把新压缩包当成一个全新的实例直接启动，否则会得到一套新的空数据目录和新密钥。
+
+推荐方式：
+
+1. 停止旧实例：`makerhub.ps1 stop` 或 `./makerhub.sh stop`；
+2. 备份旧目录中的 `.env`、`secrets/` 和 `data/`；
+3. 将新 Release 中的 `compose.yaml` 与平台启动器覆盖到**原实例目录**；
+4. 保留原来的 `.env`、`secrets/`、`data/` 不变；
+5. 运行 `start`，然后执行 `doctor`。
+
+如果希望每个 Release 文件夹彼此独立，则应在 `.env` 中把四个数据路径设置为固定的绝对目录。这样更换 Release 文件夹时仍然会使用同一份数据库、归档与 CloakBrowser Profile。
+
+---
+
+## 从源码运行
+
 ## 准备环境
 
-推荐准备 Docker Engine / Docker Desktop、Docker Compose v2、Git，以及 Python 3（只用于生成本地随机密钥；没有也可以手动生成）。
+推荐：
 
-适合部署在 Linux NAS、Synology DSM、Unraid、Ubuntu / Debian Server、Windows + Docker Desktop 或 macOS + Docker Desktop。
+- Docker Engine / Docker Desktop
+- Docker Compose v2
+- Git
+- Python 3（只用于生成本地随机密钥；没有也可以手动生成）
+
+适合部署在：
+
+- Linux NAS
+- Synology DSM
+- Unraid
+- Ubuntu / Debian Server
+- Windows + Docker Desktop
+- macOS + Docker Desktop
 
 > MakerHub 是长期运行型归档服务，NAS / Linux 主机通常是最合适的部署位置。
+
+---
 
 ## 1. 克隆项目
 
@@ -153,6 +282,8 @@ flowchart LR
 git clone https://github.com/Sacilave/makerhub.git
 cd makerhub
 ```
+
+---
 
 ## 2. 生成本地密钥
 
@@ -173,11 +304,17 @@ secrets/
 
 生成器是**幂等的**：已有文件不会被覆盖。
 
-其中 `.env` 保存 PostgreSQL 密码、CloakBrowser 控制令牌等实例配置；`state-encryption-key` 是 32 字节 AES 状态加密主密钥；`state-encryption-previous-keys` 只在轮换密钥时临时使用。
+其中：
+
+- `.env` 保存 PostgreSQL 密码、CloakBrowser 控制令牌等实例配置；
+- `state-encryption-key` 是 32 字节 AES 状态加密主密钥；
+- `state-encryption-previous-keys` 只在轮换密钥时临时使用。
 
 这些文件都被 `.gitignore` 排除。
 
 > **不要把 `secrets/state-encryption-key` 上传到 GitHub，也不要丢失它。**
+
+---
 
 ## 3. 启动
 
@@ -197,6 +334,8 @@ docker compose ps
 docker compose logs -f makerhub-app makerhub-worker
 ```
 
+---
+
 ## 4. 打开 MakerHub
 
 默认地址：
@@ -210,10 +349,17 @@ http://127.0.0.1:9042
 新实例会生成管理员一次性密码：
 
 ```bash
-docker compose exec makerhub-app cat /app/config/state/admin-bootstrap-password
+docker compose exec makerhub-app \
+  cat /app/config/state/admin-bootstrap-password
 ```
 
-用户名为 `admin`。登录后建议立即修改密码。
+用户名：
+
+```text
+admin
+```
+
+登录后建议立即修改密码。
 
 ---
 
@@ -225,7 +371,12 @@ docker compose exec makerhub-app cat /app/config/state/admin-bootstrap-password
 设置 → 线上账号
 ```
 
-选择国内站或国际站，然后打开对应 CloakBrowser 窗口，**在真实 MakerWorld / Bambu Lab 页面中完成登录**。
+选择需要的区域：
+
+- 国内站；
+- 国际站。
+
+然后打开对应 CloakBrowser 窗口，**在真实 MakerWorld / Bambu Lab 页面中完成登录**。
 
 MakerHub 的设计是：
 
@@ -239,7 +390,15 @@ MakerHub 复用现有登录态
 
 而不是让后台脚本长期保存一份账号明文密码。
 
-如果 MakerWorld 出现 Cloudflare、418、Captcha、“Verify you are human” 或下载前安全验证，优先在浏览器里人工完成验证，再让任务继续。
+如果 MakerWorld 出现：
+
+- Cloudflare；
+- 418；
+- Captcha；
+- “Verify you are human”；
+- 下载前安全验证；
+
+优先在浏览器里人工完成验证，再让任务继续。
 
 ---
 
@@ -264,7 +423,16 @@ MakerHub 复用现有登录态
 需处理：6
 ```
 
-剩余项目可能属于源端明确禁止下载 3MF、模型已下架、模型设为私有、当前账号没有权限、MakerWorld 下载额度到达上限、登录 Cookie 失效、需要重新完成人机验证，或临时网络错误。
+剩余项目可能属于：
+
+- 源端明确禁止下载 3MF；
+- 模型已下架；
+- 模型设为私有；
+- 当前账号没有权限；
+- MakerWorld 下载额度到达上限；
+- 登录 Cookie 失效；
+- 需要重新完成人机验证；
+- 临时网络错误。
 
 不要把“463 个收藏”理解成“一定存在 463 个合法可下载的 3MF”。MakerHub 会尽量区分这些状态，而不是绕过平台权限。
 
@@ -303,11 +471,15 @@ App 与 Worker 必须指向同一份配置和归档目录。
 
 MakerHub 会接触 MakerWorld 登录态，因此安全边界不能只依赖一个 Web 密码。
 
+默认 Compose 采用以下策略：
+
 ### Web UI 默认只监听本机
 
 ```text
 127.0.0.1:9042
 ```
+
+不会默认开放到整个局域网。
 
 需要 LAN 访问时再显式设置：
 
@@ -334,19 +506,35 @@ MAKERHUB_CLOAKBROWSER_PUBLIC_URL=http://192.168.1.20:9050
 
 ### PostgreSQL 不直接连接外网
 
-数据库只连接 Docker `backend` internal network。App、Worker 与 CloakBrowser 另外拥有 egress 网络用于正常访问 MakerWorld。
+数据库只连接 Docker `backend` internal network。
+
+App、Worker 与 CloakBrowser 另外拥有 egress 网络用于正常访问 MakerWorld。
 
 ### 敏感 State 使用 AES-256-GCM
 
-App 配置中的 MakerWorld Cookie / Token、Web Session、登录失败状态、分享相关敏感状态与账号 Cookie 来源状态，会经过统一加密边界后再写入 PostgreSQL。
+以下类型的敏感持久化状态会经过统一加密边界后再写入 PostgreSQL，例如：
 
-数据库中保存的是带认证的 AES-GCM envelope，而不是直接把整个敏感配置对象以明文 JSON 保存。
+- App 配置中的 MakerWorld Cookie / Token；
+- Web Session 状态；
+- 登录失败状态；
+- 分享相关敏感状态；
+- 账号 Cookie 来源状态。
+
+数据库中保存的是带认证的 AES-GCM envelope，而不是直接把整个配置对象以明文 JSON 保存。
 
 大型归档队列仍保持 JSONB，因为 Worker 需要 PostgreSQL 在服务端直接统计任务状态。
 
 ### Docker Socket 不挂载
 
-标准部署不会把 `/var/run/docker.sock` 交给 Web 应用，避免为了“一键更新”而让应用间接获得宿主机 Docker 控制能力。
+标准部署不会把：
+
+```text
+/var/run/docker.sock
+```
+
+交给 Web 应用。
+
+这避免为了“一键更新”而让应用间接获得宿主机 Docker 控制能力。
 
 完整安全说明见 [SECURITY.md](SECURITY.md)。
 
@@ -357,9 +545,24 @@ App 配置中的 MakerWorld Cookie / Token、Web Session、登录失败状态、
 如果需要更换数据库状态加密密钥：
 
 1. 先完整备份数据库和当前 key；
-2. 将当前 key 写入 `secrets/state-encryption-previous-keys`；
-3. 生成新的 32 字节 key，替换 `secrets/state-encryption-key`；
-4. 重启服务；
+2. 将当前 key 写入：
+
+```text
+secrets/state-encryption-previous-keys
+```
+
+3. 生成新的 32 字节 key，替换：
+
+```text
+secrets/state-encryption-key
+```
+
+4. 重启服务：
+
+```bash
+docker compose restart makerhub-app makerhub-worker
+```
+
 5. MakerHub 在读取 / 更新受保护状态时，会逐步使用新的主密钥重新封装；
 6. 确认运行正常并完成新备份后，再删除 previous keys 中的旧 key。
 
@@ -377,15 +580,31 @@ data/cloakbrowser/
 secrets/state-encryption-key
 ```
 
-其中建议把 `state-encryption-key` 放在**独立的加密备份位置**。
+其中建议把：
 
-只有数据库没有 key 时无法恢复受保护状态；而浏览器 Profile 本身可能包含仍然有效的 MakerWorld Cookie，因此也属于敏感备份。
+```text
+state-encryption-key
+```
+
+放在**独立的加密备份位置**。
+
+原因很简单：
+
+- 只有数据库，没有 key → 无法恢复受保护状态；
+- 只有 key，没有数据库 → 没有用户数据；
+- 浏览器 Profile 本身可能包含仍然有效的 MakerWorld Cookie，因此也属于敏感备份。
 
 ---
 
 # 更新
 
-更新前建议先备份数据，然后：
+更新前建议：
+
+```bash
+docker compose down
+```
+
+备份数据后：
 
 ```bash
 git pull
@@ -394,46 +613,88 @@ docker compose build --pull
 docker compose up -d
 ```
 
-随后检查：
+查看启动状态：
 
 ```bash
 docker compose ps
+```
+
+以及：
+
+```bash
 docker compose logs --tail=200 makerhub-app makerhub-worker
 ```
+
+如果上游接口变化导致 MakerWorld 暂时不可用，优先检查：
+
+- 浏览器 Profile 是否仍然登录；
+- MakerWorld 页面是否正在要求验证；
+- 是否到达下载额度；
+- 国内 / 国际站是否选对；
+- 当前版本 CI 是否正常。
 
 ---
 
 # 常用命令
 
+### 启动
+
 ```bash
-# 启动
 docker compose up -d
+```
 
-# 重建并启动
+### 重建并启动
+
+```bash
 docker compose up -d --build
+```
 
-# 查看服务
+### 查看服务
+
+```bash
 docker compose ps
+```
 
-# Worker 日志
+### 查看 Worker 日志
+
+```bash
 docker compose logs -f makerhub-worker
+```
 
-# App 日志
+### 查看 App 日志
+
+```bash
 docker compose logs -f makerhub-app
+```
 
-# 停止
+### 停止
+
+```bash
 docker compose down
+```
 
-# 仅重启 Worker
+### 仅重启 Worker
+
+```bash
 docker compose restart makerhub-worker
+```
 
-# 校验 Compose
+### 检查 Compose
+
+```bash
 docker compose config --quiet
+```
 
-# 后端测试
+### 运行测试
+
+```bash
+python -m pip install -r requirements.txt pytest PyYAML
 python -m pytest -q
+```
 
-# 安全约束
+### 检查安全约束
+
+```bash
 python scripts/check_security_invariants.py
 ```
 
@@ -448,20 +709,25 @@ export MAKERHUB_DATA_ENCRYPTION_KEY="base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 python scripts/ablation_state_encryption.py
 ```
 
-实验比较明文 JSON 与整个敏感 State 的 AES-256-GCM Envelope，主要观察数据库表示中是否仍能搜索到测试 secret、加密后的体积膨胀、单次 encrypt / decrypt 延迟、payload 是否完整恢复，以及是否影响需要 JSONB SQL 查询的大型队列状态。
+实验比较：
 
-当前代表性配置（250 条订阅记录）的 7 轮微基准结果：
+```text
+明文 JSON
+    vs
+整个敏感 State 的 AES-256-GCM Envelope
+```
 
-| 指标 | 结果 |
-| --- | ---: |
-| 明文大小 | 17,018 B |
-| AES-GCM Envelope | 22,852 B |
-| 存储增量 | 34.28% |
-| 单次加密平均延迟（各轮中位） | 0.240 ms |
-| 单次解密平均延迟（各轮中位） | 0.169 ms |
-| 密文中可搜索到测试 secret | **否** |
+主要观察：
 
-实验说明见 [State Encryption Ablation](docs/ABLATION.md)。这是一项存储层微基准，不等同于 MakerWorld 下载速度；实际归档时间主要取决于浏览器、网络、MakerWorld 限制和文件大小。
+- 数据库表示中是否仍能搜索到测试 secret；
+- 加密后的体积膨胀；
+- 单次 encrypt / decrypt 延迟；
+- 是否保持原始 payload 一致；
+- 是否影响需要 JSONB SQL 查询的大型队列状态。
+
+实验设计和结果说明见 [State Encryption Ablation](docs/ABLATION.md)。
+
+> 这是存储层微基准，不等同于 MakerWorld 下载速度。实际归档时间主要取决于浏览器、网络、MakerWorld 限制和文件大小。
 
 ---
 
@@ -469,19 +735,54 @@ python scripts/ablation_state_encryption.py
 
 ## 为什么不能打开 `http://服务器IP:9042`？
 
-因为默认只绑定 `127.0.0.1`。如果你明确需要在可信局域网访问，在 `.env` 设置服务器具体 LAN IP，或者 `MAKERHUB_BIND_ADDRESS=0.0.0.0`。不要直接把 9042 暴露公网。
+因为默认只绑定：
+
+```text
+127.0.0.1
+```
+
+如果你明确需要在可信局域网访问，在 `.env` 设置：
+
+```env
+MAKERHUB_BIND_ADDRESS=0.0.0.0
+```
+
+或更推荐绑定服务器的具体 LAN IP。
+
+不要直接把 9042 暴露公网。
 
 ## 为什么收藏数量和成功下载 3MF 数量不一样？
 
-收藏存在，不代表模型当前一定允许下载 3MF。常见原因包括 Platform Print Only、模型删除 / 私有、Print Profile 已失效、下载额度、Cookie 失效、人机验证或临时接口错误。
+收藏存在，不代表模型当前一定允许下载 3MF。
+
+常见原因：
+
+- Platform Print Only；
+- 模型删除 / 私有；
+- Print Profile 已失效；
+- 下载额度；
+- Cookie 失效；
+- 人机验证；
+- 临时接口错误。
+
+MakerHub 会尽可能保留失败原因供后续重试。
 
 ## 为什么必须使用 CloakBrowser？
 
-MakerWorld 的部分页面和下载授权依赖登录 Cookie、JavaScript、Cloudflare / 浏览器状态和真实站点会话。使用长期 Browser Profile 比维护一套独立的“伪浏览器账号登录系统”更可靠。
+MakerWorld 的部分页面和下载授权依赖：
+
+- 登录 Cookie；
+- JavaScript；
+- Cloudflare / 浏览器状态；
+- 实际站点会话。
+
+使用长期 Browser Profile 比维护一套独立的“伪浏览器账号登录系统”更可靠。
 
 ## 可以自动绕过验证码吗？
 
-不应把验证码当成需要绕过的限制。遇到平台验证时，最可靠的方式仍然是在 CloakBrowser 中人工完成验证后继续任务。
+不应把验证码当成需要绕过的限制。
+
+MakerHub 可以对部分授权流程提供辅助处理，但遇到平台验证时，最可靠的方式仍然是在 CloakBrowser 中人工完成验证后继续任务。
 
 ## 能不能下载付费、私有或无权限模型？
 
@@ -489,7 +790,15 @@ MakerHub 只归档当前账号能够合法访问和下载的内容，不应绕�
 
 ## 数据库被复制后 Cookie 会直接暴露吗？
 
-Canonical Docker 部署要求状态加密密钥，受保护的配置 State 会以 AES-256-GCM envelope 保存。但 `data/cloakbrowser/` 本身仍然可能保存有效浏览器 Session，所以主机磁盘和备份仍然应该加密保护。
+Canonical Docker 部署要求状态加密密钥，受保护的配置 State 会以 AES-256-GCM envelope 保存。
+
+但请注意：
+
+```text
+data/cloakbrowser/
+```
+
+本身仍然可能保存有效浏览器 Session，所以主机磁盘和备份仍然应该加密保护。
 
 ---
 
@@ -499,7 +808,6 @@ Canonical Docker 部署要求状态加密密钥，受保护的配置 State 会�
 
 ```bash
 python -m pip install -r requirements.txt
-python -m pytest -q
 ```
 
 前端：
@@ -510,7 +818,27 @@ npm ci
 npm run dev
 ```
 
-CI 会检查 Python 测试、前端测试、前端构建、安全 invariant、Compose 配置、Docker 镜像构建以及关键依赖 smoke test。
+前端测试：
+
+```bash
+npm test
+```
+
+后端测试：
+
+```bash
+python -m pytest -q
+```
+
+CI 会检查：
+
+- Python 测试；
+- 前端测试；
+- 前端构建；
+- 安全 invariant；
+- Compose 配置；
+- Docker 镜像构建；
+- 关键依赖 smoke test。
 
 ---
 
@@ -545,6 +873,6 @@ MakerHub 的核心原则很简单：
 
 ---
 
-## Credits & License
+## License
 
-MakerHub 的现有代码历史中包含对社区项目与先前实现的参考和演进。仓库当前未附带独立的软件许可证文件；公开复制、修改或再分发前，请自行确认适用的版权与授权条件。
+本仓库当前未附带独立的软件许可证文件。公开复制、修改或再分发前，请自行确认适用的版权与授权条件。
