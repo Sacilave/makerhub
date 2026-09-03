@@ -4,72 +4,79 @@ x-logging: &default-logging
     max-size: 10m
     max-file: "3"
 
+x-makerhub-common: &makerhub-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: makerhub:local
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  environment: &makerhub-environment
+    TZ: ${TZ:-Asia/Shanghai}
+    MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
+    MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
+    MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
+    MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
+    MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
+    MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
+    MAKERHUB_DATA_ENCRYPTION_KEY_FILE: /run/secrets/makerhub_state_encryption_key
+    MAKERHUB_DATA_ENCRYPTION_PREVIOUS_KEYS_FILE: /run/secrets/makerhub_state_encryption_previous_keys
+    MAKERHUB_REQUIRE_STATE_ENCRYPTION: "true"
+  secrets:
+    - makerhub_state_encryption_key
+    - makerhub_state_encryption_previous_keys
+  volumes:
+    - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
+    - ${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data
+  networks:
+    - backend
+    - egress
+  logging: *default-logging
+  restart: unless-stopped
+
 services:
   makerhub-app:
-    image: ghcr.io/s450586793/makerhub:latest
+    <<: *makerhub-common
     container_name: makerhub-app
-    init: true
     ports:
-      - "9042:8000"
+      - "${MAKERHUB_BIND_ADDRESS:-127.0.0.1}:9042:8000"
     environment:
-      TZ: Asia/Shanghai
+      <<: *makerhub-environment
       MAKERHUB_ENTRYPOINT: app
       MAKERHUB_PROCESS_ROLE: app
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
       MAKERHUB_WEB_WORKERS: "1"
       MAKERHUB_WORKER_CONCURRENCY: "4"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
-      MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
-      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
-      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
-      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
-      MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
       MAKERHUB_TRUSTED_PROXIES: ${MAKERHUB_TRUSTED_PROXIES:-}
-    volumes:
-      - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
-      - ${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data
-      # 高风险可选：只有明确需要网页一键更新时再挂载 Docker socket。
-      # - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       makerhub-postgres:
         condition: service_healthy
       cloakbrowser:
         condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/api/public/health/ready', timeout=3); raise SystemExit(0 if response.status == 200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/public/health/ready', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 20s
     stop_grace_period: 30s
-    logging: *default-logging
-    restart: unless-stopped
 
   makerhub-worker:
-    image: ghcr.io/s450586793/makerhub:latest
+    <<: *makerhub-common
     container_name: makerhub-worker
-    init: true
     environment:
-      TZ: Asia/Shanghai
+      <<: *makerhub-environment
       MAKERHUB_ENTRYPOINT: worker
       MAKERHUB_PROCESS_ROLE: worker
       MAKERHUB_BACKGROUND_TASKS: "true"
       MAKERHUB_WORKER_CONCURRENCY: "4"
       MAKERHUB_HEAVY_JOB_NICE: "10"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
-      MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
-      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
-      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
-      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
-      MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
       MAKERHUB_CLOAKBROWSER_IDLE_SECONDS: "${MAKERHUB_CLOAKBROWSER_IDLE_SECONDS:-1800}"
       MAKERHUB_WORKER_RECYCLE_RSS_MIB: "${MAKERHUB_WORKER_RECYCLE_RSS_MIB:-2048}"
       MAKERHUB_WORKER_HARD_RECYCLE_RSS_MIB: "${MAKERHUB_WORKER_HARD_RECYCLE_RSS_MIB:-4096}"
       MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB: "${MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB:-768}"
-    volumes:
-      - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
-      - ${MAKERHUB_ARCHIVE_PATH:-./data/archive}:/app/data
     depends_on:
       makerhub-postgres:
         condition: service_healthy
@@ -82,19 +89,19 @@ services:
       retries: 10
       start_period: 20s
     stop_grace_period: 2m
-    logging: *default-logging
-    restart: unless-stopped
 
   makerhub-postgres:
     image: postgres:16-alpine
     container_name: makerhub-postgres
     environment:
-      TZ: Asia/Shanghai
+      TZ: ${TZ:-Asia/Shanghai}
       POSTGRES_DB: makerhub
       POSTGRES_USER: makerhub
       POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
     volumes:
       - ${MAKERHUB_POSTGRES_DATA_PATH:-./data/postgres}:/var/lib/postgresql/data
+    networks:
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -110,10 +117,24 @@ services:
     ports:
       - "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
     environment:
-      TZ: Asia/Shanghai
+      TZ: ${TZ:-Asia/Shanghai}
       AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
     volumes:
       - ${MAKERHUB_CLOAKBROWSER_DATA_PATH:-./data/cloakbrowser}:/data
+    networks:
+      - backend
+      - egress
     stop_grace_period: 30s
     logging: *default-logging
     restart: unless-stopped
+
+networks:
+  backend:
+    internal: true
+  egress:
+
+secrets:
+  makerhub_state_encryption_key:
+    file: ${MAKERHUB_DATA_ENCRYPTION_KEY_PATH:-./secrets/state-encryption-key}
+  makerhub_state_encryption_previous_keys:
+    file: ${MAKERHUB_DATA_ENCRYPTION_PREVIOUS_KEYS_PATH:-./secrets/state-encryption-previous-keys}

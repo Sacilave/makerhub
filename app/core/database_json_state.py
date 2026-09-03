@@ -17,6 +17,15 @@ from app.core.database import (
     save_json_state,
     update_json_state,
 )
+from app.core.state_crypto import (
+    encrypted_state_key_id,
+    is_encrypted_state_payload,
+    is_protected_state_key,
+    protect_state_payload,
+    reencrypt_state_payload,
+    state_encryption_status,
+    unprotect_state_payload,
+)
 
 JSON_STATE_MAX_ATTEMPTS = 3
 
@@ -43,13 +52,53 @@ def _with_database_json_state_attempts(operation: Callable[[], Any]) -> Any:
     raise DatabaseUnavailable(f"Postgres JSON 状态操作失败，已尝试 {JSON_STATE_MAX_ATTEMPTS} 次。") from last_exc
 
 
+def _decrypt_payload(
+    clean_key: str,
+    payload: Any,
+    default: dict[str, Any],
+    *,
+    migrate: bool = True,
+) -> dict[str, Any]:
+    candidate = payload if isinstance(payload, dict) else dict(default)
+    plaintext = unprotect_state_payload(clean_key, candidate)
+
+    # Normal reads lazily migrate legacy plaintext and rotate envelopes to the
+    # current primary key. Revision-sensitive and health-check reads opt out.
+    if not migrate or not isinstance(payload, dict) or not is_protected_state_key(clean_key):
+        return plaintext
+
+    status = state_encryption_status()
+    if not status.configured:
+        return plaintext
+
+    needs_rewrite = (
+        not is_encrypted_state_payload(payload)
+        or encrypted_state_key_id(payload) != status.key_id
+    )
+    if not needs_rewrite:
+        return plaintext
+
+    def migrate_latest(latest: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(latest, dict):
+            latest = dict(default)
+        if is_encrypted_state_payload(latest):
+            if encrypted_state_key_id(latest) == status.key_id:
+                unprotect_state_payload(clean_key, latest)
+                return latest
+            return reencrypt_state_payload(clean_key, latest)
+        return protect_state_payload(clean_key, latest)
+
+    migrated, _revision = update_json_state(clean_key, candidate, migrate_latest)
+    return unprotect_state_payload(clean_key, migrated)
+
+
 def load_database_json_state(key: str, default: dict[str, Any]) -> dict[str, Any]:
     clean_key = str(key or "").strip()
     if not clean_key:
         raise ValueError("JSON 状态 key 不能为空。")
     require_database_json_state()
     payload = _with_database_json_state_attempts(lambda: load_json_state(clean_key))
-    return payload if isinstance(payload, dict) else dict(default)
+    return _decrypt_payload(clean_key, payload, default)
 
 
 def load_database_json_state_without_initialization(key: str, default: dict[str, Any]) -> dict[str, Any]:
@@ -58,7 +107,14 @@ def load_database_json_state_without_initialization(key: str, default: dict[str,
         raise ValueError("JSON 状态 key 不能为空。")
     require_database_json_state()
     payload = _with_database_json_state_attempts(lambda: load_json_state_without_initialization(clean_key))
-    return payload if isinstance(payload, dict) else dict(default)
+    return _decrypt_payload(clean_key, payload, default, migrate=False)
+
+
+def _require_server_side_json_queryable(clean_key: str) -> None:
+    if is_protected_state_key(clean_key):
+        raise RuntimeError(
+            f"受保护状态 {clean_key} 已做 envelope encryption，不能使用 PostgreSQL JSONB 摘要查询。"
+        )
 
 
 def load_database_json_state_array_summary(key: str, array_field: str, *, limit: int = 5) -> dict[str, Any]:
@@ -68,6 +124,7 @@ def load_database_json_state_array_summary(key: str, array_field: str, *, limit:
     clean_field = str(array_field or "").strip()
     if not clean_field:
         raise ValueError("JSON 状态数组字段不能为空。")
+    _require_server_side_json_queryable(clean_key)
     require_database_json_state()
     payload = _with_database_json_state_attempts(
         lambda: load_json_state_array_summary(clean_key, clean_field, limit=limit)
@@ -85,6 +142,7 @@ def load_database_archive_queue_verification_summary(key: str) -> dict[str, int]
     clean_key = str(key or "").strip()
     if not clean_key:
         raise ValueError("JSON 状态 key 不能为空。")
+    _require_server_side_json_queryable(clean_key)
     require_database_json_state()
     payload = _with_database_json_state_attempts(
         lambda: load_json_state_archive_queue_verification_summary(clean_key)
@@ -104,7 +162,8 @@ def save_database_json_state(key: str, payload: dict[str, Any]) -> dict[str, Any
     if not isinstance(payload, dict):
         raise ValueError("JSON 状态 payload 必须是对象。")
     require_database_json_state()
-    _with_database_json_state_attempts(lambda: save_json_state(clean_key, payload))
+    protected = protect_state_payload(clean_key, payload)
+    _with_database_json_state_attempts(lambda: save_json_state(clean_key, protected))
     return payload
 
 
@@ -116,7 +175,7 @@ def load_database_json_state_with_revision(key: str, default: dict[str, Any]) ->
     payload, revision = _with_database_json_state_attempts(
         lambda: load_json_state_with_revision(clean_key)
     )
-    return (payload if isinstance(payload, dict) else dict(default), int(revision or 0))
+    return (_decrypt_payload(clean_key, payload, default, migrate=False), int(revision or 0))
 
 
 def update_database_json_state(
@@ -133,17 +192,20 @@ def update_database_json_state(
         raise TypeError("JSON 状态 mutator 必须可调用。")
     require_database_json_state()
 
+    protected_default = protect_state_payload(clean_key, dict(default))
+
     def checked_mutator(current: dict[str, Any]) -> dict[str, Any]:
-        result = mutator(current)
-        payload = current if result is None else result
+        plaintext = _decrypt_payload(clean_key, current, default, migrate=False)
+        result = mutator(plaintext)
+        payload = plaintext if result is None else result
         if not isinstance(payload, dict):
             raise ValueError("JSON 状态 mutator 必须生成对象。")
-        return payload
+        return protect_state_payload(clean_key, payload)
 
     try:
         payload, revision = update_json_state(
             clean_key,
-            dict(default),
+            protected_default,
             checked_mutator,
             expected_revision=expected_revision,
         )
@@ -152,7 +214,7 @@ def update_database_json_state(
     except Exception:
         # mutator 可能包含副作用，原子更新失败后不能自动重复执行。
         raise
-    return payload, int(revision or 0)
+    return _decrypt_payload(clean_key, payload, default, migrate=False), int(revision or 0)
 
 
 def load_database_json_state_version(key: str) -> str:
