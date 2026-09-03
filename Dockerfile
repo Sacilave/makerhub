@@ -1,4 +1,4 @@
-FROM node:24-slim AS frontend-build
+FROM node:24.20.0-trixie-slim AS frontend-build
 
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -8,7 +8,7 @@ COPY app/static/css/app.css /app/static/css/app.css
 RUN npm run build
 RUN npm prune --omit=dev
 
-FROM python:3.11-slim
+FROM python:3.11.16-slim-trixie
 
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
