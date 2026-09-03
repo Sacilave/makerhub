@@ -41,7 +41,7 @@ def main() -> None:
     require("${MAKERHUB_BIND_ADDRESS:-127.0.0.1}:9042:8000" in release_compose, "release bundle must bind localhost by default")
     require("internal: true" in release_compose, "release database network must remain internal")
     require("no-new-privileges:true" in release_compose, "release app/worker must use no-new-privileges")
-    require('"@sha256:" not in image' in bundle_builder, "bundle builder must reject mutable image references")
+    require("@sha256:" in bundle_builder and "release image must be immutable" in bundle_builder, "bundle builder must reject mutable image references")
 
     for path in (ROOT / ".github" / "workflows").glob("*.yml"):
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
